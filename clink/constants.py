@@ -28,8 +28,8 @@ class CLIInternalDefaults:
 
 INTERNAL_DEFAULTS: dict[str, CLIInternalDefaults] = {
     "gemini": CLIInternalDefaults(
-        parser="gemini_json",
-        additional_args=["-o", "json"],
+        parser="gemini_stream_jsonl",
+        additional_args=["-o", "stream-json"],
         default_role_prompt="systemprompts/clink/default.txt",
         runner="gemini",
     ),
