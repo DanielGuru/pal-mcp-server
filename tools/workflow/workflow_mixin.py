@@ -1489,8 +1489,11 @@ class BaseWorkflowMixin(ABC):
             for warning in temp_warnings:
                 logger.warning(warning)
 
-            # Generate AI response - use request parameters if available
-            model_response = provider.generate_content(
+            # Generate AI response - use request parameters if available.
+            # agenerate_content runs the sync provider stack in a worker
+            # thread so other concurrent tool calls (panel peers, parallel
+            # workflow steps) don't stall the event loop.
+            model_response = await provider.agenerate_content(
                 prompt=prompt,
                 model_name=model_name,
                 system_prompt=system_prompt,

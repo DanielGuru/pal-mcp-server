@@ -440,8 +440,10 @@ class SimpleTool(BaseTool):
             # Resolve model capabilities for feature gating
             supports_thinking = capabilities.supports_extended_thinking
 
-            # Generate content with provider abstraction
-            model_response = provider.generate_content(
+            # Generate content with provider abstraction.
+            # agenerate_content runs the sync provider stack in a worker
+            # thread so concurrent panelists can actually run in parallel.
+            model_response = await provider.agenerate_content(
                 prompt=prompt,
                 model_name=self._current_model_name,
                 system_prompt=system_prompt,
@@ -498,7 +500,7 @@ class SimpleTool(BaseTool):
                         retry_prompt = f"{original_prompt}\n\nIMPORTANT: Please provide a substantive response. If you cannot respond to the above request, please explain why and suggest alternatives."
 
                         try:
-                            retry_response = provider.generate_content(
+                            retry_response = await provider.agenerate_content(
                                 prompt=retry_prompt,
                                 model_name=self._current_model_name,
                                 system_prompt=system_prompt,

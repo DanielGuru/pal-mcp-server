@@ -1,5 +1,6 @@
 """Base interfaces and common behaviour for model providers."""
 
+import asyncio
 import logging
 import time
 from abc import ABC, abstractmethod
@@ -185,6 +186,44 @@ class ModelProvider(ABC):
                        or the model is restricted by policy
             RuntimeError: If the API call fails after retries
         """
+
+    async def agenerate_content(
+        self,
+        prompt: str,
+        model_name: str,
+        system_prompt: Optional[str] = None,
+        temperature: float = 0.3,
+        max_output_tokens: Optional[int] = None,
+        **kwargs,
+    ) -> ModelResponse:
+        """Async wrapper around generate_content.
+
+        The provider SDKs we depend on (OpenAI, Gemini, xAI) expose synchronous
+        `.create()` methods that block for the entire request — often 30-90s
+        for reasoning models. Calling them directly from an `async def` stalls
+        the asyncio event loop and serialises every other coroutine in flight.
+        That breaks panel parallelism: paid-API panelists block their peers'
+        setup work until they return.
+
+        We dispatch the existing sync stack to a worker thread via
+        `asyncio.to_thread`. The event loop stays free; concurrent panelists
+        actually run concurrently. The inner `time.sleep` in `_run_with_retries`
+        is also isolated by the same mechanism — no asyncio refactor needed
+        deeper in the stack.
+
+        TODO: a fully streaming async path (OpenAI `stream=True`,
+        incremental MCP progress notifications) would also unlock per-token UI
+        for direct-API panelists. That's a larger refactor; tracked separately.
+        """
+        return await asyncio.to_thread(
+            self.generate_content,
+            prompt,
+            model_name,
+            system_prompt,
+            temperature,
+            max_output_tokens,
+            **kwargs,
+        )
 
     def count_tokens(self, text: str, model_name: str) -> int:
         """Estimate token usage for a piece of text."""

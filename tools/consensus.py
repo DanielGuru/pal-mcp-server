@@ -614,8 +614,11 @@ of the evidence, even when it strongly points in one direction.""",
             for warning in temp_warnings:
                 logger.warning(warning)
 
-            # Call the model with validated temperature
-            response = provider.generate_content(
+            # Call the model with validated temperature.
+            # agenerate_content runs the sync provider stack in a worker
+            # thread so other consensus consultations / panel peers don't
+            # stall the asyncio event loop while this one is in flight.
+            response = await provider.agenerate_content(
                 prompt=prompt,
                 model_name=model_name,
                 system_prompt=system_prompt,
