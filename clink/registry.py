@@ -169,6 +169,7 @@ class ClinkRegistry:
             roles=roles,
             output_to_file=output_to_file,
             working_dir=working_dir,
+            oauth_fallback_model=internal_defaults.oauth_fallback_model,
         )
 
     def _resolve_executable(

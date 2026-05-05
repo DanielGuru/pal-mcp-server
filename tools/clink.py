@@ -19,11 +19,36 @@ from tools.models import ToolModelCategory, ToolOutput
 from tools.shared.base_models import COMMON_FIELD_DESCRIPTIONS
 from tools.shared.exceptions import ToolExecutionError
 from tools.simple.base import SchemaBuilder, SimpleTool
+from utils.progress import emit_progress
 
 logger = logging.getLogger(__name__)
 
 MAX_RESPONSE_CHARS = 20_000
 SUMMARY_PATTERN = re.compile(r"<SUMMARY>(.*?)</SUMMARY>", re.IGNORECASE | re.DOTALL)
+
+# Substrings (case-insensitive) in a CLI's stdout/stderr that mark a recoverable
+# OAuth-side failure: the caller's free quota / login is the problem, not the
+# request itself. When matched AND the CLI has a configured oauth_fallback_model,
+# clink transparently retries the same prompt against the paid API.
+#
+# Real-world signals seen so far:
+#   - Gemini CLI: "TerminalQuotaError", "QUOTA_EXHAUSTED", "exhausted your capacity",
+#                 "quota will reset"
+#   - Codex CLI:  "401 Unauthorized", "Please run codex login", "not authenticated"
+# Add new patterns conservatively — false positives cost a paid-API call.
+OAUTH_FAILURE_PATTERNS: tuple[str, ...] = (
+    "terminalquotaerror",
+    "quota_exhausted",
+    "exhausted your capacity",
+    "quota will reset",
+    "rate_limit_exceeded",
+    "401 unauthorized",
+    "not authenticated",
+    "please run codex login",
+    "please run gemini login",
+    "invalid_grant",
+    "unauthenticated",
+)
 
 
 class CLinkRequest(BaseModel):
@@ -213,6 +238,21 @@ class CLinkTool(SimpleTool):
                 images=images,
             )
         except CLIAgentError as exc:
+            # OAuth-to-API fallback: when the CLI fails for a recoverable reason
+            # (quota exhausted, auth lapse) AND we have a configured paid-API
+            # fallback model, retry the same prompt via chat. We re-attempt the
+            # OAuth path on every subsequent call, so the moment quota replenishes
+            # we're back to the free path with no manual intervention.
+            fallback = await self._try_oauth_fallback(
+                exc=exc,
+                client_config=client_config,
+                prompt_text=prompt_text,
+                absolute_file_paths=absolute_file_paths,
+                images=images,
+            )
+            if fallback is not None:
+                return fallback
+
             metadata = self._build_error_metadata(client_config, exc)
             self._raise_tool_error(
                 f"CLI '{client_config.name}' execution failed: {exc}",
@@ -433,6 +473,96 @@ class CLinkTool(SimpleTool):
         if exc.stderr:
             metadata["stderr"] = exc.stderr.strip()
         return metadata
+
+    @staticmethod
+    def _looks_like_oauth_failure(exc: CLIAgentError) -> bool:
+        """Best-effort check that a CLI failure originated from OAuth side, not the prompt."""
+        haystack = " ".join(filter(None, [str(exc), exc.stdout or "", exc.stderr or ""])).lower()
+        return any(pattern in haystack for pattern in OAUTH_FAILURE_PATTERNS)
+
+    async def _try_oauth_fallback(
+        self,
+        *,
+        exc: CLIAgentError,
+        client_config: ResolvedCLIClient,
+        prompt_text: str,
+        absolute_file_paths: list[str],
+        images: list[str],
+    ) -> list[TextContent] | None:
+        """Retry a recoverable CLI failure against the configured paid-API model.
+
+        Returns the chat tool's TextContent response on success, or None when
+        no fallback is configured / available / the failure isn't recoverable.
+        Any error during the fallback itself returns None — the caller will
+        raise the original CLI error so debugging info isn't lost.
+        """
+        fallback_model = client_config.oauth_fallback_model
+        if not fallback_model:
+            return None
+        if not self._looks_like_oauth_failure(exc):
+            return None
+
+        # The fallback model needs an actual provider. If the user hasn't
+        # configured the relevant API key, surface the original CLI error.
+        from providers.registry import ModelProviderRegistry
+
+        if ModelProviderRegistry.get_provider_for_model(fallback_model) is None:
+            logger.info(
+                "clink %s: OAuth failure detected but fallback model %r has no configured provider; "
+                "returning original error.",
+                client_config.name,
+                fallback_model,
+            )
+            return None
+
+        await emit_progress(
+            f"clink/{client_config.name}: OAuth path failed ({type(exc).__name__}); "
+            f"falling back to paid API model {fallback_model}",
+            progress=0.0,
+        )
+        logger.warning(
+            "clink %s OAuth path failed (%s); falling back to %s via chat tool",
+            client_config.name,
+            exc,
+            fallback_model,
+        )
+
+        try:
+            from server import make_tool
+            from utils.model_context import ModelContext
+
+            chat = make_tool("chat")
+            model_context = ModelContext(fallback_model)
+            chat_args: dict[str, Any] = {
+                "prompt": prompt_text,
+                "model": fallback_model,
+                "absolute_file_paths": absolute_file_paths,
+                "images": images,
+                # Chat requires this for code-generation artifacts; pick the
+                # CLI's working_dir if set, else the repo root, else /tmp.
+                "working_directory_absolute_path": str(client_config.working_dir or Path.cwd() or "/tmp"),
+                "_model_context": model_context,
+                "_resolved_model_name": fallback_model,
+            }
+            result = await chat.execute(chat_args)
+        except Exception as fallback_exc:  # noqa: BLE001
+            logger.exception(
+                "clink %s OAuth fallback to %s also failed: %s",
+                client_config.name,
+                fallback_model,
+                fallback_exc,
+            )
+            await emit_progress(
+                f"clink/{client_config.name}: fallback to {fallback_model} also failed ({fallback_exc})",
+                progress=1.0,
+            )
+            return None
+
+        await emit_progress(
+            f"clink/{client_config.name}: ✓ recovered via {fallback_model}",
+            progress=1.0,
+        )
+        return result
 
     def _raise_tool_error(self, message: str, metadata: dict[str, Any] | None = None) -> None:
         error_output = ToolOutput(status="error", content=message, content_type="text", metadata=metadata)

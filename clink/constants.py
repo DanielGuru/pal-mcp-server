@@ -24,6 +24,12 @@ class CLIInternalDefaults:
     default_role_prompt: str | None = None
     timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS
     runner: str | None = None
+    # When the OAuth-backed CLI fails for a recoverable reason (quota
+    # exhaustion, auth lapse, etc.), the clink tool transparently retries the
+    # same prompt against this paid-API model via the chat tool. We always
+    # try the OAuth path first, so when the CLI's quota replenishes the next
+    # call goes back to the free path automatically.
+    oauth_fallback_model: str | None = None
 
 
 INTERNAL_DEFAULTS: dict[str, CLIInternalDefaults] = {
@@ -32,17 +38,21 @@ INTERNAL_DEFAULTS: dict[str, CLIInternalDefaults] = {
         additional_args=["-o", "stream-json"],
         default_role_prompt="systemprompts/clink/default.txt",
         runner="gemini",
+        oauth_fallback_model="gemini-3.1-pro-preview",
     ),
     "codex": CLIInternalDefaults(
         parser="codex_jsonl",
         additional_args=["exec"],
         default_role_prompt="systemprompts/clink/default.txt",
         runner="codex",
+        oauth_fallback_model="gpt-5.5",
     ),
     "claude": CLIInternalDefaults(
         parser="claude_json",
         additional_args=["--print", "--output-format", "json"],
         default_role_prompt="systemprompts/clink/default.txt",
         runner="claude",
+        # No Anthropic provider in this fork — claude OAuth has no API path.
+        oauth_fallback_model=None,
     ),
 }

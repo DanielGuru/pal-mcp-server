@@ -87,6 +87,10 @@ class ResolvedCLIClient(BaseModel):
     runner: str | None = None
     roles: dict[str, ResolvedCLIRole]
     output_to_file: OutputCaptureConfig | None = None
+    # Paid-API model used to satisfy the request when the OAuth-backed CLI
+    # fails for a recoverable reason (quota exhaustion, auth lapse). None
+    # disables the fallback for this CLI.
+    oauth_fallback_model: str | None = None
 
     def list_roles(self) -> list[str]:
         return list(self.roles.keys())
