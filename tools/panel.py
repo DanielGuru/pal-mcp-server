@@ -33,13 +33,17 @@ from utils.progress import emit_progress
 
 logger = logging.getLogger("pal.panel")
 
-# Names that route through clink (subprocess CLI, OAuth, free)
 DEFAULT_TIMEOUT_S = 600
 MAX_PANELISTS = 8
+MAX_DEBATE_ROUNDS = 3  # additional adversarial rounds after the initial parallel fan-out
 
 # Cap on per-panelist response text included in the judge prompt. Keeps the
 # judge's context bounded even if one panelist produces a wall of output.
 JUDGE_PER_PANELIST_CHAR_CAP = 8000
+# Cap on a peer's response shown to a panelist during adversarial rounds.
+# Smaller than the judge cap because each panelist sees N-1 peers; total
+# context grows N*(N-1).
+DEBATE_PER_PEER_CHAR_CAP = 4000
 
 
 def _is_clink_agent(name: str) -> bool:
@@ -200,6 +204,128 @@ def _panel_status(panelists_ok: int, panelists_total: int) -> str:
     return "completed"
 
 
+def _build_debate_prompt(
+    original_prompt: str,
+    self_label: str,
+    self_previous: str,
+    peers: list[dict[str, Any]],
+) -> str:
+    """Construct an adversarial round-N prompt for one panelist.
+
+    `peers` is a list of {label, response} for the OTHER panelists' last-round
+    output. This panelist's own previous response is shown separately so they
+    can revise it.
+    """
+    sections: list[str] = []
+    sections.append(
+        "You are a panelist in an adversarial multi-model debate. The other "
+        "panelists are independent AI models that answered the same question. "
+        "Your goal in this round: critique their positions, defend yours where "
+        "they disagree, concede where they convinced you, and produce a revised "
+        "answer. Be specific and concrete — reference the other panelists by "
+        "label when you respond to their points."
+    )
+    sections.append("\n=== ORIGINAL QUESTION ===\n" + original_prompt.strip())
+    if self_previous.strip():
+        sections.append(
+            f"\n=== YOUR PREVIOUS ANSWER (you are '{self_label}') ===\n"
+            + _truncate(self_previous.strip(), cap=JUDGE_PER_PANELIST_CHAR_CAP)
+        )
+    if peers:
+        for peer in peers:
+            sections.append(
+                f"\n=== PEER PANELIST: {peer['label']} ===\n"
+                + _truncate((peer.get("response") or "").strip(), cap=DEBATE_PER_PEER_CHAR_CAP)
+            )
+    else:
+        sections.append("\n=== PEER PANELISTS ===\n(no peer outputs available)")
+    sections.append(
+        "\n=== YOUR REVISED ANSWER ===\n"
+        "Write your updated position now. Lead with where you changed your mind "
+        "(if anywhere), then where you still disagree and why."
+    )
+    return "\n".join(sections)
+
+
+async def _run_debate_round(
+    *,
+    round_num: int,
+    panelists: list[dict[str, Any]],
+    last_round_results: list[dict[str, Any]],
+    original_prompt: str,
+    files: list[str],
+    images: list[str],
+    timeout: float,
+) -> list[dict[str, Any]]:
+    """Run a single adversarial round in parallel. Returns one outcome per panelist.
+
+    Only panelists that succeeded in the previous round participate; failures
+    propagate forward as failures (we don't ask a model to debate when it
+    couldn't answer the original question).
+    """
+    # Index last-round results by label for peer lookups.
+    by_label = {r["label"]: r for r in last_round_results}
+
+    async def _one(panelist: dict[str, Any]) -> dict[str, Any]:
+        label = panelist.get("label") or panelist.get("agent")
+        prior = by_label.get(label)
+        if prior is None or not prior.get("ok"):
+            # Carry forward failure verbatim.
+            return prior or {
+                "agent": panelist.get("agent"),
+                "label": label,
+                "ok": False,
+                "error": "no prior round result to carry forward",
+            }
+        peers = [
+            {"label": r["label"], "response": r.get("response", "")}
+            for r in last_round_results
+            if r["label"] != label and r.get("ok")
+        ]
+        debate_prompt = _build_debate_prompt(
+            original_prompt=original_prompt,
+            self_label=label,
+            self_previous=prior.get("response", ""),
+            peers=peers,
+        )
+        await emit_progress(f"panel/round-{round_num}: dispatching {label}", progress=0.0)
+        return await _run_panelist(
+            panelist,
+            prompt=debate_prompt,
+            files=files,
+            images=images,
+            timeout=timeout,
+        )
+
+    tasks = [asyncio.create_task(_one(p), name=f"debate-r{round_num}:{p.get('label')}") for p in panelists]
+    results: list[dict[str, Any]] = []
+    finished = 0
+    try:
+        for fut in asyncio.as_completed(tasks):
+            outcome = await fut
+            results.append(outcome)
+            finished += 1
+            tag = "✓" if outcome.get("ok") else "✗"
+            await emit_progress(
+                f"panel/round-{round_num}: {tag} {outcome.get('label')} ({finished}/{len(panelists)})",
+                progress=float(finished),
+                total=float(len(panelists)),
+            )
+    except asyncio.CancelledError:
+        for t in tasks:
+            if not t.done():
+                t.cancel()
+        raise
+
+    # Order results to match input panelist order so callers see consistent positions.
+    by_label_out = {r.get("label"): r for r in results}
+    ordered = []
+    for p in panelists:
+        lbl = p.get("label") or p.get("agent")
+        ordered.append(by_label_out.get(lbl) or {"agent": p.get("agent"), "label": lbl, "ok": False, "error": "missing result"})
+    return ordered
+
+
 # ---------------------------------------------------------------------------
 # Tool
 # ---------------------------------------------------------------------------
@@ -283,6 +409,17 @@ class PanelTool(BaseTool):
                     "maximum": 1800,
                     "description": "Per-panelist timeout in seconds (default 600).",
                 },
+                "debate_rounds": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": MAX_DEBATE_ROUNDS,
+                    "description": (
+                        "Number of additional adversarial rounds AFTER the initial parallel fan-out. "
+                        "0 = no debate (default). Each round: every panelist sees the others' "
+                        "previous responses and is asked to critique, defend, and revise. The "
+                        "judge synthesizes the FINAL round (with full history available)."
+                    ),
+                },
             },
             "required": ["prompt", "panelists"],
             "additionalProperties": False,
@@ -348,6 +485,13 @@ class PanelTool(BaseTool):
         if judge is not None and (not isinstance(judge, str) or not judge.strip()):
             return _err("'judge' must be a non-empty string when provided")
 
+        debate_rounds_raw = arguments.get("debate_rounds", 0)
+        if isinstance(debate_rounds_raw, bool) or not isinstance(debate_rounds_raw, int):
+            return _err("'debate_rounds' must be an integer")
+        if debate_rounds_raw < 0 or debate_rounds_raw > MAX_DEBATE_ROUNDS:
+            return _err(f"'debate_rounds' must be between 0 and {MAX_DEBATE_ROUNDS}")
+        debate_rounds = debate_rounds_raw
+
         # ----- fan out (streaming via as_completed) -----
         await emit_progress(
             f"panel: dispatching to {len(panelists)} panelists in parallel",
@@ -379,13 +523,54 @@ class PanelTool(BaseTool):
                 if not t.done():
                     t.cancel()
             raise
-        panel_duration = round(time.monotonic() - started, 2)
+        round1_duration = round(time.monotonic() - started, 2)
 
+        # Order round-1 results to match input panelist order for stable history.
+        by_label_r1 = {r.get("label"): r for r in panelist_results}
+        round1_ordered = []
+        for p in panelists:
+            lbl = p.get("label") or p.get("agent")
+            round1_ordered.append(by_label_r1.get(lbl) or {"agent": p.get("agent"), "label": lbl, "ok": False, "error": "missing"})
+
+        # ----- adversarial debate rounds -----
+        debate_history: list[dict[str, Any]] = [{"round": 1, "panelists": round1_ordered, "duration_s": round1_duration}]
+        last_round = round1_ordered
+
+        for r in range(2, 2 + debate_rounds):
+            ok_in_round = sum(1 for x in last_round if x.get("ok"))
+            if ok_in_round < 2:
+                # Need at least 2 successful peers for meaningful debate.
+                await emit_progress(
+                    f"panel: skipping round {r} — only {ok_in_round} successful panelist(s)",
+                    progress=float(len(panelists)),
+                )
+                break
+            await emit_progress(f"panel: starting adversarial round {r}/{1 + debate_rounds}", progress=0.0)
+            round_started = time.monotonic()
+            this_round = await _run_debate_round(
+                round_num=r,
+                panelists=panelists,
+                last_round_results=last_round,
+                original_prompt=prompt,
+                files=files,
+                images=images,
+                timeout=timeout,
+            )
+            debate_history.append({
+                "round": r,
+                "panelists": this_round,
+                "duration_s": round(time.monotonic() - round_started, 2),
+            })
+            last_round = this_round
+
+        # Use the FINAL round's results as the canonical panelist outputs.
+        panelist_results = last_round
+        panel_duration = round(time.monotonic() - started, 2)
         ok_count = sum(1 for r in panelist_results if r.get("ok"))
         panel_status = _panel_status(ok_count, len(panelist_results))
 
         await emit_progress(
-            f"panel: {ok_count}/{len(panelist_results)} succeeded ({panel_status}) in {panel_duration}s",
+            f"panel: {ok_count}/{len(panelist_results)} succeeded ({panel_status}) over {len(debate_history)} round(s) in {panel_duration}s",
             progress=float(len(panelists)),
             total=float(len(panelists) + (1 if judge else 0)),
         )
@@ -426,9 +611,11 @@ class PanelTool(BaseTool):
                     {
                         "status": panel_status,
                         "panel_duration_s": panel_duration,
+                        "rounds_run": len(debate_history),
                         "panelists_ok": ok_count,
                         "panelists_total": len(panelist_results),
                         "panelists": panelist_results,
+                        "debate_history": debate_history if len(debate_history) > 1 else None,
                         "judge": judge_result,
                     },
                     indent=2,
