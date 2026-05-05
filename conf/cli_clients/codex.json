@@ -2,7 +2,8 @@
   "name": "codex",
   "command": "codex",
   "additional_args": [
-    "--json"
+    "--json",
+    "--skip-git-repo-check"
   ],
   "env": {},
   "roles": {
