@@ -2,8 +2,10 @@
 
 import asyncio
 import logging
+import os
 import time
 from abc import ABC, abstractmethod
+from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, Any, Callable, Optional
 
 if TYPE_CHECKING:
@@ -12,6 +14,58 @@ if TYPE_CHECKING:
 from .shared import ModelCapabilities, ModelResponse, ProviderType
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Concurrency & resource bounds for direct-API calls.
+#
+# Why this exists: agenerate_content runs the sync provider SDK on a worker
+# thread via asyncio.to_thread. asyncio cannot cancel a running thread —
+# stdlib limitation. So if a request hangs (network glitch, provider stall)
+# the thread keeps running until the SDK call returns or the process exits.
+# Pre-bound, repeated cancels could exhaust the default executor and burn
+# arbitrary money on stuck calls.
+#
+# Three layers of defence, from outermost to innermost:
+#   1. _API_SEMAPHORE caps concurrent paid API calls. Defaults to 16; tune
+#      via PAL_MAX_CONCURRENT_API. Acquired *before* the to_thread dispatch.
+#   2. _PROVIDER_EXECUTOR caps the worker-thread pool. Even if the
+#      semaphore were lifted, threads can't grow past this. Defaults to 32;
+#      tune via PAL_MAX_PROVIDER_THREADS.
+#   3. PAL_API_TIMEOUT_S (default 600) is forwarded to SDK clients so the
+#      thread always self-terminates within bound — see openai_compatible.py.
+#
+# Lazy-init on first use so unit tests that don't import asyncio still work.
+# ---------------------------------------------------------------------------
+
+_PROVIDER_EXECUTOR: Optional[ThreadPoolExecutor] = None
+_API_SEMAPHORE: Optional[asyncio.Semaphore] = None
+
+
+def _get_provider_executor() -> ThreadPoolExecutor:
+    global _PROVIDER_EXECUTOR
+    if _PROVIDER_EXECUTOR is None:
+        max_workers = int(os.environ.get("PAL_MAX_PROVIDER_THREADS", "32"))
+        _PROVIDER_EXECUTOR = ThreadPoolExecutor(
+            max_workers=max_workers,
+            thread_name_prefix="pal-provider",
+        )
+        logger.info("Provider thread pool initialised: max_workers=%s", max_workers)
+    return _PROVIDER_EXECUTOR
+
+
+def _get_api_semaphore() -> asyncio.Semaphore:
+    global _API_SEMAPHORE
+    if _API_SEMAPHORE is None:
+        cap = int(os.environ.get("PAL_MAX_CONCURRENT_API", "16"))
+        _API_SEMAPHORE = asyncio.Semaphore(cap)
+        logger.info("Provider API semaphore initialised: cap=%s", cap)
+    return _API_SEMAPHORE
+
+
+def get_default_api_timeout() -> float:
+    """Per-call SDK timeout, in seconds. Bounds the worker-thread lifetime."""
+    return float(os.environ.get("PAL_API_TIMEOUT_S", "600"))
 
 
 class ModelProvider(ABC):
@@ -215,15 +269,24 @@ class ModelProvider(ABC):
         incremental MCP progress notifications) would also unlock per-token UI
         for direct-API panelists. That's a larger refactor; tracked separately.
         """
-        return await asyncio.to_thread(
-            self.generate_content,
-            prompt,
-            model_name,
-            system_prompt,
-            temperature,
-            max_output_tokens,
-            **kwargs,
-        )
+        sem = _get_api_semaphore()
+        executor = _get_provider_executor()
+        loop = asyncio.get_running_loop()
+
+        async with sem:
+            # Use the bounded executor instead of asyncio's default unbounded
+            # one, so a stuck thread can't grow the pool without limit.
+            return await loop.run_in_executor(
+                executor,
+                lambda: self.generate_content(
+                    prompt,
+                    model_name,
+                    system_prompt,
+                    temperature,
+                    max_output_tokens,
+                    **kwargs,
+                ),
+            )
 
     def count_tokens(self, text: str, model_name: str) -> int:
         """Estimate token usage for a piece of text."""

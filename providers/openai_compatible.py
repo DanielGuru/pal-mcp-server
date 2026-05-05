@@ -417,10 +417,16 @@ class OpenAICompatibleProvider(ModelProvider):
         if capabilities and capabilities.default_reasoning_effort:
             effort = capabilities.default_reasoning_effort
 
+        # Per-call SDK timeout bounds the worker-thread lifetime — asyncio
+        # cannot cancel an in-flight to_thread call, so we lean on the SDK
+        # to terminate stuck requests. Tuned via PAL_API_TIMEOUT_S.
+        from providers.base import get_default_api_timeout
+
         completion_params = {
             "model": model_name,
             "input": input_messages,
             "reasoning": {"effort": effort},
+            "timeout": get_default_api_timeout(),
         }
 
         # Only include store parameter for providers that support it.
@@ -583,10 +589,15 @@ class OpenAICompatibleProvider(ModelProvider):
         # Prepare completion parameters
         # Always disable streaming for OpenRouter
         # MCP doesn't use streaming, and this avoids issues with O3 model access
+        # Per-call SDK timeout bounds the worker-thread lifetime — see
+        # providers/base.py docstring on _PROVIDER_EXECUTOR for the rationale.
+        from providers.base import get_default_api_timeout
+
         completion_params = {
             "model": resolved_model,
             "messages": messages,
             "stream": False,
+            "timeout": get_default_api_timeout(),
         }
 
         # Use the effective temperature we calculated earlier
