@@ -247,7 +247,6 @@ class CLinkTool(SimpleTool):
                 exc=exc,
                 client_config=client_config,
                 prompt_text=prompt_text,
-                absolute_file_paths=absolute_file_paths,
                 images=images,
             )
             if fallback is not None:
@@ -486,26 +485,32 @@ class CLinkTool(SimpleTool):
         exc: CLIAgentError,
         client_config: ResolvedCLIClient,
         prompt_text: str,
-        absolute_file_paths: list[str],
         images: list[str],
     ) -> list[TextContent] | None:
         """Retry a recoverable CLI failure against the configured paid-API model.
 
-        Returns the chat tool's TextContent response on success, or None when
-        no fallback is configured / available / the failure isn't recoverable.
-        Any error during the fallback itself returns None — the caller will
-        raise the original CLI error so debugging info isn't lost.
+        Returns the chat tool's TextContent response on success, with
+        ``oauth_fallback_used`` markers injected into the response metadata so
+        callers (panel, the user) know the call was billed. Returns None when:
+          - no fallback is configured for this CLI, or
+          - the failure isn't an OAuth-side failure, or
+          - the fallback model has no configured provider.
+
+        Raises ToolExecutionError when the fallback itself fails — the
+        original behaviour of silently returning None hid broken fallback
+        config (stale API key, etc.) behind the original CLI quota error
+        forever (panel audit finding).
+
+        File handling: clink already inlined absolute_file_paths into
+        ``prompt_text`` during prompt prep. We deliberately pass an empty
+        files list to chat to avoid double-inclusion (was a real bug in the
+        first F1 cut).
         """
         fallback_model = client_config.oauth_fallback_model
-        if not fallback_model:
-            return None
-        if not self._looks_like_oauth_failure(exc):
+        if not fallback_model or not self._looks_like_oauth_failure(exc):
             return None
 
-        # The fallback model needs an actual provider. If the user hasn't
-        # configured the relevant API key, surface the original CLI error.
         from providers.registry import ModelProviderRegistry
-
         if ModelProviderRegistry.get_provider_for_model(fallback_model) is None:
             logger.info(
                 "clink %s: OAuth failure detected but fallback model %r has no configured provider; "
@@ -527,41 +532,89 @@ class CLinkTool(SimpleTool):
             fallback_model,
         )
 
-        try:
-            from server import make_tool
-            from utils.model_context import ModelContext
+        from server import execute_tool
 
-            chat = make_tool("chat")
-            model_context = ModelContext(fallback_model)
-            chat_args: dict[str, Any] = {
-                "prompt": prompt_text,
-                "model": fallback_model,
-                "absolute_file_paths": absolute_file_paths,
-                "images": images,
-                # Chat requires this for code-generation artifacts; pick the
-                # CLI's working_dir if set, else the repo root, else /tmp.
-                "working_directory_absolute_path": str(client_config.working_dir or Path.cwd() or "/tmp"),
-                "_model_context": model_context,
-                "_resolved_model_name": fallback_model,
-            }
-            result = await chat.execute(chat_args)
+        chat_args: dict[str, Any] = {
+            "prompt": prompt_text,
+            "model": fallback_model,
+            # Empty — files are already in prompt_text. Passing them again
+            # would double-include their content in the chat request.
+            "absolute_file_paths": [],
+            "images": images,
+            "working_directory_absolute_path": str(client_config.working_dir or Path.cwd() or "/tmp"),
+        }
+        try:
+            result = await execute_tool("chat", chat_args)
         except Exception as fallback_exc:  # noqa: BLE001
             logger.exception(
-                "clink %s OAuth fallback to %s also failed: %s",
+                "clink %s OAuth fallback to %s also failed",
                 client_config.name,
                 fallback_model,
-                fallback_exc,
             )
             await emit_progress(
                 f"clink/{client_config.name}: fallback to {fallback_model} also failed ({fallback_exc})",
                 progress=1.0,
             )
-            return None
+            self._raise_tool_error(
+                f"CLI '{client_config.name}' failed AND OAuth fallback to {fallback_model} also failed: "
+                f"original={type(exc).__name__}: {exc}; fallback={type(fallback_exc).__name__}: {fallback_exc}",
+                metadata={
+                    "cli_name": client_config.name,
+                    "oauth_fallback_attempted": True,
+                    "oauth_fallback_model": fallback_model,
+                    "fallback_failure": f"{type(fallback_exc).__name__}: {fallback_exc}",
+                },
+            )
+
+        # Inject fallback markers so the panel cost_tier and any caller can
+        # see this run was billed despite the user asking for a free CLI.
+        result = self._mark_fallback_in_result(
+            result,
+            cli_name=client_config.name,
+            fallback_model=fallback_model,
+            original_failure=f"{type(exc).__name__}: {exc}",
+        )
 
         await emit_progress(
             f"clink/{client_config.name}: ✓ recovered via {fallback_model}",
             progress=1.0,
         )
+        return result
+
+    @staticmethod
+    def _mark_fallback_in_result(
+        result: list[TextContent],
+        *,
+        cli_name: str,
+        fallback_model: str,
+        original_failure: str,
+    ) -> list[TextContent]:
+        """Stamp oauth_fallback_used markers onto a chat tool's TextContent payload.
+
+        We rewrap the JSON body so the panel and downstream callers can
+        determine the real cost tier. Best-effort — if the body isn't JSON
+        we leave it alone rather than corrupt the response.
+        """
+        import json
+        if not result:
+            return result
+        first = result[0]
+        text = getattr(first, "text", None)
+        if not text:
+            return result
+        try:
+            payload = json.loads(text)
+        except Exception:  # noqa: BLE001
+            return result
+        if isinstance(payload, dict):
+            metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+            metadata["oauth_fallback_used"] = True
+            metadata["oauth_fallback_from_cli"] = cli_name
+            metadata["oauth_fallback_model"] = fallback_model
+            metadata["oauth_fallback_original_failure"] = original_failure
+            payload["metadata"] = metadata
+            new_text = json.dumps(payload)
+            return [TextContent(type="text", text=new_text)] + list(result[1:])
         return result
 
     def _raise_tool_error(self, message: str, metadata: dict[str, Any] | None = None) -> None:

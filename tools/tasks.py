@@ -343,14 +343,16 @@ class TaskManager:
         )
 
         try:
-            from server import make_tool
+            # Route through the central dispatcher — model resolution + file
+            # size validation MUST run for background-task launches too,
+            # otherwise start_task is a quiet way to bypass MCP-boundary
+            # checks (the audit's #1 finding).
+            from server import execute_tool
 
             try:
-                tool = make_tool(record.tool_name)
+                result = await execute_tool(record.tool_name, record.arguments)
             except KeyError:
                 raise ValueError(f"Unknown tool: {record.tool_name!r}")
-
-            result = await tool.execute(record.arguments)
             record.result_text = [
                 getattr(item, "text", str(item)) for item in (result or [])
             ]

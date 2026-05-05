@@ -62,18 +62,24 @@ def _is_clink_agent(name: str) -> bool:
         return name.lower() in {"codex", "gemini", "claude"}
 
 
-def _fresh_tool(tool_name: str):
-    """Return a fresh per-call tool instance via the server's factory registry.
+def _derive_cost_tier(initial_tier: str, response_text: str) -> str:
+    """Determine the actual cost tier from the panelist's response metadata.
 
-    server.TOOLS is now a dict of classes; calling make_tool() produces a new
-    instance per request, which keeps concurrent panelists from clobbering each
-    other's `_current_arguments` / `_current_model_name` / `_model_context`.
+    The dispatch-time tier is a guess based on the requested agent:
+      - clink-routed agents (codex, gemini): 'oauth_free'
+      - direct-API agents (grok, gpt-5.5):   'api_paid'
+
+    But clink can transparently fall back to the paid API when OAuth fails
+    (TerminalQuotaError, 401, etc. — see tools/clink.py F1 fallback). When
+    that happens, the response metadata carries oauth_fallback_used=true.
+    Reading that here is the only way the panel result can honestly report
+    what was actually billed.
     """
-    from server import make_tool
-    try:
-        return make_tool(tool_name)
-    except KeyError as exc:
-        raise RuntimeError(f"tool {tool_name!r} not registered") from exc
+    if initial_tier != "oauth_free":
+        return initial_tier
+    if "\"oauth_fallback_used\": true" in response_text or "'oauth_fallback_used': True" in response_text:
+        return "oauth_fallback_paid"
+    return initial_tier
 
 
 def _normalize_panelist(entry: Any) -> dict[str, Any]:
@@ -110,8 +116,13 @@ async def _run_panelist(
     await emit_progress(f"panel/{label}: dispatching", progress=0.0)
 
     try:
+        # Dispatch through server.execute_tool so panelists get the same
+        # validation as MCP-boundary calls (model resolution, file-size cap).
+        # Pre-fix, panel was a quiet way to bypass MCP-boundary validation.
+        from server import execute_tool
+
         if is_clink:
-            tool = _fresh_tool("clink")  # per-call instance: parallel-safe
+            tool_name = "clink"
             args = {
                 "prompt": prompt,
                 "cli_name": agent,
@@ -119,9 +130,9 @@ async def _run_panelist(
                 "absolute_file_paths": files,
                 "images": images,
             }
-            cost_tier = "oauth_free"
+            initial_tier = "oauth_free"
         else:
-            tool = _fresh_tool("chat")  # per-call instance: parallel-safe
+            tool_name = "chat"
             args = {
                 "prompt": prompt,
                 "model": agent,
@@ -129,13 +140,17 @@ async def _run_panelist(
                 "images": images,
                 "working_directory_absolute_path": panelist.get("working_directory_absolute_path") or "/tmp",
             }
-            cost_tier = "api_paid"
+            initial_tier = "api_paid"
 
-        result = await asyncio.wait_for(tool.execute(args), timeout=timeout)
+        result = await asyncio.wait_for(execute_tool(tool_name, args), timeout=timeout)
         duration = round(time.monotonic() - started, 2)
         # tool.execute returns list[TextContent]; concatenate text
         text_parts = [getattr(item, "text", str(item)) for item in (result or [])]
-        await emit_progress(f"panel/{label}: ✓ done ({duration}s)", progress=1.0)
+        response_text = "\n".join(text_parts)
+        # cost_tier derived from response metadata so OAuth→API fallback is
+        # honestly reported (otherwise paid runs are mislabelled 'oauth_free').
+        cost_tier = _derive_cost_tier(initial_tier, response_text)
+        await emit_progress(f"panel/{label}: ✓ done ({duration}s, {cost_tier})", progress=1.0)
         return {
             "agent": agent,
             "label": label,
@@ -143,7 +158,7 @@ async def _run_panelist(
             "ok": True,
             "cost_tier": cost_tier,
             "duration_s": duration,
-            "response": "\n".join(text_parts),
+            "response": response_text,
         }
     except asyncio.TimeoutError:
         duration = round(time.monotonic() - started, 2)

@@ -820,57 +820,64 @@ async def handle_call_tool(name: str, arguments: dict[str, Any]) -> list[TextCon
         if "_remaining_tokens" in arguments:
             logger.debug(f"[CONVERSATION_DEBUG] Remaining token budget: {arguments['_remaining_tokens']:,}")
 
-    # Route to AI-powered tools that require Gemini API calls
-    if name in TOOLS:
-        logger.info(f"Executing tool '{name}' with {len(arguments)} parameter(s)")
-        # Fresh instance per request — tools mutate state on self during execute().
-        tool = make_tool(name)
+    if name not in TOOLS:
+        return [TextContent(type="text", text=f"Unknown tool: {name}")]
 
-        # EARLY MODEL RESOLUTION AT MCP BOUNDARY
-        # Resolve model before passing to tool - this ensures consistent model handling
-        # NOTE: Consensus tool is exempt as it handles multiple models internally
-        from providers.registry import ModelProviderRegistry
-        from utils.file_utils import check_total_file_size
-        from utils.model_context import ModelContext
+    return await execute_tool(name, arguments)
 
-        # Get model from arguments or use default
+
+async def execute_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
+    """Centralized tool dispatch with model resolution + file-size validation.
+
+    THE ONLY EXECUTION ENTRYPOINT. Every caller — the MCP boundary
+    (handle_call_tool), background tasks (TaskManager._run), panel fan-out
+    (panel._run_panelist), clink OAuth fallback — MUST go through this
+    function instead of calling tool.execute() directly.
+
+    Why centralized: validation and model resolution used to live only at the
+    MCP boundary. Internal callers bypassed it, so a 50MB file attached to a
+    panel call could blow past the file-size cap and hit the paid API. The
+    panel audit (codex+gemini+grok+gpt-5.5) flagged this as the highest-
+    leverage fix.
+
+    Side effects: mutates ``arguments`` to inject ``_model_context`` and
+    ``_resolved_model_name`` (matches existing tool expectations).
+    """
+    if name not in TOOLS:
+        raise KeyError(f"Unknown tool: {name!r}")
+
+    logger.info(f"Executing tool '{name}' with {len(arguments)} parameter(s)")
+    # Fresh instance per request — tools mutate state on self during execute().
+    tool = make_tool(name)
+
+    from providers.registry import ModelProviderRegistry
+    from utils.file_utils import check_total_file_size
+    from utils.model_context import ModelContext
+
+    # Tools that don't require a model (planner, panel, task tools, clink) skip
+    # model resolution but still get file-size validated below.
+    requires_model = tool.requires_model()
+
+    if requires_model:
+        # Model resolution: explicit > default. Then parse model:option suffix.
         model_name = arguments.get("model") or DEFAULT_MODEL
-        logger.debug(f"Initial model for {name}: {model_name}")
-
-        # Parse model:option format if present
         model_name, model_option = parse_model_option(model_name)
         if model_option:
             logger.info(f"Parsed model format - model: '{model_name}', option: '{model_option}'")
-        else:
-            logger.info(f"Parsed model format - model: '{model_name}'")
 
-        # Consensus tool handles its own model configuration validation
-        # No special handling needed at server level
-
-        # Skip model resolution for tools that don't require models (e.g., planner)
-        if not tool.requires_model():
-            logger.debug(f"Tool {name} doesn't require model resolution - skipping model validation")
-            # Execute tool directly without model context
-            return await tool.execute(arguments)
-
-        # Handle auto mode at MCP boundary - resolve to specific model
+        # Auto-mode resolves to a concrete model from the tool's category.
         if model_name.lower() == "auto":
-            # Get tool category to determine appropriate model
             tool_category = tool.get_model_category()
             resolved_model = ModelProviderRegistry.get_preferred_fallback_model(tool_category)
             logger.info(f"Auto mode resolved to {resolved_model} for {name} (category: {tool_category.value})")
             model_name = resolved_model
-            # Update arguments with resolved model
             arguments["model"] = model_name
 
-        # Validate model availability at MCP boundary
         provider = ModelProviderRegistry.get_provider_for_model(model_name)
         if not provider:
-            # Get list of available models for error message
             available_models = list(ModelProviderRegistry.get_available_models(respect_restrictions=True).keys())
             tool_category = tool.get_model_category()
             suggested_model = ModelProviderRegistry.get_preferred_fallback_model(tool_category)
-
             error_message = (
                 f"Model '{model_name}' is not available with current API keys. "
                 f"Available models: {', '.join(available_models)}. "
@@ -885,41 +892,33 @@ async def handle_call_tool(name: str, arguments: dict[str, Any]) -> list[TextCon
             )
             raise ToolExecutionError(error_output.model_dump_json())
 
-        # Create model context with resolved model and option
-        model_context = ModelContext(model_name, model_option)
+        # Reuse a caller-supplied ModelContext if present (clink fallback builds
+        # one before dispatch). Otherwise build fresh from resolved name.
+        model_context = arguments.get("_model_context") or ModelContext(model_name, model_option)
         arguments["_model_context"] = model_context
         arguments["_resolved_model_name"] = model_name
-        logger.debug(
-            f"Model context created for {model_name} with {model_context.capabilities.context_window} token capacity"
-        )
-        if model_option:
-            logger.debug(f"Model option stored in context: '{model_option}'")
 
-        # EARLY FILE SIZE VALIDATION AT MCP BOUNDARY
-        # Check file sizes before tool execution using resolved model
-        argument_files = arguments.get("absolute_file_paths")
-        if argument_files:
-            logger.debug(f"Checking file sizes for {len(argument_files)} files with model {model_name}")
-            file_size_check = check_total_file_size(argument_files, model_name)
-            if file_size_check:
-                logger.warning(f"File size check failed for {name} with model {model_name}")
-                raise ToolExecutionError(ToolOutput(**file_size_check).model_dump_json())
+    # File-size validation runs for ALL tools, not just model-aware ones.
+    # The model_name used for the cap is either the resolved one (model-aware
+    # tools) or DEFAULT_MODEL (clink/panel/etc — used purely as a sizing
+    # heuristic, never sent to a provider).
+    argument_files = arguments.get("absolute_file_paths")
+    if argument_files:
+        size_model = arguments.get("_resolved_model_name") or DEFAULT_MODEL
+        logger.debug(f"Checking file sizes for {len(argument_files)} files (cap from model {size_model})")
+        file_size_check = check_total_file_size(argument_files, size_model)
+        if file_size_check:
+            logger.warning(f"File size check failed for {name}")
+            raise ToolExecutionError(ToolOutput(**file_size_check).model_dump_json())
 
-        # Execute tool with pre-resolved model context
-        result = await tool.execute(arguments)
-        logger.info(f"Tool '{name}' execution completed")
-
-        # Log completion to activity file
-        try:
-            mcp_activity_logger = logging.getLogger("mcp_activity")
-            mcp_activity_logger.info(f"TOOL_COMPLETED: {name}")
-        except Exception:
-            pass
-        return result
-
-    # Handle unknown tool requests gracefully
-    else:
-        return [TextContent(type="text", text=f"Unknown tool: {name}")]
+    result = await tool.execute(arguments)
+    logger.info(f"Tool '{name}' execution completed")
+    try:
+        mcp_activity_logger = logging.getLogger("mcp_activity")
+        mcp_activity_logger.info(f"TOOL_COMPLETED: {name}")
+    except Exception:
+        pass
+    return result
 
 
 def parse_model_option(model_string: str) -> tuple[str, Optional[str]]:
