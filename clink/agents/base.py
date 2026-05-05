@@ -16,6 +16,7 @@ from pathlib import Path
 from clink.constants import DEFAULT_STREAM_LIMIT
 from clink.models import ResolvedCLIClient, ResolvedCLIRole
 from clink.parsers import BaseParser, ParsedCLIResponse, ParserError, get_parser
+from utils.progress import emit_progress
 
 logger = logging.getLogger("clink.agent")
 
@@ -120,14 +121,66 @@ class BaseCLIAgent:
         except FileNotFoundError as exc:
             raise CLIAgentError(f"Executable not found for CLI '{self.client.name}': {exc}") from exc
 
+        await emit_progress(f"{self.client.name}: spawned subprocess", progress=0.0)
+
+        # Concurrently: feed prompt to stdin, drain stdout line-by-line (emitting
+        # progress notifications via the parser's describe_event hook), drain stderr.
+        async def _write_stdin() -> None:
+            if process.stdin is None:
+                return
+            try:
+                process.stdin.write(prompt.encode("utf-8"))
+                await process.stdin.drain()
+            finally:
+                try:
+                    process.stdin.close()
+                except Exception:  # noqa: BLE001 - best effort
+                    pass
+
+        stdout_chunks: list[bytes] = []
+        stderr_chunks: list[bytes] = []
+
+        async def _drain(stream: asyncio.StreamReader, sink: list[bytes], emit: bool) -> None:
+            step = 0
+            while True:
+                try:
+                    line = await stream.readline()
+                except (asyncio.LimitOverrunError, ValueError):
+                    # Line longer than limit; fall back to a chunk read.
+                    line = await stream.read(limit)
+                if not line:
+                    break
+                sink.append(line)
+                if emit:
+                    text = line.decode("utf-8", errors="replace")
+                    msg = self._parser.describe_event(text)
+                    if msg:
+                        step += 1
+                        # Best-effort; never let progress emission interrupt drain.
+                        try:
+                            await emit_progress(msg, progress=float(step))
+                        except Exception:  # noqa: BLE001
+                            pass
+
         try:
-            stdout_bytes, stderr_bytes = await asyncio.wait_for(
-                process.communicate(prompt.encode("utf-8")),
+            await asyncio.wait_for(
+                asyncio.gather(
+                    _write_stdin(),
+                    _drain(process.stdout, stdout_chunks, emit=True),
+                    _drain(process.stderr, stderr_chunks, emit=False),
+                    process.wait(),
+                ),
                 timeout=self.client.timeout_seconds,
             )
         except asyncio.TimeoutError as exc:
-            process.kill()
-            await process.communicate()
+            try:
+                process.kill()
+            except ProcessLookupError:
+                pass
+            try:
+                await process.wait()
+            except Exception:  # noqa: BLE001
+                pass
             raise CLIAgentError(
                 f"CLI '{self.client.name}' timed out after {self.client.timeout_seconds} seconds",
                 returncode=None,
@@ -135,8 +188,12 @@ class BaseCLIAgent:
 
         duration = time.monotonic() - start_time
         return_code = process.returncode
-        stdout_text = stdout_bytes.decode("utf-8", errors="replace")
-        stderr_text = stderr_bytes.decode("utf-8", errors="replace")
+        stdout_text = b"".join(stdout_chunks).decode("utf-8", errors="replace")
+        stderr_text = b"".join(stderr_chunks).decode("utf-8", errors="replace")
+        await emit_progress(
+            f"{self.client.name}: complete ({duration:.1f}s, rc={return_code})",
+            progress=999.0,
+        )
 
         if output_file_path and output_file_path.exists():
             output_file_content = output_file_path.read_text(encoding="utf-8", errors="replace")

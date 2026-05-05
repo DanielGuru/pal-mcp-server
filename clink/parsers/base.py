@@ -25,3 +25,15 @@ class BaseParser:
 
     def parse(self, stdout: str, stderr: str) -> ParsedCLIResponse:
         raise NotImplementedError("Parsers must implement parse()")
+
+    def describe_event(self, raw_line: str) -> str | None:
+        """Optional hook: convert one raw stdout line into a progress message.
+
+        Called per stdout line during streaming execution. Return a short human
+        status string (e.g. "thinking…", "calling tool: shell") to surface as
+        an MCP progress notification, or None to suppress this line.
+
+        Default: no progress events.
+        """
+        _ = raw_line
+        return None
