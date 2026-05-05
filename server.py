@@ -1484,15 +1484,25 @@ async def main():
     logger.info("Server ready - waiting for tool requests...")
 
     # Prepare dynamic instructions for the MCP client based on model mode
+    cost_routing = (
+        " Cost routing: when the user asks for codex or gemini (without naming a specific paid model), "
+        "prefer the `clink` tool — it spawns the local CLI which uses OAuth (free via ChatGPT/Google "
+        "subscription). The `chat`/`consensus`/`codereview`/`debug`/`thinkdeep` tools call provider "
+        "APIs directly (paid per token). For grok or when the user names a specific paid model string "
+        "(gpt-5.5, gemini-3.1-pro-preview, grok-4.3, etc.), `chat`/`consensus` is the only path."
+    )
+
     if IS_AUTO_MODE:
         handshake_instructions = (
             "When the user names a specific model (e.g. 'use chat with gpt5'), send that exact model in the tool call. "
             "When no model is mentioned, first use the `listmodels` tool from PAL to obtain available models to choose the best one from."
+            + cost_routing
         )
     else:
         handshake_instructions = (
             "When the user names a specific model (e.g. 'use chat with gpt5'), send that exact model in the tool call. "
             f"When no model is mentioned, default to '{DEFAULT_MODEL}'."
+            + cost_routing
         )
 
     # Run the server using stdio transport (standard input/output)
