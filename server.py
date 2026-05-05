@@ -278,6 +278,21 @@ TOOLS = {
     "listmodels": ListModelsTool(),  # List all available AI models by provider
     "version": VersionTool(),  # Display server version and system information
 }
+
+# Async/background task tools — wrap any of the above so the conversation isn't
+# blocked while a long call (audit, multi-model consensus) runs.
+from tools.tasks import (  # noqa: E402
+    CancelTaskTool,
+    StartTaskTool,
+    TaskResultTool,
+    TaskStatusTool,
+)
+
+TOOLS["start_task"] = StartTaskTool()
+TOOLS["task_status"] = TaskStatusTool()
+TOOLS["task_result"] = TaskResultTool()
+TOOLS["cancel_task"] = CancelTaskTool()
+
 TOOLS = filter_disabled_tools(TOOLS)
 
 # Rich prompt templates for all tools
@@ -1491,18 +1506,29 @@ async def main():
         "APIs directly (paid per token). For grok or when the user names a specific paid model string "
         "(gpt-5.5, gemini-3.1-pro-preview, grok-4.3, etc.), `chat`/`consensus` is the only path."
     )
+    async_routing = (
+        " Async routing: any tool call that is likely to take >15s (whole-repo audits, multi-model "
+        "consensus, large code reviews, deep debugging, parallel panels) MUST be wrapped via "
+        "`start_task` so the conversation is not blocked. Pattern: call `start_task` with `tool` and "
+        "`arguments`, get a task_id back instantly, continue interacting with the user, then poll "
+        "`task_status` or fetch via `task_result(task_id, wait_seconds=N)` when ready. Short calls "
+        "(`chat` for a quick question, `listmodels`, `version`, simple `clink` chats) can stay "
+        "synchronous. Use `cancel_task` to stop a runaway task."
+    )
 
     if IS_AUTO_MODE:
         handshake_instructions = (
             "When the user names a specific model (e.g. 'use chat with gpt5'), send that exact model in the tool call. "
             "When no model is mentioned, first use the `listmodels` tool from PAL to obtain available models to choose the best one from."
             + cost_routing
+            + async_routing
         )
     else:
         handshake_instructions = (
             "When the user names a specific model (e.g. 'use chat with gpt5'), send that exact model in the tool call. "
             f"When no model is mentioned, default to '{DEFAULT_MODEL}'."
             + cost_routing
+            + async_routing
         )
 
     # Run the server using stdio transport (standard input/output)
