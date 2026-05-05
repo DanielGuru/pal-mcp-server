@@ -1,320 +1,185 @@
-# Claude Development Guide for PAL MCP Server
+# CLAUDE.md — PAL MCP Server (custom fork)
 
-This file contains essential commands and workflows for developing and maintaining the PAL MCP Server when working with Claude. Use these instructions to efficiently run quality checks, manage the server, check logs, and run tests.
+This is a customized fork of `BeehiveInnovations/pal-mcp-server` maintained at `github.com/DanielGuru/pal-mcp-server`. Upstream stalled in December 2025; this fork ships ongoing fixes plus new orchestration features (background tasks, parallel panels, adversarial debate, observable streaming, push notifications) that don't exist upstream. **Do not assume parity with upstream PAL** — read this doc, not the upstream README.
 
-## Quick Reference Commands
+If you are an AI agent working on this fork: this file is for you. Read it once before editing.
 
-### Code Quality Checks
+---
 
-Before making any changes or submitting PRs, always run the comprehensive quality checks:
+## What this is
+
+A Model Context Protocol (MCP) server that lets one AI agent (typically Claude Code) consult, orchestrate, and debate multiple other models. It exposes ~23 MCP tools that fall into four families:
+
+1. **Direct provider tools** — `chat`, `consensus`, `codereview`, `debug`, `thinkdeep`, `precommit`, `planner`, etc. Call OpenAI / Gemini / xAI APIs via paid keys. Implemented in `tools/*.py`, `tools/simple/base.py`, `tools/workflow/`.
+2. **Clink** — `clink` runs an external CLI (Codex CLI, Gemini CLI, Claude CLI) as a subprocess and returns its output. Uses each CLI's own auth, which means **OAuth (free)** when the CLI is logged in via subscription. Implemented in `tools/clink.py` + `clink/agents/*.py` + `clink/parsers/*.py`.
+3. **Async background tasks** — `start_task`, `task_status`, `task_result`, `cancel_task`. Wrap any other tool so the conversation isn't blocked while it runs. Implemented in `tools/tasks.py`. Includes admission control, periodic GC, session ownership, push completion notifications.
+4. **Panel orchestration** — `panel` fans one prompt to N models in parallel, optionally with a judge synthesizing. Adversarial mode (`debate_rounds`) lets panelists critique and revise after seeing peers. Implemented in `tools/panel.py`.
+
+---
+
+## How this fork differs from upstream PAL
+
+- **Trimmed model registry** to current flagships (gpt-5.5, gpt-5.4, gpt-5.1-codex, gemini-3.1-pro-preview, grok-4.3, grok-4.1-fast). Upstream has stale entries including the dead `gemini-3-pro-preview` (Google shut it down 2026-03-09).
+- **Cherry-picked unmerged upstream PRs** for model registry updates and fixes.
+- **Safer clink defaults** — removed `--dangerously-bypass-approvals-and-sandbox` (codex) and `--yolo` (gemini) so subprocesses can't silently mutate the filesystem; replaced with `--skip-git-repo-check` (codex) and `-p` argv passing (gemini stream-json) which are not security-relaxing flags.
+- **Streaming progress notifications** for clink subprocesses (`utils/progress.py` + parser `describe_event` hook). Long Codex/Gemini calls now emit per-event progress.
+- **Async background-task pattern** with push completion notifications.
+- **Panel + adversarial debate** as a first-class orchestration tool.
+- **MCP handshake instructions** include cost-routing (clink for free, chat for paid), async-routing (long calls go through start_task), and panel-routing (keyword cues for picking modes).
+
+---
+
+## Architecture map
+
+```
+server.py                        MCP entry point, TOOLS dict, handle_call_tool dispatcher, handshake instructions
+tools/
+  shared/base_tool.py            BaseTool — common methods (get_name, get_input_schema, execute, etc.)
+  simple/base.py                 SimpleTool — chat-style tools with provider integration; mutates self per call
+  workflow/                      Workflow tools (multi-step, e.g. consensus, codereview)
+  chat.py / clink.py / etc.      Concrete tool implementations
+  tasks.py                       TaskManager + 4 task tools (background pattern)
+  panel.py                       Panel orchestration (parallel + judge + adversarial debate)
+clink/
+  agents/                        Per-CLI agent classes (BaseCLIAgent, GeminiAgent, CodexAgent, ClaudeAgent)
+  parsers/                       Per-CLI output parsers + describe_event hooks for progress
+  registry.py                    Loads CLI configs from conf/cli_clients/*.json
+  constants.py                   INTERNAL_DEFAULTS — per-CLI parser, additional_args, etc.
+providers/                       OpenAI / Gemini / xAI direct API providers (mostly inherited from upstream)
+conf/
+  *_models.json                  Per-provider model registries (capabilities, aliases, intelligence_score)
+  cli_clients/*.json             Per-CLI clink configs (command, args, roles)
+systemprompts/                   System prompts (per-tool, per-clink-role)
+utils/
+  progress.py                    MCP progress notifications + contextvar sink override (used by tasks)
+```
+
+---
+
+## Local dev setup
+
+This fork uses an **editable install** so source edits propagate without cache games. Do **NOT** use `uvx --from /local/path` — uv caches built wheels and reuses them, leading to confusing "my edit didn't take effect" debugging.
 
 ```bash
-# Activate virtual environment first
-source venv/bin/activate
+# Install once:
+uv tool install --editable ~/Projects/pal-mcp-server
 
-# Run all quality checks (linting, formatting, tests)
-./code_quality_checks.sh
+# Verify:
+which pal-mcp-server   # → ~/.local/bin/pal-mcp-server (symlink to ~/.local/share/uv/tools/...)
+
+# In Claude Code's ~/.claude.json, mcpServers.pal looks like:
+#   {
+#     "command": "/Users/<you>/.local/bin/pal-mcp-server",
+#     "args": [],
+#     "env": { "GEMINI_API_KEY": "...", "OPENAI_API_KEY": "...", "XAI_API_KEY": "...", ... }
+#   }
 ```
 
-This script automatically runs:
-- Ruff linting with auto-fix
-- Black code formatting 
-- Import sorting with isort
-- Complete unit test suite (excluding integration tests)
-- Verification that all checks pass 100%
+After editing source files, **restart Claude Code** for PAL to re-read the source. (PAL caches config at process startup; the editable install means the next launch sees the new code without a reinstall.)
 
-**Run Integration Tests (requires API keys):**
+---
+
+## Validate before committing
+
+After non-trivial edits, always:
+
 ```bash
-# Run integration tests that make real API calls
-./run_integration_tests.sh
+# 1. Syntax check
+python3 -c "import ast; ast.parse(open('PATH/TO/CHANGED.py').read()); print('ok')"
 
-# Run integration tests + simulator tests
-./run_integration_tests.sh --with-simulator
+# 2. Full import (catches missing imports, registration bugs)
+~/.local/share/uv/tools/pal-mcp-server/bin/python3 -c "
+import sys; sys.path.insert(0, '/Users/$USER/Projects/pal-mcp-server')
+import server
+print('tools:', sorted(server.TOOLS.keys()))
+"
+
+# 3. Live smoke test (after restarting Claude Code)
+#    Ask Claude: "use start_task to run panel with codex, debate_rounds=1, codex as judge,
+#                 prompt 'name 1 thing'"
+#    Then poll task_status / task_result. Should complete in ~60-180s.
 ```
 
-### Server Management
+---
 
-#### Setup/Update the Server
-```bash
-# Run setup script (handles everything)
-./run-server.sh
-```
+## Coding style
 
-This script will:
-- Set up Python virtual environment
-- Install all dependencies
-- Create/update .env file
-- Configure MCP with Claude
-- Verify API keys
-
-#### View Logs
-```bash
-# Follow logs in real-time
-./run-server.sh -f
+- Python 3.9+; line length ~120; conventional commits (`feat:`, `fix:`, `refactor:`, `chore:`)
+- Type hints required for new code; prefer `from __future__ import annotations`
+- Match the file you're editing; don't impose new patterns unilaterally
+- Don't add comments that just restate what the code does; reserve comments for *why*
+- Don't add error handling for impossible cases — boundaries (user input, provider responses) yes; internal calls no
+- Never weaken security: don't re-add `--dangerously-bypass-approvals-and-sandbox` or `--yolo` flags
+- Don't commit secrets (API keys live in `~/.claude.json`, never in repo)
 
-# Or manually view logs
-tail -f logs/mcp_server.log
-```
+---
 
-### Log Management
-
-#### View Server Logs
-```bash
-# View last 500 lines of server logs
-tail -n 500 logs/mcp_server.log
-
-# Follow logs in real-time
-tail -f logs/mcp_server.log
-
-# View specific number of lines
-tail -n 100 logs/mcp_server.log
+## Authentication state expected on this machine
 
-# Search logs for specific patterns
-grep "ERROR" logs/mcp_server.log
-grep "tool_name" logs/mcp_activity.log
-```
-
-#### Monitor Tool Executions Only
-```bash
-# View tool activity log (focused on tool calls and completions)
-tail -n 100 logs/mcp_activity.log
-
-# Follow tool activity in real-time
-tail -f logs/mcp_activity.log
-
-# Use simple tail commands to monitor logs
-tail -f logs/mcp_activity.log | grep -E "(TOOL_CALL|TOOL_COMPLETED|ERROR|WARNING)"
-```
-
-#### Available Log Files
-
-**Current log files (with proper rotation):**
-```bash
-# Main server log (all activity including debug info) - 20MB max, 10 backups
-tail -f logs/mcp_server.log
-
-# Tool activity only (TOOL_CALL, TOOL_COMPLETED, etc.) - 20MB max, 5 backups  
-tail -f logs/mcp_activity.log
-```
-
-**For programmatic log analysis (used by tests):**
-```python
-# Import the LogUtils class from simulator tests
-from simulator_tests.log_utils import LogUtils
-
-# Get recent logs
-recent_logs = LogUtils.get_recent_server_logs(lines=500)
-
-# Check for errors
-errors = LogUtils.check_server_logs_for_errors()
-
-# Search for specific patterns
-matches = LogUtils.search_logs_for_pattern("TOOL_CALL.*debug")
-```
-
-### Testing
-
-Simulation tests are available to test the MCP server in a 'live' scenario, using your configured
-API keys to ensure the models are working and the server is able to communicate back and forth. 
-
-**IMPORTANT**: After any code changes, restart your Claude session for the changes to take effect.
-
-#### Run All Simulator Tests
-```bash
-# Run the complete test suite
-python communication_simulator_test.py
-
-# Run tests with verbose output
-python communication_simulator_test.py --verbose
-```
-
-#### Quick Test Mode (Recommended for Time-Limited Testing)
-```bash
-# Run quick test mode - 6 essential tests that provide maximum functionality coverage
-python communication_simulator_test.py --quick
-
-# Run quick test mode with verbose output
-python communication_simulator_test.py --quick --verbose
-```
-
-**Quick mode runs these 6 essential tests:**
-- `cross_tool_continuation` - Cross-tool conversation memory testing (chat, thinkdeep, codereview, analyze, debug)
-- `conversation_chain_validation` - Core conversation threading and memory validation
-- `consensus_workflow_accurate` - Consensus tool with flash model and stance testing
-- `codereview_validation` - CodeReview tool with flash model and multi-step workflows
-- `planner_validation` - Planner tool with flash model and complex planning workflows
-- `token_allocation_validation` - Token allocation and conversation history buildup testing
-
-**Why these 6 tests:** They cover the core functionality including conversation memory (`utils/conversation_memory.py`), chat tool functionality, file processing and deduplication, model selection (flash/flashlite/o3), and cross-tool conversation workflows. These tests validate the most critical parts of the system in minimal time.
-
-**Note:** Some workflow tools (analyze, codereview, planner, consensus, etc.) require specific workflow parameters and may need individual testing rather than quick mode testing.
-
-#### Run Individual Simulator Tests (For Detailed Testing)
-```bash
-# List all available tests
-python communication_simulator_test.py --list-tests
-
-# RECOMMENDED: Run tests individually for better isolation and debugging
-python communication_simulator_test.py --individual basic_conversation
-python communication_simulator_test.py --individual content_validation
-python communication_simulator_test.py --individual cross_tool_continuation
-python communication_simulator_test.py --individual memory_validation
-
-# Run multiple specific tests
-python communication_simulator_test.py --tests basic_conversation content_validation
-
-# Run individual test with verbose output for debugging
-python communication_simulator_test.py --individual memory_validation --verbose
-```
-
-Available simulator tests include:
-- `basic_conversation` - Basic conversation flow with chat tool
-- `content_validation` - Content validation and duplicate detection
-- `per_tool_deduplication` - File deduplication for individual tools
-- `cross_tool_continuation` - Cross-tool conversation continuation scenarios
-- `cross_tool_comprehensive` - Comprehensive cross-tool file deduplication and continuation
-- `line_number_validation` - Line number handling validation across tools
-- `memory_validation` - Conversation memory validation
-- `model_thinking_config` - Model-specific thinking configuration behavior
-- `o3_model_selection` - O3 model selection and usage validation
-- `ollama_custom_url` - Ollama custom URL endpoint functionality
-- `openrouter_fallback` - OpenRouter fallback behavior when only provider
-- `openrouter_models` - OpenRouter model functionality and alias mapping
-- `token_allocation_validation` - Token allocation and conversation history validation
-- `testgen_validation` - TestGen tool validation with specific test function
-- `refactor_validation` - Refactor tool validation with codesmells
-- `conversation_chain_validation` - Conversation chain and threading validation
-- `consensus_stance` - Consensus tool validation with stance steering (for/against/neutral)
-
-**Note**: All simulator tests should be run individually for optimal testing and better error isolation.
-
-#### Run Unit Tests Only
-```bash
-# Run all unit tests (excluding integration tests that require API keys)
-python -m pytest tests/ -v -m "not integration"
-
-# Run specific test file
-python -m pytest tests/test_refactor.py -v
-
-# Run specific test function
-python -m pytest tests/test_refactor.py::TestRefactorTool::test_format_response -v
-
-# Run tests with coverage
-python -m pytest tests/ --cov=. --cov-report=html -m "not integration"
-```
-
-#### Run Integration Tests (Uses Free Local Models)
-
-**Setup Requirements:**
-```bash
-# 1. Install Ollama (if not already installed)
-# Visit https://ollama.ai or use brew install ollama
-
-# 2. Start Ollama service
-ollama serve
-
-# 3. Pull a model (e.g., llama3.2)
-ollama pull llama3.2
-
-# 4. Set environment variable for custom provider
-export CUSTOM_API_URL="http://localhost:11434"
-```
-
-**Run Integration Tests:**
-```bash
-# Run integration tests that make real API calls to local models
-python -m pytest tests/ -v -m "integration"
-
-# Run specific integration test
-python -m pytest tests/test_prompt_regression.py::TestPromptIntegration::test_chat_normal_prompt -v
-
-# Run all tests (unit + integration)
-python -m pytest tests/ -v
-```
-
-**Note**: Integration tests use the local-llama model via Ollama, which is completely FREE to run unlimited times. Requires `CUSTOM_API_URL` environment variable set to your local Ollama endpoint. They can be run safely in CI/CD but are excluded from code quality checks to keep them fast.
-
-### Development Workflow
-
-#### Before Making Changes
-1. Ensure virtual environment is activated: `source .pal_venv/bin/activate`
-2. Run quality checks: `./code_quality_checks.sh`
-3. Check logs to ensure server is healthy: `tail -n 50 logs/mcp_server.log`
-
-#### After Making Changes
-1. Run quality checks again: `./code_quality_checks.sh`
-2. Run integration tests locally: `./run_integration_tests.sh`
-3. Run quick test mode for fast validation: `python communication_simulator_test.py --quick`
-4. Run relevant specific simulator tests if needed: `python communication_simulator_test.py --individual <test_name>`
-5. Check logs for any issues: `tail -n 100 logs/mcp_server.log`
-6. Restart Claude session to use updated code
-
-#### Before Committing/PR
-1. Final quality check: `./code_quality_checks.sh`
-2. Run integration tests: `./run_integration_tests.sh`
-3. Run quick test mode: `python communication_simulator_test.py --quick`
-4. Run full simulator test suite (optional): `./run_integration_tests.sh --with-simulator`
-5. Verify all tests pass 100%
-
-### Common Troubleshooting
-
-#### Server Issues
-```bash
-# Check if Python environment is set up correctly
-./run-server.sh
-
-# View recent errors
-grep "ERROR" logs/mcp_server.log | tail -20
-
-# Check virtual environment
-which python
-# Should show: .../pal-mcp-server/.pal_venv/bin/python
-```
-
-#### Test Failures
-```bash
-# First try quick test mode to see if it's a general issue
-python communication_simulator_test.py --quick --verbose
-
-# Run individual failing test with verbose output
-python communication_simulator_test.py --individual <test_name> --verbose
-
-# Check server logs during test execution
-tail -f logs/mcp_server.log
-
-# Run tests with debug output
-LOG_LEVEL=DEBUG python communication_simulator_test.py --individual <test_name>
-```
-
-#### Linting Issues
-```bash
-# Auto-fix most linting issues
-ruff check . --fix
-black .
-isort .
-
-# Check what would be changed without applying
-ruff check .
-black --check .
-isort --check-only .
-```
-
-### File Structure Context
-
-- `./code_quality_checks.sh` - Comprehensive quality check script
-- `./run-server.sh` - Server setup and management
-- `communication_simulator_test.py` - End-to-end testing framework
-- `simulator_tests/` - Individual test modules
-- `tests/` - Unit test suite
-- `tools/` - MCP tool implementations
-- `providers/` - AI provider implementations
-- `systemprompts/` - System prompt definitions
-- `logs/` - Server log files
-
-### Environment Requirements
-
-- Python 3.9+ with virtual environment
-- All dependencies from `requirements.txt` installed
-- Proper API keys configured in `.env` file
-
-This guide provides everything needed to efficiently work with the PAL MCP Server codebase using Claude. Always run quality checks before and after making changes to ensure code integrity.
+- **Codex CLI** logged in via ChatGPT (`auth_mode: chatgpt` in `~/.codex/auth.json`) → free OAuth
+- **Gemini CLI** logged in via Google (`~/.gemini/oauth_creds.json`) → free OAuth, **but** `gemini-3-flash-preview` has a daily quota that resets in ~24h. When exhausted, clink calls fail with `TerminalQuotaError`.
+- **Grok** has no OAuth path — always paid via `XAI_API_KEY`.
+- **Direct provider tools** (chat/consensus/codereview/etc.) always use API keys regardless of CLI OAuth state.
+
+When the user names "codex" or "gemini" without a specific paid model, prefer `clink` (free). When they name a specific paid string (`gpt-5.5`, `gemini-3.1-pro-preview`, `grok-4.3`) use `chat`/`consensus`. The MCP handshake instructions encode this routing, so connecting Claude clients pick it up automatically.
+
+---
+
+## Key tools at a glance
+
+| Tool | Purpose | Cost | When to use |
+|---|---|---|---|
+| `chat` | Single-turn Q&A with a specific model | Paid API | Quick second opinion via paid model |
+| `clink` | Run codex/gemini CLI as subprocess | OAuth (free) | Codex/Gemini consultation when CLIs are logged in |
+| `panel` | Parallel multi-model fan-out + optional judge | Mixed | Audits, second opinions, debates |
+| `start_task` | Wrap any tool to run in background | Free wrapper | Any call expected >15s |
+| `consensus` | Sequential multi-model debate (legacy) | Paid | Prefer `panel` for new use cases |
+| `codereview` | Workflow tool: deep code review | Paid | Single-model deep review |
+| `debug` | Workflow tool: hypothesis-driven debugging | Paid | Stuck on a bug |
+| `thinkdeep` | Workflow tool: extended reasoning | Paid | Hard architectural questions |
+
+---
+
+## Logs
+
+- `logs/mcp_server.log` — main log (debug-level by default; openai/gemini SDK debug logs ON, very verbose)
+- `logs/mcp_activity.log` — focused tool-call activity (cleaner)
+- Helpful one-liner: `grep -E "TOOL_CALL|TOOL_COMPLETED|ERROR" logs/mcp_activity.log | tail -50`
+
+---
+
+## Known issues / open work queue
+
+The audit by Codex+Grok identified one v1.0 blocker and several adjacent improvements:
+
+1. **Factory-pattern TOOLS refactor** (v1.0 blocker — not yet started). `server.py` registers TOOLS as singleton instances; tools mutate `self._current_arguments`, `self._current_model_name`, `self._model_context` during `execute()`. Concurrent panel calls or multi-client deployments corrupt that state. Band-aided in `tools/panel.py` via `_fresh_tool()`. Real fix: convert TOOLS to a registry of factories or immutable descriptors.
+
+2. **Sync→async provider refactor (C8)**. `providers/openai_compatible.py` calls `self.client.chat.completions.create(...)` synchronously. While in flight, the asyncio event loop can't progress, so parallel panel calls effectively serialize when any panelist uses a paid API. Fix: wrap sync provider calls in `asyncio.to_thread`, or switch to async streaming SDKs.
+
+3. **OAuth-to-API fallback (F1)**. When clink's CLI errors with quota exhaustion (`TerminalQuotaError`), automatically retry via paid API as a fallback. Detect quota errors via stderr patterns; configurable per-CLI fallback target.
+
+4. **Durable task storage**. Tasks live in `TaskManager._tasks` (in-memory). PAL restart loses everything in flight. SQLite-backed storage would make tasks survive crashes.
+
+5. **Per-call cost meter**. PAL doesn't track per-tool spend. Should expose cumulative cost in task summaries and panel output.
+
+6. **Tests for new surfaces**. `tools/tasks.py`, `tools/panel.py`, the `describe_event` hooks, and the streaming runner have no dedicated unit tests yet. The legacy upstream test suite still runs but doesn't cover any of this fork's new code.
+
+---
+
+## Process expectations
+
+- The user has been at this fork for many hours. Be terse. Don't write summaries the diff already shows.
+- Commit early and often with conventional messages. Push to `origin main` (no PR workflow on this fork).
+- Never run `git push --force` to main without explicit confirmation.
+- Don't touch `providers/*` for routine work — they're inherited and largely untouched. Only modify when explicitly part of C8 or F1.
+- If a refactor genuinely needs a hard architectural call (e.g. "schemas can't be cached safely because they depend on instance state"), stop and surface the choice — don't make it unilaterally.
+
+---
+
+## Auto-memory (for Claude sessions)
+
+User's auto-memory will load two relevant entries:
+- `pal_fork.md` — full project context (this fork, its location, customizations, auth state, roadmap)
+- `feedback_uvx_caching.md` — why NOT to use `uvx --from /local/path` for iterative dev
+
+Trust those memory entries; they're maintained alongside this doc.
