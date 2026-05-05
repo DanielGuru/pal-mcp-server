@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import time
 from typing import Any, Optional
 
@@ -179,9 +180,21 @@ def _truncate(text: str, *, cap: int) -> str:
 
 def _build_judge_prompt(original_prompt: str, panelist_results: list[dict[str, Any]]) -> str:
     sections: list[str] = []
-    sections.append("You are synthesizing a panel of AI models that each independently answered a question.")
-    sections.append("Identify points of agreement, points of divergence, the strongest argument from each, "
-                    "and your overall recommendation. Be terse and concrete.")
+    sections.append(
+        "You are synthesizing a panel of AI models that each independently answered a question. "
+        "Identify points of agreement, points of divergence, the strongest argument from each, "
+        "and your overall recommendation."
+    )
+    sections.append(
+        "\nCRITICAL OUTPUT FORMAT — your response MUST begin with a fenced HEADLINE block, exactly:\n"
+        "<HEADLINE>\n"
+        "[2-3 sentences plain English. Direct verdict on the question. Lead with the answer. "
+        "If panelists converged, name the consensus. If they diverged, name the divergence and your call. "
+        "No preamble, no 'after careful consideration', just the verdict.]\n"
+        "</HEADLINE>\n"
+        "Then continue with your full reasoning under normal prose. Callers read the HEADLINE alone "
+        "for a quick scan; the body is for provenance and depth."
+    )
     sections.append("\n=== ORIGINAL QUESTION ===\n" + original_prompt.strip())
     for r in panelist_results:
         if r.get("ok"):
@@ -192,8 +205,21 @@ def _build_judge_prompt(original_prompt: str, panelist_results: list[dict[str, A
             )
         else:
             sections.append(f"\n=== PANELIST: {r['agent']} — FAILED: {r.get('error')} ===")
-    sections.append("\n=== YOUR SYNTHESIS ===\n")
+    sections.append("\n=== YOUR SYNTHESIS (start with <HEADLINE>...</HEADLINE>) ===\n")
     return "\n".join(sections)
+
+
+_HEADLINE_RE = re.compile(r"<HEADLINE>(.+?)</HEADLINE>", re.IGNORECASE | re.DOTALL)
+
+
+def _extract_headline(judge_response: str) -> str | None:
+    """Pull the 2-3 sentence headline the judge was asked to lead with."""
+    if not judge_response:
+        return None
+    m = _HEADLINE_RE.search(judge_response)
+    if not m:
+        return None
+    return m.group(1).strip() or None
 
 
 def _panel_status(panelists_ok: int, panelists_total: int) -> str:
@@ -602,25 +628,34 @@ class PanelTool(BaseTool):
                     timeout=timeout,
                 )
                 judge_outcome["duration_s"] = round(time.monotonic() - judge_started, 2)
+                # Extract the leading <HEADLINE> the judge was asked to write.
+                if judge_outcome.get("ok"):
+                    headline = _extract_headline(judge_outcome.get("response", ""))
+                    if headline:
+                        judge_outcome["headline"] = headline
                 judge_result = judge_outcome
 
+        # Surface the judge's headline at the top level so callers can scan
+        # the verdict without parsing nested judge.response JSON.
+        top_headline: Optional[str] = None
+        if isinstance(judge_result, dict):
+            top_headline = judge_result.get("headline")
+
+        payload: dict[str, Any] = {
+            "status": panel_status,
+            "headline": top_headline,
+            "panel_duration_s": panel_duration,
+            "rounds_run": len(debate_history),
+            "panelists_ok": ok_count,
+            "panelists_total": len(panelist_results),
+            "panelists": panelist_results,
+            "debate_history": debate_history if len(debate_history) > 1 else None,
+            "judge": judge_result,
+        }
         return [
             TextContent(
                 type="text",
-                text=json.dumps(
-                    {
-                        "status": panel_status,
-                        "panel_duration_s": panel_duration,
-                        "rounds_run": len(debate_history),
-                        "panelists_ok": ok_count,
-                        "panelists_total": len(panelist_results),
-                        "panelists": panelist_results,
-                        "debate_history": debate_history if len(debate_history) > 1 else None,
-                        "judge": judge_result,
-                    },
-                    indent=2,
-                    default=str,
-                ),
+                text=json.dumps(payload, indent=2, default=str),
             )
         ]
 
