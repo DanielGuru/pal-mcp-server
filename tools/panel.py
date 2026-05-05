@@ -34,14 +34,43 @@ from utils.progress import emit_progress
 logger = logging.getLogger("pal.panel")
 
 # Names that route through clink (subprocess CLI, OAuth, free)
-CLINK_AGENTS = frozenset({"codex", "gemini", "claude"})
-
 DEFAULT_TIMEOUT_S = 600
 MAX_PANELISTS = 8
 
+# Cap on per-panelist response text included in the judge prompt. Keeps the
+# judge's context bounded even if one panelist produces a wall of output.
+JUDGE_PER_PANELIST_CHAR_CAP = 8000
+
 
 def _is_clink_agent(name: str) -> bool:
-    return name.lower() in CLINK_AGENTS
+    """Decide whether `name` should route through clink.
+
+    Derived from clink's runtime registry rather than a hard-coded set, so
+    adding a new clink CLI in conf/cli_clients/ makes panel route to it
+    automatically.
+    """
+    try:
+        from clink.registry import get_registry
+        return name.lower() in {n.lower() for n in get_registry().list_clients()}
+    except Exception:  # noqa: BLE001
+        # Conservative fallback if the registry isn't importable.
+        return name.lower() in {"codex", "gemini", "claude"}
+
+
+def _fresh_tool(tool_name: str):
+    """Return a freshly instantiated tool of the same class as the registered one.
+
+    Critical for parallel safety: PAL's tool classes (CLinkTool, ChatTool) keep
+    per-call state on `self` during execute() (`_current_arguments`,
+    `_current_model_name`, `_model_context`). Sharing a singleton across
+    concurrent panelists corrupts that state. Fresh instances are cheap and
+    eliminate the race.
+    """
+    from server import TOOLS
+    base = TOOLS.get(tool_name)
+    if base is None:
+        raise RuntimeError(f"tool {tool_name!r} not registered")
+    return type(base)()
 
 
 def _normalize_panelist(entry: Any) -> dict[str, Any]:
@@ -77,14 +106,9 @@ async def _run_panelist(
 
     await emit_progress(f"panel/{label}: dispatching", progress=0.0)
 
-    # Local import to avoid cycle.
-    from server import TOOLS
-
     try:
         if is_clink:
-            tool = TOOLS.get("clink")
-            if tool is None:
-                raise RuntimeError("clink tool not registered")
+            tool = _fresh_tool("clink")  # per-call instance: parallel-safe
             args = {
                 "prompt": prompt,
                 "cli_name": agent,
@@ -94,9 +118,7 @@ async def _run_panelist(
             }
             cost_tier = "oauth_free"
         else:
-            tool = TOOLS.get("chat")
-            if tool is None:
-                raise RuntimeError("chat tool not registered")
+            tool = _fresh_tool("chat")  # per-call instance: parallel-safe
             args = {
                 "prompt": prompt,
                 "model": agent,
@@ -144,6 +166,13 @@ async def _run_panelist(
         }
 
 
+def _truncate(text: str, *, cap: int) -> str:
+    if len(text) <= cap:
+        return text
+    head = text[: cap - 80]
+    return head + f"\n…[panel: truncated {len(text) - cap + 80:,} chars]"
+
+
 def _build_judge_prompt(original_prompt: str, panelist_results: list[dict[str, Any]]) -> str:
     sections: list[str] = []
     sections.append("You are synthesizing a panel of AI models that each independently answered a question.")
@@ -152,11 +181,23 @@ def _build_judge_prompt(original_prompt: str, panelist_results: list[dict[str, A
     sections.append("\n=== ORIGINAL QUESTION ===\n" + original_prompt.strip())
     for r in panelist_results:
         if r.get("ok"):
-            sections.append(f"\n=== PANELIST: {r['agent']} (role={r.get('role')}, {r.get('duration_s')}s) ===\n{r.get('response', '').strip()}")
+            response = (r.get("response") or "").strip()
+            response = _truncate(response, cap=JUDGE_PER_PANELIST_CHAR_CAP)
+            sections.append(
+                f"\n=== PANELIST: {r['agent']} (role={r.get('role')}, {r.get('duration_s')}s) ===\n{response}"
+            )
         else:
             sections.append(f"\n=== PANELIST: {r['agent']} — FAILED: {r.get('error')} ===")
     sections.append("\n=== YOUR SYNTHESIS ===\n")
     return "\n".join(sections)
+
+
+def _panel_status(panelists_ok: int, panelists_total: int) -> str:
+    if panelists_ok == 0:
+        return "failed"
+    if panelists_ok < panelists_total:
+        return "partial"
+    return "completed"
 
 
 # ---------------------------------------------------------------------------
@@ -307,50 +348,83 @@ class PanelTool(BaseTool):
         if judge is not None and (not isinstance(judge, str) or not judge.strip()):
             return _err("'judge' must be a non-empty string when provided")
 
-        # ----- fan out -----
+        # ----- fan out (streaming via as_completed) -----
         await emit_progress(
             f"panel: dispatching to {len(panelists)} panelists in parallel",
             progress=0.0,
         )
         started = time.monotonic()
-        panelist_results = await asyncio.gather(
-            *(
-                _run_panelist(p, prompt=prompt, files=files, images=images, timeout=timeout)
-                for p in panelists
-            ),
-            return_exceptions=False,
-        )
+        panelist_tasks = [
+            asyncio.create_task(
+                _run_panelist(p, prompt=prompt, files=files, images=images, timeout=timeout),
+                name=f"panelist:{p.get('label') or p.get('agent')}",
+            )
+            for p in panelists
+        ]
+        panelist_results: list[dict[str, Any]] = []
+        finished = 0
+        try:
+            for fut in asyncio.as_completed(panelist_tasks):
+                outcome = await fut
+                panelist_results.append(outcome)
+                finished += 1
+                tag = "✓" if outcome.get("ok") else "✗"
+                await emit_progress(
+                    f"panel: {tag} {outcome.get('label')} ({finished}/{len(panelists)})",
+                    progress=float(finished),
+                    total=float(len(panelists) + (1 if judge else 0)),
+                )
+        except asyncio.CancelledError:
+            for t in panelist_tasks:
+                if not t.done():
+                    t.cancel()
+            raise
         panel_duration = round(time.monotonic() - started, 2)
 
         ok_count = sum(1 for r in panelist_results if r.get("ok"))
+        panel_status = _panel_status(ok_count, len(panelist_results))
+
         await emit_progress(
-            f"panel: {ok_count}/{len(panelist_results)} panelists succeeded in {panel_duration}s",
-            progress=1.0,
+            f"panel: {ok_count}/{len(panelist_results)} succeeded ({panel_status}) in {panel_duration}s",
+            progress=float(len(panelists)),
+            total=float(len(panelists) + (1 if judge else 0)),
         )
 
         # ----- optional judge synthesis -----
         judge_result: Optional[dict[str, Any]] = None
         if judge:
-            judge_panelist = {"agent": judge, "label": f"judge:{judge}", "role": "default"}
-            judge_prompt = _build_judge_prompt(prompt, panelist_results)
-            judge_started = time.monotonic()
-            await emit_progress(f"panel: invoking judge ({judge})", progress=1.0)
-            judge_outcome = await _run_panelist(
-                judge_panelist,
-                prompt=judge_prompt,
-                files=[],  # judge sees the panelist outputs, not the original files
-                images=[],
-                timeout=timeout,
-            )
-            judge_outcome["duration_s"] = round(time.monotonic() - judge_started, 2)
-            judge_result = judge_outcome
+            if ok_count == 0:
+                # Nothing useful to synthesize — skip the judge.
+                judge_result = {
+                    "agent": judge,
+                    "ok": False,
+                    "error": "skipped: 0 panelists produced output",
+                }
+            else:
+                judge_panelist = {"agent": judge, "label": f"judge:{judge}", "role": "default"}
+                judge_prompt = _build_judge_prompt(prompt, panelist_results)
+                judge_started = time.monotonic()
+                await emit_progress(
+                    f"panel: invoking judge ({judge})",
+                    progress=float(len(panelists)),
+                    total=float(len(panelists) + 1),
+                )
+                judge_outcome = await _run_panelist(
+                    judge_panelist,
+                    prompt=judge_prompt,
+                    files=[],  # judge sees the panelist outputs, not the original files
+                    images=[],
+                    timeout=timeout,
+                )
+                judge_outcome["duration_s"] = round(time.monotonic() - judge_started, 2)
+                judge_result = judge_outcome
 
         return [
             TextContent(
                 type="text",
                 text=json.dumps(
                     {
-                        "status": "completed",
+                        "status": panel_status,
                         "panel_duration_s": panel_duration,
                         "panelists_ok": ok_count,
                         "panelists_total": len(panelist_results),

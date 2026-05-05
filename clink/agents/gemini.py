@@ -17,6 +17,13 @@ class GeminiAgent(BaseCLIAgent):
     def __init__(self, client: ResolvedCLIClient):
         super().__init__(client)
 
+    def _argv_prompt_flag(self) -> str | None:
+        # Gemini in -o stream-json mode does NOT reliably read prompts from
+        # stdin — it exits early with "No input provided via stdin". Use
+        # `-p <prompt>` argv passing instead. Subject to OS argv length
+        # limits (~256KB on macOS), but typical clink prompts are smaller.
+        return "-p"
+
     def _recover_from_error(
         self,
         *,

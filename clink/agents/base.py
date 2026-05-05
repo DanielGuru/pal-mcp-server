@@ -113,6 +113,15 @@ class BaseCLIAgent:
             command_with_output_flag.extend(shlex.split(rendered_flag))
             sanitized_command = list(command_with_output_flag)
 
+        # Some CLIs (Gemini in stream-json mode) don't read stdin reliably and
+        # must receive the prompt via argv. Subclasses override
+        # _argv_prompt_flag() to opt into that mode.
+        argv_flag = self._argv_prompt_flag()
+        send_via_stdin = argv_flag is None
+        if argv_flag is not None:
+            command_with_output_flag.extend([argv_flag, prompt])
+            sanitized_command = list(command_with_output_flag[:-1]) + ["<prompt>"]
+
         self._logger.debug("Executing CLI command: %s", " ".join(sanitized_command))
         if cwd:
             self._logger.debug("Working directory: %s", cwd)
@@ -157,6 +166,12 @@ class BaseCLIAgent:
 
             async def _write_stdin() -> None:
                 if process.stdin is None:
+                    return
+                if not send_via_stdin:
+                    # Prompt was sent via argv. Close stdin promptly so the CLI
+                    # doesn't sit waiting for input.
+                    with suppress(Exception):
+                        process.stdin.close()
                     return
                 try:
                     process.stdin.write(prompt.encode("utf-8"))
@@ -371,6 +386,17 @@ class BaseCLIAgent:
         base.extend(role.role_args)
 
         return base
+
+    def _argv_prompt_flag(self) -> str | None:
+        """Override to send the prompt via argv instead of stdin.
+
+        Return the CLI flag (e.g. '-p') and the runner will append it followed
+        by the literal prompt to the command, and skip writing to stdin. Used
+        by Gemini stream-json mode which doesn't reliably read stdin.
+
+        Default: None (use stdin).
+        """
+        return None
 
     def _build_environment(self) -> dict[str, str]:
         env = os.environ.copy()
