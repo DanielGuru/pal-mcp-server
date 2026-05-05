@@ -255,29 +255,18 @@ def filter_disabled_tools(all_tools: dict[str, Any]) -> dict[str, Any]:
     return enabled_tools
 
 
-# Initialize the tool registry with all available AI-powered tools
-# Each tool provides specialized functionality for different development tasks
-# Tools are instantiated once and reused across requests (stateless design)
-TOOLS = {
-    "chat": ChatTool(),  # Interactive development chat and brainstorming
-    "clink": CLinkTool(),  # Bridge requests to configured AI CLIs
-    "thinkdeep": ThinkDeepTool(),  # Step-by-step deep thinking workflow with expert analysis
-    "planner": PlannerTool(),  # Interactive sequential planner using workflow architecture
-    "consensus": ConsensusTool(),  # Step-by-step consensus workflow with multi-model analysis
-    "codereview": CodeReviewTool(),  # Comprehensive step-by-step code review workflow with expert analysis
-    "precommit": PrecommitTool(),  # Step-by-step pre-commit validation workflow
-    "debug": DebugIssueTool(),  # Root cause analysis and debugging assistance
-    "secaudit": SecauditTool(),  # Comprehensive security audit with OWASP Top 10 and compliance coverage
-    "docgen": DocgenTool(),  # Step-by-step documentation generation with complexity analysis
-    "analyze": AnalyzeTool(),  # General-purpose file and code analysis
-    "refactor": RefactorTool(),  # Step-by-step refactoring analysis workflow with expert validation
-    "tracer": TracerTool(),  # Static call path prediction and control flow analysis
-    "testgen": TestGenTool(),  # Step-by-step test generation workflow with expert validation
-    "challenge": ChallengeTool(),  # Critical challenge prompt wrapper to avoid automatic agreement
-    "apilookup": LookupTool(),  # Quick web/API lookup instructions
-    "listmodels": ListModelsTool(),  # List all available AI models by provider
-    "version": VersionTool(),  # Display server version and system information
-}
+# Tool registry — maps name → tool *class* (factory).
+#
+# Why classes, not instances: PAL tools mutate per-call state on `self` during
+# execute() (`_current_arguments`, `_current_model_name`, `_model_context`).
+# Sharing one instance across concurrent requests — including parallel panel
+# fan-out — corrupts that state. Calling the class produces a fresh instance
+# per request, eliminating the race by construction.
+#
+# For read-only metadata (schema, description, requires_model,
+# format_conversation_turn) use TOOL_DESCRIPTORS instead — those instances are
+# built once at startup and never have execute() called on them.
+from tools.panel import PanelTool  # noqa: E402
 
 # Async/background task tools — wrap any of the above so the conversation isn't
 # blocked while a long call (audit, multi-model consensus) runs.
@@ -288,17 +277,51 @@ from tools.tasks import (  # noqa: E402
     TaskStatusTool,
 )
 
-TOOLS["start_task"] = StartTaskTool()
-TOOLS["task_status"] = TaskStatusTool()
-TOOLS["task_result"] = TaskResultTool()
-TOOLS["cancel_task"] = CancelTaskTool()
-
-# Panel: parallel multi-model fan-out with optional judge synthesis.
-from tools.panel import PanelTool  # noqa: E402
-
-TOOLS["panel"] = PanelTool()
+TOOLS: dict[str, type] = {
+    "chat": ChatTool,
+    "clink": CLinkTool,
+    "thinkdeep": ThinkDeepTool,
+    "planner": PlannerTool,
+    "consensus": ConsensusTool,
+    "codereview": CodeReviewTool,
+    "precommit": PrecommitTool,
+    "debug": DebugIssueTool,
+    "secaudit": SecauditTool,
+    "docgen": DocgenTool,
+    "analyze": AnalyzeTool,
+    "refactor": RefactorTool,
+    "tracer": TracerTool,
+    "testgen": TestGenTool,
+    "challenge": ChallengeTool,
+    "apilookup": LookupTool,
+    "listmodels": ListModelsTool,
+    "version": VersionTool,
+    "start_task": StartTaskTool,
+    "task_status": TaskStatusTool,
+    "task_result": TaskResultTool,
+    "cancel_task": CancelTaskTool,
+    "panel": PanelTool,
+}
 
 TOOLS = filter_disabled_tools(TOOLS)
+
+# One descriptor instance per registered tool, built at startup. Used by
+# list_tools / list_prompts / conversation history formatting / requires_model
+# checks — anywhere we need stable metadata. NEVER call .execute() on these.
+TOOL_DESCRIPTORS: dict[str, Any] = {name: cls() for name, cls in TOOLS.items()}
+
+
+def make_tool(name: str):
+    """Construct a fresh per-request tool instance for execute().
+
+    Use this anywhere you'd otherwise grab a singleton and call execute() on
+    it. The fresh instance owns its own _current_arguments / _current_model_name
+    / _model_context state, so concurrent requests can't corrupt each other.
+    """
+    cls = TOOLS.get(name)
+    if cls is None:
+        raise KeyError(f"Unknown tool: {name!r}")
+    return cls()
 
 # Rich prompt templates for all tools
 PROMPT_TEMPLATES = {
@@ -686,7 +709,7 @@ async def handle_list_tools() -> list[Tool]:
     tools = []
 
     # Add all registered AI-powered tools from the TOOLS registry
-    for tool in TOOLS.values():
+    for tool in TOOL_DESCRIPTORS.values():
         # Get optional annotations from the tool
         annotations = tool.get_annotations()
         tool_annotations = ToolAnnotations(**annotations) if annotations else None
@@ -800,7 +823,8 @@ async def handle_call_tool(name: str, arguments: dict[str, Any]) -> list[TextCon
     # Route to AI-powered tools that require Gemini API calls
     if name in TOOLS:
         logger.info(f"Executing tool '{name}' with {len(arguments)} parameter(s)")
-        tool = TOOLS[name]
+        # Fresh instance per request — tools mutate state on self during execute().
+        tool = make_tool(name)
 
         # EARLY MODEL RESOLUTION AT MCP BOUNDARY
         # Resolve model before passing to tool - this ensures consistent model handling
@@ -1115,7 +1139,7 @@ async def reconstruct_thread_context(arguments: dict[str, Any]) -> dict[str, Any
     # Create model context early to use for history building
     from utils.model_context import ModelContext
 
-    tool = TOOLS.get(context.tool_name)
+    tool = TOOL_DESCRIPTORS.get(context.tool_name)
     requires_model = tool.requires_model() if tool else True
 
     # Check if we should use the model from the previous conversation turn
@@ -1324,7 +1348,7 @@ async def handle_list_prompts() -> list[Prompt]:
     prompts = []
 
     # Add a prompt for each tool with rich templates
-    for tool_name, tool in TOOLS.items():
+    for tool_name, tool in TOOL_DESCRIPTORS.items():
         if tool_name in PROMPT_TEMPLATES:
             # Use the rich template
             template_info = PROMPT_TEMPLATES[tool_name]

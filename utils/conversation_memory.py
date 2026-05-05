@@ -1042,10 +1042,12 @@ def _get_tool_formatted_content(turn: ConversationTurn) -> list[str]:
     """
     if turn.tool_name:
         try:
-            # Dynamically import to avoid circular dependencies
-            from server import TOOLS
+            # Dynamically import to avoid circular dependencies. Use the
+            # descriptor (one stable instance per tool) — read-only metadata
+            # access only, never execute().
+            from server import TOOL_DESCRIPTORS
 
-            tool = TOOLS.get(turn.tool_name)
+            tool = TOOL_DESCRIPTORS.get(turn.tool_name)
             if tool:
                 # Use inheritance pattern - try to call the method directly
                 # If it doesn't exist or raises AttributeError, fall back to default

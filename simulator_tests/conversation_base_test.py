@@ -86,12 +86,15 @@ class ConversationBaseTest(BaseSimulatorTest):
             if project_root not in sys.path:
                 sys.path.insert(0, project_root)
 
-            # Import and configure providers first (this is what main() does)
-            from server import TOOLS, configure_providers
+            # Import and configure providers first (this is what main() does).
+            # TOOLS is a factory dict (name -> class) so each call_tool spins
+            # up a fresh instance.
+            from server import TOOLS, configure_providers, make_tool
 
             configure_providers()
 
             self._tools = TOOLS
+            self._make_tool = make_tool
             self.logger.debug(f"Imported {len(self._tools)} tools for in-process testing")
         except ImportError as e:
             raise RuntimeError(f"Could not import tools from server.py: {e}")
@@ -128,7 +131,7 @@ class ConversationBaseTest(BaseSimulatorTest):
             raise ValueError(f"Tool '{tool_name}' not found. Available: {list(self._tools.keys())}")
 
         try:
-            tool = self._tools[tool_name]
+            tool = self._make_tool(tool_name)
             self.logger.debug(f"Calling tool '{tool_name}' directly in-process")
 
             # Set up minimal model context if not provided

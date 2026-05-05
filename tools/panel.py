@@ -63,19 +63,17 @@ def _is_clink_agent(name: str) -> bool:
 
 
 def _fresh_tool(tool_name: str):
-    """Return a freshly instantiated tool of the same class as the registered one.
+    """Return a fresh per-call tool instance via the server's factory registry.
 
-    Critical for parallel safety: PAL's tool classes (CLinkTool, ChatTool) keep
-    per-call state on `self` during execute() (`_current_arguments`,
-    `_current_model_name`, `_model_context`). Sharing a singleton across
-    concurrent panelists corrupts that state. Fresh instances are cheap and
-    eliminate the race.
+    server.TOOLS is now a dict of classes; calling make_tool() produces a new
+    instance per request, which keeps concurrent panelists from clobbering each
+    other's `_current_arguments` / `_current_model_name` / `_model_context`.
     """
-    from server import TOOLS
-    base = TOOLS.get(tool_name)
-    if base is None:
-        raise RuntimeError(f"tool {tool_name!r} not registered")
-    return type(base)()
+    from server import make_tool
+    try:
+        return make_tool(tool_name)
+    except KeyError as exc:
+        raise RuntimeError(f"tool {tool_name!r} not registered") from exc
 
 
 def _normalize_panelist(entry: Any) -> dict[str, Any]:

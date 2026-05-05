@@ -343,10 +343,11 @@ class TaskManager:
         )
 
         try:
-            from server import TOOLS
+            from server import make_tool
 
-            tool = TOOLS.get(record.tool_name)
-            if tool is None:
+            try:
+                tool = make_tool(record.tool_name)
+            except KeyError:
                 raise ValueError(f"Unknown tool: {record.tool_name!r}")
 
             result = await tool.execute(record.arguments)
