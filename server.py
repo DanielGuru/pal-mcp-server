@@ -293,6 +293,11 @@ TOOLS["task_status"] = TaskStatusTool()
 TOOLS["task_result"] = TaskResultTool()
 TOOLS["cancel_task"] = CancelTaskTool()
 
+# Panel: parallel multi-model fan-out with optional judge synthesis.
+from tools.panel import PanelTool  # noqa: E402
+
+TOOLS["panel"] = PanelTool()
+
 TOOLS = filter_disabled_tools(TOOLS)
 
 # Rich prompt templates for all tools
