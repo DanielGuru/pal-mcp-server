@@ -1520,6 +1520,20 @@ async def main():
         "(`chat` for a quick question, `listmodels`, `version`, simple `clink` chats) can stay "
         "synchronous. Use `cancel_task` to stop a runaway task."
     )
+    panel_routing = (
+        " Panel routing: the `panel` tool fans out one prompt to multiple models in parallel and "
+        "returns structured per-model output, optionally with a judge synthesis. Use the user's "
+        "phrasing as a routing signal:\n"
+        "  - 'second opinion' / 'audit' / 'review with X and Y' / 'multiple models' / 'check this with' "
+        "→ panel (judge optional but recommended)\n"
+        "  - 'debate' / 'critique' / 'challenge' / 'stress-test' / 'rigorous' / 'argue' / 'pressure-test' "
+        "→ panel with debate_rounds>=1 (adversarial mode: each model sees others' answers and revises)\n"
+        "  - 'consensus' / 'agree on' / 'do they agree' → panel with judge='codex' (or 'gemini'); "
+        "consider debate_rounds=1 if the topic is contested\n"
+        "Always wrap panel in start_task — it can run for several minutes per round. For free runs use "
+        "codex+gemini panelists with codex as judge. Add grok-4.3 only when the user asks for paid model "
+        "diversity or names it explicitly."
+    )
 
     if IS_AUTO_MODE:
         handshake_instructions = (
@@ -1527,6 +1541,7 @@ async def main():
             "When no model is mentioned, first use the `listmodels` tool from PAL to obtain available models to choose the best one from."
             + cost_routing
             + async_routing
+            + panel_routing
         )
     else:
         handshake_instructions = (
@@ -1534,6 +1549,7 @@ async def main():
             f"When no model is mentioned, default to '{DEFAULT_MODEL}'."
             + cost_routing
             + async_routing
+            + panel_routing
         )
 
     # Run the server using stdio transport (standard input/output)
