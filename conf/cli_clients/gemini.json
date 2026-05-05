@@ -1,9 +1,7 @@
 {
   "name": "gemini",
   "command": "gemini",
-  "additional_args": [
-    "--yolo"
-  ],
+  "additional_args": [],
   "env": {},
   "roles": {
     "default": {
