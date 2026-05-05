@@ -502,6 +502,20 @@ class PanelTool(BaseTool):
         except ValueError as exc:
             return _err(str(exc))
 
+        # Auto-suffix duplicate labels. The debate-round peer-lookup uses
+        # by_label dicts (panel.py ~290 / ~552) and would silently drop one
+        # entry if two panelists shared a label, corrupting which peer
+        # critiqued whom. Audit finding from gpt-5.5.
+        seen_labels: dict[str, int] = {}
+        for p in panelists:
+            base = p.get("label") or p.get("agent") or "panelist"
+            if base in seen_labels:
+                seen_labels[base] += 1
+                p["label"] = f"{base}#{seen_labels[base]}"
+            else:
+                seen_labels[base] = 1
+                p["label"] = base
+
         files = arguments.get("absolute_file_paths") or []
         if not isinstance(files, list) or not all(isinstance(f, str) for f in files):
             return _err("'absolute_file_paths' must be a list of strings")

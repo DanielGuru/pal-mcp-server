@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import re
@@ -260,7 +261,11 @@ class CLinkTool(SimpleTool):
 
         self._model_context = arguments.get("_model_context")
 
-        system_prompt_text = role_config.prompt_path.read_text(encoding="utf-8")
+        # Off-loop file read so concurrent panel fan-out doesn't pause on
+        # filesystem latency (small win individually, real with N panelists).
+        system_prompt_text = await asyncio.to_thread(
+            role_config.prompt_path.read_text, encoding="utf-8"
+        )
         include_system_prompt = not self._use_external_system_prompt(client_config)
 
         try:
@@ -346,7 +351,9 @@ class CLinkTool(SimpleTool):
     async def prepare_prompt(self, request) -> str:
         client_config = self._registry.get_client(request.cli_name)
         role_config = client_config.get_role(request.role)
-        system_prompt_text = role_config.prompt_path.read_text(encoding="utf-8")
+        system_prompt_text = await asyncio.to_thread(
+            role_config.prompt_path.read_text, encoding="utf-8"
+        )
         include_system_prompt = not self._use_external_system_prompt(client_config)
         return await self._prepare_prompt_for_role(
             request,
