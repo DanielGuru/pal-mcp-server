@@ -15,7 +15,7 @@ This is a customized fork of `BeehiveInnovations/pal-mcp-server`. Upstream is st
 
 ## Project structure (one line)
 
-`server.py` (entry, TOOLS factory dict, `make_tool()`, dispatcher) → `tools/` (23 MCP tools incl. tasks/panel) → `clink/` (subprocess CLI agents + parsers + OAuth-to-API fallback) → `providers/` (direct API providers + async wrapper) → `conf/` (model + CLI configs).
+`server.py` (entry, TOOLS factory dict, `make_tool()`, **`execute_tool()` is the only dispatch path**) → `tools/` (23 MCP tools incl. tasks/panel) → `clink/` (subprocess CLI agents + parsers + OAuth-to-API fallback + redacted metadata) → `providers/` (direct API providers + async wrapper bounded by semaphore + ThreadPoolExecutor + per-call SDK timeout) → `conf/` (model + CLI configs).
 
 ## Style
 

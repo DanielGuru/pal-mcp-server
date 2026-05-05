@@ -1,6 +1,6 @@
 # CLAUDE.md — PAL MCP Server (custom fork)
 
-Custom fork of `BeehiveInnovations/pal-mcp-server` at `github.com/DanielGuru/pal-mcp-server`. Upstream stalled in December 2025; this fork ships fixes plus orchestration features (background tasks, parallel panels, adversarial debate, observable streaming, OAuth-to-API fallback) that don't exist upstream. **Don't assume parity with upstream PAL** — read this doc, not the upstream README.
+Custom fork of `BeehiveInnovations/pal-mcp-server` at `github.com/DanielGuru/pal-mcp-server`. Upstream stalled in December 2025; this fork ships fixes plus orchestration features (background tasks, parallel panels, adversarial debate, observable streaming, OAuth-to-API fallback, central validated dispatch, bounded provider concurrency) that don't exist upstream. **Don't assume parity with upstream PAL** — read this doc, not the upstream README.
 
 If you are an AI agent working on this fork: this file is for you.
 
@@ -17,6 +17,22 @@ A Model Context Protocol server that lets one AI agent (typically Claude Code) c
 
 ---
 
+## Key architectural invariants
+
+These are the load-bearing rules. Violate them and concurrency, security, or cost guarantees regress:
+
+- **Single dispatch path.** `server.execute_tool(name, arguments)` is the only execution entrypoint. handle_call_tool, TaskManager._run, panel._run_panelist, and clink OAuth fallback all route through it. Never call `tool.execute()` directly from a new caller — file-size + model validation lives in execute_tool, and skipping it lets a 50MB file hit the paid API.
+- **TOOLS are factories, not singletons.** `server.TOOLS: dict[str, type[BaseTool]]`. Construct via `make_tool(name)` for execution. Use `TOOL_DESCRIPTORS[name]` for read-only metadata only — never call `.execute()` on a descriptor. This eliminates per-call state corruption under concurrent panel fan-out.
+- **Async provider calls bounded on three layers.** `agenerate_content` on `ModelProvider` runs the sync SDK on a thread, gated by:
+  - `PAL_MAX_CONCURRENT_API` semaphore (default 16) acquired *before* dispatch
+  - `PAL_MAX_PROVIDER_THREADS` ThreadPoolExecutor (default 32) caps thread leakage
+  - `PAL_API_TIMEOUT_S` (default 600) forwarded as SDK `timeout=` so threads always self-terminate
+- **Sync `generate_content` stays as the canonical method.** Tests mock it directly. The async wrapper delegates; don't delete the sync version.
+- **OAuth-first, always.** Clink calls the configured CLI via subprocess every time. If the CLI fails for a recoverable reason (TerminalQuotaError, 401, etc.), `_try_oauth_fallback` retries via `oauth_fallback_model`. Fallback failures are SURFACED, not swallowed. When quota replenishes, the next call uses the free path automatically — no state.
+- **Clink metadata is redacted + capped.** `_redact_and_cap` strips API-key shapes (sk-/AIza/xai-/sk-ant-), JWTs, and Bearer headers from stdout/stderr/raw_output_file before forwarding to MCP. Truncates at `PAL_CLINK_METADATA_CAP` / `PAL_CLINK_RAW_OUTPUT_CAP`. Opt-out via `PAL_DEBUG_CLI_OUTPUT=1` for local debugging only.
+
+---
+
 ## How this fork differs from upstream
 
 - **Trimmed model registry** to current flagships (gpt-5.5, gpt-5.4, gpt-5.1-codex, gemini-3.1-pro-preview, grok-4.3, grok-4.1-fast).
@@ -24,9 +40,10 @@ A Model Context Protocol server that lets one AI agent (typically Claude Code) c
 - **Streaming progress** for clink subprocesses (`utils/progress.py` + parser `describe_event` hook).
 - **Async background-task pattern** with push completion notifications.
 - **Panel + adversarial debate** as a first-class orchestration tool.
-- **Factory-pattern TOOLS registry** (`server.TOOLS` is `dict[str, type[BaseTool]]`; `make_tool(name)` produces a fresh instance per request). Eliminates singleton state corruption under concurrent panel fan-out. Use `TOOL_DESCRIPTORS[name]` for read-only metadata; never call `.execute()` on a descriptor.
-- **Async provider wrapper** (`agenerate_content` on `ModelProvider`). Wraps sync SDK calls in `asyncio.to_thread` so parallel panelists actually run in parallel. Sync `generate_content` stays as the canonical method (tests mock it directly).
-- **OAuth-to-API fallback** (`tools/clink.py`). When a clink CLI fails for a recoverable reason (TerminalQuotaError, 401, etc.) AND has a configured `oauth_fallback_model`, clink transparently retries via the paid API. We always try OAuth first, so quota replenishment is picked up automatically. Mapping in `clink/constants.py`: gemini→gemini-3.1-pro-preview, codex→gpt-5.5.
+- **Factory-pattern TOOLS registry** (see invariants above).
+- **Central validated dispatch** via `execute_tool()` — internal callers can no longer bypass MCP-boundary validation.
+- **Async provider wrapper** with semaphore + bounded executor + per-call timeout.
+- **OAuth-to-API fallback** (`tools/clink.py`). Mapping in `clink/constants.py`: gemini→gemini-3.1-pro-preview, codex→gpt-5.5. Panel reads `oauth_fallback_used` from response metadata so cost_tier honestly reports `oauth_fallback_paid` instead of mislabelling paid runs as free.
 - **MCP handshake instructions** encode cost-routing (clink for free, chat for paid), async-routing (long calls go through start_task), and panel-routing (keyword cues for picking modes).
 
 ---
@@ -35,7 +52,8 @@ A Model Context Protocol server that lets one AI agent (typically Claude Code) c
 
 ```
 server.py                  MCP entry point. TOOLS factory dict, TOOL_DESCRIPTORS
-                           cache, make_tool(name), handle_call_tool dispatcher,
+                           cache, make_tool(name), execute_tool(name, args) —
+                           the canonical dispatch — handle_call_tool wrapper,
                            handshake instructions.
 tools/
   shared/base_tool.py      BaseTool — get_name, get_input_schema, execute, etc.
@@ -45,6 +63,7 @@ tools/
   chat.py / clink.py / …   Concrete tool implementations.
   tasks.py                 TaskManager + 4 task tools (background pattern).
   panel.py                 Parallel fan-out + judge + adversarial debate.
+                           Reads cost_tier from response metadata.
 clink/
   agents/                  Per-CLI subprocess runners (Base/Gemini/Codex/Claude).
   parsers/                 Per-CLI output parsers + describe_event progress hooks.
@@ -52,9 +71,11 @@ clink/
   constants.py             INTERNAL_DEFAULTS — per-CLI parser, args,
                            oauth_fallback_model.
 providers/
-  base.py                  ModelProvider — sync generate_content +
-                           async agenerate_content wrapper, _run_with_retries.
+  base.py                  ModelProvider — sync generate_content + async
+                           agenerate_content wrapper, _run_with_retries,
+                           bounded ThreadPoolExecutor + API semaphore + timeout.
   openai_compatible.py     Sync .create() calls (OpenAI/xAI/Azure shared base).
+                           Forwards PAL_API_TIMEOUT_S as SDK timeout=.
   openai.py / gemini.py /  Provider subclasses.
   xai.py / azure_openai.py
 conf/
@@ -63,6 +84,9 @@ conf/
 systemprompts/             System prompts (per-tool, per-clink-role).
 utils/
   progress.py              MCP progress notifications + contextvar sink override.
+tests/
+  test_v1_hardening.py     Regression tripwires for factory / dispatch /
+                           redaction / OAuth detection / panel cost / bounds.
 ```
 
 ---
@@ -85,6 +109,18 @@ which pal-mcp-server   # → ~/.local/bin/pal-mcp-server
 
 After source edits, **restart Claude Code** so PAL re-reads the source. The editable install means no reinstall needed.
 
+### Tunable env vars
+
+| Var | Default | Purpose |
+|---|---|---|
+| `PAL_MAX_CONCURRENT_API` | 16 | Global cap on concurrent paid API calls |
+| `PAL_MAX_PROVIDER_THREADS` | 32 | Worker thread pool for sync SDK calls |
+| `PAL_API_TIMEOUT_S` | 600 | Per-call SDK timeout (bounds thread lifetime) |
+| `PAL_CLINK_METADATA_CAP` | 2048 | Cap on stderr/stdout in clink metadata |
+| `PAL_CLINK_RAW_OUTPUT_CAP` | 8192 | Cap on raw_output_file in clink metadata |
+| `PAL_DEBUG_CLI_OUTPUT` | unset | If set, skip clink metadata redaction + truncation |
+| `DISABLED_TOOLS` | unset | Comma-separated tool names to disable |
+
 ---
 
 ## Validate before committing
@@ -98,6 +134,9 @@ python3 -c "import ast; ast.parse(open('PATH').read()); print('ok')"
 import sys; sys.path.insert(0, '/Users/$USER/Projects/pal-mcp-server')
 import server; print('tools:', sorted(server.TOOLS.keys()))
 "  # should report 23 tools
+
+# Regression suite (~80ms)
+~/.local/share/uv/tools/pal-mcp-server/bin/python3 -m pytest tests/test_v1_hardening.py -v
 
 # Live smoke (after Claude Code restart)
 #   "use start_task to run panel with codex+grok-4.3, debate_rounds=1,
@@ -114,7 +153,7 @@ import server; print('tools:', sorted(server.TOOLS.keys()))
 - Match the file you're editing; don't impose new patterns unilaterally
 - Comments only for *why*, not *what*
 - Validate at boundaries (user input, provider responses); don't add defensive checks for things that can't happen
-- Never weaken security: don't re-add `--dangerously-bypass-approvals-and-sandbox` or `--yolo`
+- Never weaken security: don't re-add `--dangerously-bypass-approvals-and-sandbox` / `--yolo`; don't bypass redaction in committed code; don't introduce a second dispatch path
 - Don't commit secrets (API keys live in `~/.claude.json`, never in repo)
 
 ---
@@ -154,10 +193,13 @@ When the user names "codex" or "gemini" without a specific paid model, prefer `c
 
 ## Open work queue
 
-1. **Durable task storage**. `TaskManager._tasks` is in-memory; PAL restart loses everything in flight. SQLite-backed storage would survive crashes.
-2. **Per-call cost meter**. No per-tool spend tracking. Should expose cumulative cost in task summaries and panel output.
-3. **Streaming async path** for direct-API providers. The current async wrapper threads sync `.create()` calls; a true `stream=True` path with incremental MCP progress notifications would unlock per-token UI for direct-API panelists the same way clink already does for Codex/Gemini subprocesses.
-4. **Tests for new surfaces**. `tools/tasks.py`, `tools/panel.py`, `describe_event` hooks, the streaming runner, and the OAuth fallback path have no dedicated unit tests. The upstream suite still runs but doesn't cover any of this fork's new code.
+Reordered after the v1 audit panel (codex + gemini + grok-4.3 + gpt-5.5 + codex judge). Old queue items absorbed into newer commits or deferred per panel reasoning.
+
+1. **Durable task storage paired with stale-running handling.** `TaskManager._tasks` is in-memory; restart loses everything in flight. SQLite-backed records are the obvious fix, but pair it with stale/non-terminal handling because `_gc()` (`tools/tasks.py:421-443`) only evicts terminal records — a hung task lives forever. Persistence alone fixes nothing if hangs aren't bounded.
+2. **Streaming async path** for direct-API providers. Today the async wrapper threads sync `.create()` calls; a true `stream=True` path with incremental MCP progress notifications would unlock per-token UI for direct-API panelists the same way clink does for Codex/Gemini subprocesses. Audit panel deferred (gpt-5.5: "streaming improves UX; correctness fixes already shipped were higher leverage").
+3. **Per-CLI custom OAuth failure patterns.** `OAUTH_FAILURE_PATTERNS` in `tools/clink.py` is global. If codex and gemini ever diverge meaningfully on quota signals, move per-CLI into `clink/constants.py` alongside the fallback model.
+4. **Cancel-aware semaphore release.** When a panel call is cancelled mid-flight, the API semaphore is released cleanly via `async with`. But the worker thread holding a real SDK call keeps running (asyncio limitation; see invariants). The SDK timeout bounds this. A future improvement: track in-flight thread count and refuse new tasks when exhausted.
+5. **Tests for cancel/GC paths.** `test_v1_hardening.py` covers static surfaces well. The dynamic flows (cancel propagation, GC eviction, debate-round peer mapping under failures) are still uncovered.
 
 ---
 
@@ -166,6 +208,7 @@ When the user names "codex" or "gemini" without a specific paid model, prefer `c
 - Be terse. Don't write summaries the diff already shows.
 - Commit early and often with conventional messages. Push to `origin main` (no PR workflow on this fork).
 - Never `git push --force` to main without explicit confirmation.
+- Don't introduce a new dispatch path. If you find yourself calling `tool.execute()` directly, route through `server.execute_tool()` instead.
 - Don't touch `providers/*` for routine work — they're inherited from upstream and stable. Only modify when explicitly justified.
 - If a refactor needs a hard architectural call (e.g. "schemas can't be cached safely because they depend on instance state"), stop and surface the choice — don't make it unilaterally.
 
