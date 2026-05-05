@@ -247,17 +247,44 @@ class TaskManager:
         self._gc()  # opportunistic eviction
         return record, None
 
-    def get_record(self, task_id: str) -> Optional[TaskRecord]:
-        return self._tasks.get(task_id)
+    @staticmethod
+    def _session_match(record: TaskRecord, session: Any) -> bool:
+        """A record is visible to a session if (a) it has no session bound
+        (started outside an MCP request, e.g. tests) or (b) the session is the
+        same Python object as the one captured at start_task time. Identity
+        comparison is used because MCP doesn't expose a stable session id."""
+        if record.session is None:
+            return True
+        if session is None:
+            return False
+        return record.session is session
 
-    def list_records(self) -> list[TaskRecord]:
-        return list(self._tasks.values())
+    def get_record(
+        self,
+        task_id: str,
+        *,
+        session: Any = None,
+        require_session: bool = False,
+    ) -> Optional[TaskRecord]:
+        record = self._tasks.get(task_id)
+        if record is None:
+            return None
+        if require_session and not self._session_match(record, session):
+            return None
+        return record
+
+    def list_records(self, *, session: Any = None) -> list[TaskRecord]:
+        if session is None:
+            return list(self._tasks.values())
+        return [r for r in self._tasks.values() if self._session_match(r, session)]
 
     async def cancel(
         self,
         task_id: str,
         *,
         await_teardown: bool = True,
+        session: Any = None,
+        require_session: bool = False,
     ) -> dict[str, Any]:
         """Cancel a task. Optionally awaits teardown to confirm the subprocess died.
 
@@ -267,6 +294,8 @@ class TaskManager:
         record = self._tasks.get(task_id)
         if record is None:
             return {"ok": False, "reason": "unknown_task_id"}
+        if require_session and not self._session_match(record, session):
+            return {"ok": False, "reason": "not_owner"}
         if record.is_terminal():
             return {"ok": False, "reason": "already_terminal", "status": record.status}
         if record.status not in ("pending", "running", "cancelling"):
@@ -621,14 +650,18 @@ class TaskStatusTool(BaseTool):
             return _json_response({"status": "error", "error": str(exc)})
 
         manager = TaskManager.get()
+        session = _capture_session()
         if task_id == "all":
             return _json_response(
                 {
                     "status": "ok",
-                    "tasks": [r.to_summary(include_progress=events) for r in manager.list_records()],
+                    "tasks": [
+                        r.to_summary(include_progress=events)
+                        for r in manager.list_records(session=session)
+                    ],
                 }
             )
-        record = manager.get_record(task_id)
+        record = manager.get_record(task_id, session=session, require_session=True)
         if record is None:
             return _json_response({"status": "error", "error": f"unknown task_id {task_id!r}"})
         return _json_response({"status": "ok", "task": record.to_summary(include_progress=events)})
@@ -705,7 +738,7 @@ class TaskResultTool(BaseTool):
         except _BadArg as exc:
             return _json_response({"status": "error", "error": str(exc)})
 
-        record = TaskManager.get().get_record(task_id)
+        record = TaskManager.get().get_record(task_id, session=_capture_session(), require_session=True)
         if record is None:
             return _json_response({"status": "error", "error": f"unknown task_id {task_id!r}"})
 
@@ -794,8 +827,11 @@ class CancelTaskTool(BaseTool):
         except _BadArg as exc:
             return _json_response({"status": "error", "error": str(exc)})
 
-        outcome = await TaskManager.get().cancel(task_id)
-        record = TaskManager.get().get_record(task_id)
+        session = _capture_session()
+        outcome = await TaskManager.get().cancel(
+            task_id, session=session, require_session=True
+        )
+        record = TaskManager.get().get_record(task_id, session=session, require_session=True)
         return _json_response(
             {
                 **outcome,
