@@ -15,7 +15,7 @@ This is a customized fork of `BeehiveInnovations/pal-mcp-server`. Upstream is st
 
 ## Project structure (one line)
 
-`server.py` (entry, TOOLS dict, dispatcher) → `tools/` (23 MCP tools incl. tasks/panel) → `clink/` (subprocess CLI agents + parsers) → `providers/` (direct API providers, mostly untouched) → `conf/` (model + CLI configs).
+`server.py` (entry, TOOLS factory dict, `make_tool()`, dispatcher) → `tools/` (23 MCP tools incl. tasks/panel) → `clink/` (subprocess CLI agents + parsers + OAuth-to-API fallback) → `providers/` (direct API providers + async wrapper) → `conf/` (model + CLI configs).
 
 ## Style
 
@@ -23,4 +23,4 @@ Python 3.9+, line length ~120, type hints required for new code, `from __future_
 
 ## What's open
 
-The factory-pattern TOOLS refactor (v1.0 blocker — singleton tools mutate per-call state), sync→async provider refactor (C8), OAuth-to-API fallback (F1), durable task storage, per-call cost meter. See `CLAUDE.md` for the full queue and rationale.
+Durable task storage (SQLite-backed; `TaskManager._tasks` is currently in-memory), per-call cost meter, true streaming async path for direct-API providers (today they thread sync `.create()` calls), unit tests for the new surfaces (tasks/panel/describe_event/streaming/OAuth fallback). See `CLAUDE.md` for full rationale.
