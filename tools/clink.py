@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
 from datetime import datetime, timezone
 from pathlib import Path
@@ -25,6 +26,51 @@ logger = logging.getLogger(__name__)
 
 MAX_RESPONSE_CHARS = 20_000
 SUMMARY_PATTERN = re.compile(r"<SUMMARY>(.*?)</SUMMARY>", re.IGNORECASE | re.DOTALL)
+
+# Caps on how much CLI stdout/stderr/raw_output_file we surface to the MCP
+# caller. Pre-cap, the success path forwarded the entire stderr stream and
+# the entire raw JSON the CLI wrote to its output file — both can include
+# absolute paths under ~/, env-derived strings, prompt fragments, and (in
+# error cases) full auth-failure dumps with token-shaped strings. Set high
+# enough to keep useful debug detail but bounded enough that a misbehaving
+# CLI can't fill MCP transport with megabytes of internal state. Override
+# via env for one-off forensics without redeploying.
+_CLI_METADATA_TEXT_CAP = int(os.environ.get("PAL_CLINK_METADATA_CAP", "2048"))
+_CLI_RAW_OUTPUT_CAP = int(os.environ.get("PAL_CLINK_RAW_OUTPUT_CAP", "8192"))
+
+# Pattern -> redaction-token. Matched against stderr/stdout/raw_output_file
+# before forwarding to MCP. Conservative: real provider errors usually only
+# include API-key strings if they were echoed back by an angry SDK. We strip
+# anything shaped like a known token format.
+#   - sk-... and sk-ant-...  : OpenAI / Anthropic API keys
+#   - AIza...                : Google API keys
+#   - xai-...                : xAI keys
+#   - eyJhbG... (JWT-shaped) : OAuth bearer tokens
+#   - Bearer <hex/jwt>       : Authorization headers echoed in errors
+# Plus paths under the user's home (best-effort, never perfect on macOS/Linux).
+_REDACTION_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"sk-(?:ant-)?[A-Za-z0-9_\-]{20,}"), "[REDACTED_API_KEY]"),
+    (re.compile(r"AIza[0-9A-Za-z_\-]{30,}"), "[REDACTED_API_KEY]"),
+    (re.compile(r"xai-[A-Za-z0-9_\-]{20,}"), "[REDACTED_API_KEY]"),
+    (re.compile(r"eyJ[A-Za-z0-9_\-]{20,}\.[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+"), "[REDACTED_JWT]"),
+    (re.compile(r"(?i)Bearer\s+[A-Za-z0-9_\-\.=]{16,}"), "Bearer [REDACTED]"),
+)
+
+
+def _redact_and_cap(text: str, *, cap: int) -> str:
+    """Bound + redact a CLI output string for safe inclusion in MCP metadata."""
+    if not text:
+        return text
+    if os.environ.get("PAL_DEBUG_CLI_OUTPUT"):
+        # Opt-in escape hatch for local debugging. Keeps full text and skips
+        # secret redaction. Never leak this in logs of real user calls.
+        return text
+    redacted = text
+    for pattern, replacement in _REDACTION_PATTERNS:
+        redacted = pattern.sub(replacement, redacted)
+    if len(redacted) > cap:
+        return redacted[:cap] + f"\n[…truncated {len(redacted) - cap} chars by clink metadata cap]"
+    return redacted
 
 # Substrings (case-insensitive) in a CLI's stdout/stderr that mark a recoverable
 # OAuth-side failure: the caller's free quota / login is the problem, not the
@@ -359,9 +405,15 @@ class CLinkTool(SimpleTool):
         metadata.update(result.parsed.metadata)
 
         if result.stderr.strip():
-            metadata.setdefault("stderr", result.stderr.strip())
+            metadata.setdefault(
+                "stderr",
+                _redact_and_cap(result.stderr.strip(), cap=_CLI_METADATA_TEXT_CAP),
+            )
         if result.output_file_content and "raw" not in metadata:
-            metadata["raw_output_file"] = result.output_file_content
+            metadata["raw_output_file"] = _redact_and_cap(
+                result.output_file_content,
+                cap=_CLI_RAW_OUTPUT_CAP,
+            )
         return metadata
 
     def _merge_metadata(self, base: dict[str, Any] | None, extra: dict[str, Any]) -> dict[str, Any]:
@@ -462,15 +514,20 @@ class CLinkTool(SimpleTool):
         return cleaned
 
     def _build_error_metadata(self, client: ResolvedCLIClient, exc: CLIAgentError) -> dict[str, Any]:
-        """Assemble metadata for failed CLI calls."""
+        """Assemble metadata for failed CLI calls.
+
+        Both stdout and stderr go through _redact_and_cap because failure
+        outputs are exactly where SDK clients are most likely to echo back
+        partial credentials, full request bodies, or auth-token shapes.
+        """
         metadata: dict[str, Any] = {
             "cli_name": client.name,
             "return_code": exc.returncode,
         }
         if exc.stdout:
-            metadata["stdout"] = exc.stdout.strip()
+            metadata["stdout"] = _redact_and_cap(exc.stdout.strip(), cap=_CLI_METADATA_TEXT_CAP)
         if exc.stderr:
-            metadata["stderr"] = exc.stderr.strip()
+            metadata["stderr"] = _redact_and_cap(exc.stderr.strip(), cap=_CLI_METADATA_TEXT_CAP)
         return metadata
 
     @staticmethod
