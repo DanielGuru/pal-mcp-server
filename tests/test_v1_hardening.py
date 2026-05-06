@@ -81,6 +81,37 @@ def test_execute_tool_raises_on_unknown_tool():
     asyncio.run(go())
 
 
+def test_execute_tool_resolves_auto_for_filesize_cap_on_no_model_tools(tmp_path, monkeypatch):
+    """Regression: panel/clink (tools that don't require_model) hit the file-size
+    check too. When DEFAULT_MODEL='auto' the size cap call would crash with
+    'unresolved model: auto'. Caught the first time live by a real panel run."""
+    import server
+
+    monkeypatch.setattr(server, "DEFAULT_MODEL", "auto")
+    sample = tmp_path / "tiny.txt"
+    sample.write_text("hello")
+
+    async def go():
+        # 'panel' has requires_model() == False, so size_model would default to
+        # DEFAULT_MODEL='auto'. Pre-fix this raised ValueError before panel ever
+        # got to validate its own arguments. Post-fix it should reach panel and
+        # fail there with a normal arg-validation error (not 'unresolved model').
+        try:
+            await server.execute_tool(
+                "panel",
+                {"prompt": "x", "panelists": ["codex"], "absolute_file_paths": [str(sample)]},
+            )
+        except ValueError as exc:
+            if "unresolved model" in str(exc):
+                pytest.fail(f"file-size cap regression: {exc}")
+        except Exception:
+            # Any other error (panel rejecting the tiny prompt, missing CLI,
+            # etc) is fine — we only care that we got past the size check.
+            pass
+
+    asyncio.run(go())
+
+
 # ---------------------------------------------------------------------------
 # Clink metadata redaction (6e2f0a2)
 # ---------------------------------------------------------------------------

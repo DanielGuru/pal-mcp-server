@@ -899,12 +899,28 @@ async def execute_tool(name: str, arguments: dict[str, Any]) -> list[TextContent
         arguments["_resolved_model_name"] = model_name
 
     # File-size validation runs for ALL tools, not just model-aware ones.
-    # The model_name used for the cap is either the resolved one (model-aware
-    # tools) or DEFAULT_MODEL (clink/panel/etc — used purely as a sizing
-    # heuristic, never sent to a provider).
+    # The model used for the cap is either the resolved one (model-aware
+    # tools) or a sizing heuristic (clink/panel/etc — never sent to a
+    # provider, just used to pick a sensible byte cap).
+    #
+    # When DEFAULT_MODEL is "auto", pick a concrete fallback for the tool's
+    # category. check_total_file_size rejects "auto" because cap depends on
+    # the model's context window.
     argument_files = arguments.get("absolute_file_paths")
     if argument_files:
         size_model = arguments.get("_resolved_model_name") or DEFAULT_MODEL
+        if size_model.lower() == "auto":
+            try:
+                tool_category = tool.get_model_category()
+                size_model = ModelProviderRegistry.get_preferred_fallback_model(tool_category)
+            except Exception:
+                # Last-resort fallback: pick any available model. If nothing
+                # is configured the call would fail later anyway.
+                available = list(ModelProviderRegistry.get_available_models(respect_restrictions=True).keys())
+                if not available:
+                    raise
+                size_model = available[0]
+            logger.debug(f"Resolved 'auto' to {size_model!r} for file-size cap (tool {name})")
         logger.debug(f"Checking file sizes for {len(argument_files)} files (cap from model {size_model})")
         file_size_check = check_total_file_size(argument_files, size_model)
         if file_size_check:
