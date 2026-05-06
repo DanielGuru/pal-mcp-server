@@ -285,6 +285,7 @@ from tools.graph_query import (  # noqa: E402
 )
 from tools.web_url import WebUrlTool  # noqa: E402
 from tools.multiaudit import MultiauditTool  # noqa: E402
+from tools.bugfind import BugfindTool  # noqa: E402
 
 TOOLS: dict[str, type] = {
     "chat": ChatTool,
@@ -315,6 +316,7 @@ TOOLS: dict[str, type] = {
     "run_tree": RunTreeTool,
     "web_url": WebUrlTool,
     "multiaudit": MultiauditTool,
+    "bugfind": BugfindTool,
 }
 
 TOOLS = filter_disabled_tools(TOOLS)

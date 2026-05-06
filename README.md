@@ -285,6 +285,32 @@ multiaudit debate_rounds=2                # deeper pressure-testing
 
 ---
 
+## 🐞 bugfind — magic-phrase bug investigation
+
+Sister tool to `multiaudit`, but bug-shaped. Say one of these and Panel fires a 4-way investigation panel against your bug description:
+
+> "bugfind it"
+> "find this bug"
+> "use panel to find the bug"
+> "what's breaking, panel debug it"
+
+The `bugfind` tool takes the user's bug description, auto-attaches debugging context (recent commits, the tail of `logs/mcp_server.log` filtered to ERROR/Traceback/Failed/Exception, optionally explicitly attached files), and dispatches a `start_task('panel', ...)` with `[codex, gemini, claude, grok-4.3]`, 1 debate round, codex as judge. Returns the task_id + live viewer URL.
+
+The investigation rubric is intentionally different from multiaudit's audit rubric:
+**REPRO** (exact steps) → **ROOT CAUSE** (file:line + reasoning) → **MINIMAL FIX** (smallest diff, with code snippet, ideally as a unified diff) → **REGRESSION TEST** (the test that would have caught it, with assertion specifics) → **BLAST RADIUS** (what else this affects) → **WHAT YOU MISSED** (what the original implementer likely didn't consider).
+
+The judge synthesises a single fix proposal you can review and apply. When file paths or symbols appear in the description, pass `attached_files=[<absolute paths>]` so the panelists can read the actual code rather than guessing. Skip the log tail (`skip_log_tail=true`) for UI/doc bugs that aren't reflected in logs.
+
+```
+bugfind "the viewer header shows 'grok-4.3' instead of 'panel'"
+bugfind "..." attached_files=["/abs/path/to/utils/web_viewer.py"]
+bugfind "..." debate_rounds=2                 # deeper pressure-testing
+bugfind "..." panelists=["claude","codex"]    # 2-way only
+bugfind "..." skip_log_tail=true              # UI bug, logs irrelevant
+```
+
+---
+
 ## 🗄️ SQLite Execution Graph
 
 Every tool dispatch — including nested panel fanouts, clink subagents, async tasks, and OAuth-to-API fallbacks — is recorded in a per-repo `.panel/execution_graph.db`. This gives you:
@@ -334,6 +360,7 @@ To optimize context window usage, only essential tools are enabled by default:
 **Enabled by default:**
 - `chat`, `thinkdeep`, `planner`, `consensus`, `panel` - Core collaboration tools
 - `multiaudit` - Magic-phrase PR audit (reads git diff, fans out to panel)
+- `bugfind` - Magic-phrase bug investigation (takes a bug description + auto-collected context, fans out to panel for diagnosis + fix proposal)
 - `codereview`, `precommit`, `debug` - Essential code quality tools
 - `apilookup` - Rapid API/SDK information lookup
 - `challenge` - Critical thinking utility

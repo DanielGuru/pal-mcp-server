@@ -8,20 +8,24 @@ If you are an AI agent working on this fork: this file is for you.
 
 ## What this is
 
-A Model Context Protocol server that lets one AI agent (typically Claude Code) consult, orchestrate, and debate multiple other models. 28 MCP tools in six families:
+A Model Context Protocol server that lets one AI agent (typically Claude Code) consult, orchestrate, and debate multiple other models. 29 MCP tools in six families:
 
 1. **Direct provider tools** — `chat`, `consensus`, `codereview`, `debug`, `thinkdeep`, `precommit`, `planner`, etc. Hit OpenAI / Gemini / xAI APIs via paid keys. `tools/*.py`, `tools/simple/base.py`, `tools/workflow/`.
 2. **Clink** — `clink` runs an external CLI (Codex CLI, Gemini CLI, Claude CLI) as a subprocess. Uses each CLI's own auth, so **OAuth (free)** when the CLI is logged in via subscription. `tools/clink.py` + `clink/`. Includes automatic OAuth-to-API fallback (see below).
 3. **Async background tasks** — `start_task`, `task_status`, `task_result`, `cancel_task`. Wrap any other tool so the conversation isn't blocked. `tools/tasks.py`. Admission control, periodic GC, session ownership, push completion notifications.
 4. **Panel orchestration** — `panel` fans one prompt to N models in parallel, optional judge synthesis, optional adversarial `debate_rounds`. Reserved panelist name `host` routes through MCP sampling so Claude Code is a peer in the debate. `tools/panel.py`.
-5. **PR-shaped audit workflow** — `multiaudit` reads `git diff`, packages it with intent context, and fires `start_task('panel', ...)` with `[codex, gemini, claude, grok-4.3]`. `host` is intentionally excluded from defaults because Claude Code doesn't advertise MCP sampling capability today; pass `panelists=["host", ...]` explicitly when running under an MCP host that does. `tools/multiaudit.py`.
+5. **PR-shaped audit + bug-shaped investigation** — `multiaudit` reads `git diff`, packages it with intent context, and fires `start_task('panel', ...)` with `[codex, gemini, claude, grok-4.3]`. `bugfind` (sister tool, same shape) takes a `bug_description` plus auto-collected context (recent commits, error log tail, optionally attached files) and fires the same 4-way panel with a bug-investigation rubric (REPRO / ROOT CAUSE / MINIMAL FIX / REGRESSION TEST / BLAST RADIUS / WHAT YOU MISSED). `host` is intentionally excluded from defaults because Claude Code doesn't advertise MCP sampling capability today; pass `panelists=["host", ...]` explicitly when running under an MCP host that does. `tools/multiaudit.py` + `tools/bugfind.py`.
 6. **Execution graph + web viewer** — `list_runs`, `get_run`, `run_tree`, `web_url`. Read-only access to the SQLite-backed durable record of every dispatch + a live HTTP viewer page that auto-opens in the browser on Panel boot. Survives Panel restart. `tools/graph_query.py` + `utils/execution_graph.py` + `utils/web_viewer.py`.
 
 ---
 
 ## Magic-phrase recognition (for the AI agent reading this)
 
-When the user says any of these phrases, immediately call the `multiaudit` MCP tool — don't ask, don't propose alternatives, just dispatch:
+There are TWO magic-phrase tools — `multiaudit` for PR-shaped review, `bugfind` for bug-shaped investigation. Both fan one prompt to a 4-way panel and return a viewer URL. **Don't ask, don't propose alternatives — just dispatch the right one.**
+
+### `multiaudit` — PR-shaped audit (BEFORE commit/push)
+
+When the user says any of these, call `multiaudit`:
 
 - "multiaudit" / "multiaudit it" / "OK multiaudit it now"
 - "audit this" / "audit this PR" / "audit this branch"
@@ -31,11 +35,19 @@ When the user says any of these phrases, immediately call the `multiaudit` MCP t
 - "what do the models think" (about a code change)
 - "second opinion from everyone"
 
-`multiaudit` reads the current branch's `git diff`, builds a structured audit prompt with the standard rubric (verdict / bugs / design / security / missing tests / what you'd attack), fires a 4-way panel via `start_task` (codex + gemini + claude + grok-4.3, 1 debate round, codex as judge), and returns a task_id + the live web viewer URL. Hand the user the URL immediately, then poll `task_status` / `run_tree` / `task_result` to surface progress and findings.
+`multiaudit` reads the current branch's `git diff`, builds a structured audit prompt with the standard rubric (verdict / bugs / design / security / missing tests / what you'd attack), fires a 4-way panel via `start_task` (codex + gemini + claude + grok-4.3, 1 debate round, codex as judge), and returns a task_id + the live web viewer URL. Hand the user the URL immediately, then poll `task_status` / `run_tree` / `task_result` to surface progress and findings. When the user adds context ("multiaudit but focus on the auth changes"), pass it through as `extra_context`. The user wants the audit BEFORE you commit/push code — multiaudit is a gate, not a post-hoc check.
 
-When the user adds context to the magic phrase ("multiaudit but focus on the auth changes"), pass it through as `extra_context`.
+### `bugfind` — bug-shaped investigation
 
-The user wants the audit BEFORE you commit/push code — multiaudit is a gate, not a post-hoc check.
+When the user says any of these, call `bugfind`:
+
+- "bugfind" / "bugfind it" / "bugfind this"
+- "find this bug" / "use panel to find the bug"
+- "what's breaking" / "why is X broken"
+- "panel debug this" / "diagnose with all models"
+- "all four of you find the bug"
+
+`bugfind` takes a `bug_description` (required — the user's full description of the symptom, what they expected, what actually happens), auto-attaches context (recent commits, the tail of `logs/mcp_server.log` filtered to ERROR/Traceback/Failed/Exception, and any files passed via `attached_files`), and fires the same 4-way panel — but with a DIFFERENT rubric: REPRO / ROOT CAUSE / MINIMAL FIX (with code snippet, ideally a unified diff) / REGRESSION TEST / BLAST RADIUS / WHAT YOU MISSED. The judge synthesises a single fix proposal the user can review and apply. When file paths or symbols appear in the bug description, call `bugfind` with `attached_files=[<absolute paths>]` so the panelists can read the actual code rather than guessing. Skip the log tail (`skip_log_tail=true`) for UI/doc bugs that aren't reflected in logs.
 
 ---
 
@@ -143,6 +155,12 @@ tools/
                            [codex, gemini, claude, grok-4.3]. host is
                            opt-in (Claude Code doesn't advertise sampling
                            capability today).
+  bugfind.py               Magic-phrase bug investigation. Takes a
+                           bug_description, auto-attaches recent commits
+                           + error log tail + optional files, fires the
+                           same 4-way panel with a bug rubric (REPRO /
+                           ROOT CAUSE / MINIMAL FIX / REGRESSION TEST /
+                           BLAST RADIUS / WHAT YOU MISSED).
 ```
 
 ---
