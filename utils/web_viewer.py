@@ -151,6 +151,35 @@ _INDEX_HTML = r"""<!doctype html>
   .summary .verdict-tally { display: inline-flex; gap: 8px; margin-left: 10px; }
   .summary .verdict-tally span { padding: 2px 8px; background: #1f2027; border-radius: 3px;
                                  font-size: 10px; text-transform: uppercase; letter-spacing: 0.3px; }
+  /* Prompt header — shows what each run was actually asked to do */
+  .prompt-header { margin-bottom: 18px; padding: 10px 14px;
+                   background: #15161c; border-left: 2px solid #3a3d4a;
+                   border-radius: 4px; font-size: 12px; }
+  .prompt-header > summary { cursor: pointer; color: var(--muted);
+                             font-weight: 600; padding: 2px 0;
+                             font-size: 11px; letter-spacing: 0.3px;
+                             text-transform: uppercase; }
+  .prompt-header > summary:hover { color: var(--fg); }
+  .prompt-header[open] > summary { color: var(--fg);
+                                   border-bottom: 1px solid var(--border);
+                                   margin-bottom: 10px; padding-bottom: 8px; }
+  .prompt-header .prompt-primary { margin: 8px 0; }
+  .prompt-header .prompt-label { display: inline-block; padding: 2px 8px;
+                                 background: #1f2027; color: var(--accent);
+                                 border-radius: 3px; font-size: 10px;
+                                 letter-spacing: 0.3px; text-transform: uppercase;
+                                 margin-bottom: 6px; }
+  .prompt-header pre { font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+                       font-size: 12px; line-height: 1.55; color: var(--fg);
+                       white-space: pre-wrap; word-wrap: break-word;
+                       margin: 0; padding: 0; max-height: 500px;
+                       overflow-y: auto; }
+  .prompt-header .prompt-rest { margin-top: 10px; padding-top: 8px;
+                                border-top: 1px dashed var(--border); }
+  .prompt-header .prompt-rest > summary { font-weight: 400; text-transform: none;
+                                          letter-spacing: 0; font-size: 11px; }
+  .prompt-header .prompt-rest pre { color: var(--muted); font-size: 11px;
+                                    margin-top: 6px; max-height: 300px; }
   /* Transcript blocks (panelist answers + judge synthesis) */
   .transcript { margin: 14px 0; padding: 12px 16px;
                 background: var(--card); border-left: 3px solid var(--speaker);
@@ -545,6 +574,80 @@ function renderRawTree(tree) {
   return `<div class="raw-tree"><pre>${escapeHtml(JSON.stringify(tree, null, 2))}</pre></div>`;
 }
 
+// Pull the user-facing prompt out of a run's args_json and render it as a
+// collapsible block at the top of the run page. For multiaudit, the
+// interesting field is `extra_context` (the user's framing for the audit);
+// for panel/chat/consensus it's `prompt`. Other tools that took an
+// arguments dict get their full args_json rendered as a fallback so
+// nothing is hidden — the header is "what was this run actually asked
+// to do," and that should never be invisible.
+function renderPromptHeader(tree) {
+  if (!tree || !tree.args_json) return '';
+
+  let args;
+  try {
+    args = JSON.parse(tree.args_json);
+  } catch (_) {
+    return '';
+  }
+  if (!args || typeof args !== 'object') return '';
+
+  // Strip the internal _graph_* hints — they're routing metadata, not
+  // user-facing input, and would clutter the header.
+  const userFacing = {};
+  for (const [k, v] of Object.entries(args)) {
+    if (k.startsWith('_graph_') || k.startsWith('_model_context')) continue;
+    userFacing[k] = v;
+  }
+  if (Object.keys(userFacing).length === 0) return '';
+
+  // Pick the field that best represents "what was asked" for known tools.
+  // For the rest we just render the full args dict.
+  const tool = (tree.tool_name || '').toLowerCase();
+  let primaryLabel = null;
+  let primaryText = null;
+
+  if (tool === 'multiaudit' && userFacing.extra_context) {
+    primaryLabel = 'extra_context';
+    primaryText = String(userFacing.extra_context);
+  } else if ((tool === 'panel' || tool === 'chat' || tool === 'consensus' ||
+              tool === 'thinkdeep' || tool === 'planner' || tool === 'challenge')
+             && userFacing.prompt) {
+    primaryLabel = 'prompt';
+    primaryText = String(userFacing.prompt);
+  }
+
+  // The "rest" — everything except the primary field — gets serialized
+  // as a JSON tail so it's still visible without dominating.
+  const rest = {};
+  for (const [k, v] of Object.entries(userFacing)) {
+    if (k === primaryLabel) continue;
+    rest[k] = v;
+  }
+  const restJson = Object.keys(rest).length > 0
+    ? JSON.stringify(rest, null, 2)
+    : null;
+
+  // For long primary text, collapse by default. Short prompts stay
+  // expanded — there's no point hiding three sentences.
+  const isLong = primaryText && primaryText.length > 600;
+  const openAttr = isLong ? '' : 'open';
+
+  let body = '';
+  if (primaryText !== null) {
+    body += `<div class="prompt-primary"><span class="prompt-label">${escapeHtml(primaryLabel)}</span><pre>${escapeHtml(primaryText)}</pre></div>`;
+  }
+  if (restJson) {
+    body += `<details class="prompt-rest"><summary>other args (${Object.keys(rest).length})</summary><pre>${escapeHtml(restJson)}</pre></details>`;
+  }
+  if (!body) {
+    // No known primary field — render full args dict
+    body = `<pre>${escapeHtml(JSON.stringify(userFacing, null, 2))}</pre>`;
+  }
+
+  return `<details class="prompt-header" ${openAttr}><summary>📋 prompt sent to this run</summary>${body}</details>`;
+}
+
 function renderVerdictTally(tree) {
   // Pull the panel's verdict_tally from the root run's result if available.
   let tally = null;
@@ -636,6 +739,8 @@ async function renderConversation() {
       ${renderVerdictTally(tree)}
     </div>`;
 
+    const promptHeader = renderPromptHeader(tree);
+
     let middle;
     if (events.length) {
       middle = events.map(renderTranscriptEvent).join('');
@@ -657,7 +762,7 @@ async function renderConversation() {
     const wasAtBottom = preDistFromBottom <= STICKY_BOTTOM_PX;
     const preScrollY = window.scrollY;
 
-    $('#content').innerHTML = summary + middle + renderRawTree(tree);
+    $('#content').innerHTML = summary + promptHeader + middle + renderRawTree(tree);
 
     const newEventCount = events.length;
     LAST_EVENT_COUNT = newEventCount;

@@ -417,6 +417,7 @@ These variables are not shown by default but control important behaviour:
 | `PANEL_CLINK_METADATA_CAP` | *(internal)* | Max chars of clink metadata injected into prompts |
 | `PANEL_CLINK_RAW_OUTPUT_CAP` | *(internal)* | Max chars of raw CLI output returned to MCP client |
 | `PANEL_DEBUG_CLI_OUTPUT` | unset | **⚠️ Disables all secret redaction in clink output. Never set in shared environments.** |
+| `PANEL_OAUTH_FIRST` | `1` | Try free OAuth (codex/gemini/claude CLI) before paid API for every direct-provider tool, when the model has a CLI route. Set `0` to disable and bill every call against the paid API. |
 | `PANEL_MCP_FORCE_ENV_OVERRIDE` | unset | When `true`, **`.env` file values override process env vars** (useful when an MCP client passes stale/cached keys). Default behavior — process env wins. |
 | `CONVERSATION_TIMEOUT_HOURS` | `3` | Hours before a conversation thread expires |
 | `MAX_CONVERSATION_TURNS` | `50` | Max turns per thread (50 turns = 25 exchanges) |

@@ -629,6 +629,19 @@ class SimpleTool(BaseTool):
                             # Fallback if provider doesn't have get_provider_type method
                             metadata["provider_used"] = str(provider)
 
+            # Merge OAuth-first routing fields from the response metadata so
+            # cost_tier / oauth_route / oauth_fallback_used reach the viewer
+            # cost badges and downstream cost-rollup logic. No-op when the
+            # call wasn't OAuth-routed (response_metadata has none of them).
+            # ``model_response`` is stashed on ``model_info`` by the caller
+            # (line ~465); not a free variable in this scope.
+            from providers.oauth_first import merge_oauth_metadata
+            response_metadata = None
+            if model_info:
+                _mr = model_info.get("model_response")
+                response_metadata = getattr(_mr, "metadata", None) if _mr else None
+            metadata = merge_oauth_metadata(metadata, response_metadata)
+
             return ToolOutput(
                 status="success",
                 content=formatted_response,
@@ -724,6 +737,15 @@ class SimpleTool(BaseTool):
                         except AttributeError:
                             # Fallback if provider doesn't have get_provider_type method
                             metadata["provider_used"] = str(provider)
+
+                # Surface OAuth-first routing fields so the viewer cost
+                # badges and cost-rollup logic see how the call was billed.
+                from providers.oauth_first import merge_oauth_metadata
+                _mr = model_info.get("model_response")
+                metadata = merge_oauth_metadata(
+                    metadata,
+                    getattr(_mr, "metadata", None) if _mr else None,
+                )
 
             return ToolOutput(
                 status="continuation_available",

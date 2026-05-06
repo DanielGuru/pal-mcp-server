@@ -59,6 +59,7 @@ These are the load-bearing rules. Violate them and concurrency, security, or cos
 - **`host` panelist is reserved for MCP sampling.** Routes through `ServerSession.create_message` to ask the connected MCP client to invoke its own LLM. Any clink CLI named `host` would be shadowed (the routing in `_is_clink_agent` returns False for `host`).
 - **Host session is reachable via contextvar in nested calls.** `utils/host_session.py` exposes a ContextVar that `server.execute_tool` (live calls) and `TaskManager._run` (background calls) populate. Read with `get_host_session()`. The host panelist fails cleanly with a diagnostic if no session is reachable.
 - **OAuth-first, always.** Clink calls the configured CLI via subprocess every time. If the CLI fails for a recoverable reason (TerminalQuotaError, 401, etc.), `_try_oauth_fallback` retries via `oauth_fallback_model`. Fallback failures are SURFACED, not swallowed. When quota replenishes, the next call uses the free path automatically — no state.
+- **OAuth-first extends to direct-API tools.** `OAuthFirstProvider` (`providers/oauth_first.py`) wraps every registered provider when `PANEL_OAUTH_FIRST=1` (default). For models in `clink.constants.MODEL_TO_CLI` (gpt-5.5 → codex, gemini-3.1-pro-preview → gemini, claude-opus-4-7 / claude-sonnet-4-6 → claude), `agenerate_content` routes through `execute_tool('clink', ...)` first — same canonical dispatch path, same execution-graph child run, same redacted progress events. CLI not on PATH → silent fall-through to direct API with `cost_tier=api_paid`. clink raises hard (config broken / its own paid-API fallback also failed) → fall through to direct API with `cost_tier=oauth_fallback_paid`. Conservative exact-match mapping — non-flagship variants (`gpt-5.4`, `grok-*`, etc.) bypass the wrapper. Sync `generate_content` stays on the SDK to avoid blocking the calling thread on subprocess I/O.
 - **Clink metadata is redacted + capped.** `_redact_and_cap` strips API-key shapes (sk-/AIza/xai-/sk-ant-), JWTs, and Bearer headers from stdout/stderr/raw_output_file before forwarding to MCP. Truncates at `PANEL_CLINK_METADATA_CAP` / `PANEL_CLINK_RAW_OUTPUT_CAP`. Opt-out via `PANEL_DEBUG_CLI_OUTPUT=1` for local debugging only.
 
 ---
@@ -180,6 +181,7 @@ After source edits, **restart Claude Code** so Panel re-reads the source. The ed
 | `PANEL_WEB_AUTO_OPEN` | 1 | Auto-open browser on Panel boot. `0` disables. |
 | `PANEL_WEB_DISABLE` | unset | Skip web server entirely if set. |
 | `PANEL_FALLBACK_ON_TIMEOUT` | unset | If set, hung clink CLIs trigger OAuth-to-API fallback. Off by default to avoid double-charge on legitimately slow models. |
+| `PANEL_OAUTH_FIRST` | 1 | Wrap every direct-API provider in `OAuthFirstProvider` so models with a CLI route (gpt-5.5, gemini-3.1-pro-preview, claude-opus-4-7, claude-sonnet-4-6) try the free OAuth path first. Set `0` to opt out — every call hits the paid API directly, regardless of CLI auth state. |
 | `DISABLED_TOOLS` | unset | Comma-separated tool names to disable |
 
 ---

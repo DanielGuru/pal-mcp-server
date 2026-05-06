@@ -627,15 +627,22 @@ of the evidence, even when it strongly points in one direction.""",
                 images=request.images if request.images else None,
             )
 
+            from providers.oauth_first import merge_oauth_metadata
+            consult_metadata: dict = {
+                "provider": provider.get_provider_type().value,
+                "model_name": model_name,
+            }
+            # Surface OAuth-first routing fields so consensus's cost rollup
+            # and the viewer can see whether each panelist was billed.
+            consult_metadata = merge_oauth_metadata(
+                consult_metadata, getattr(response, "metadata", None)
+            )
             return {
                 "model": model_name,
                 "stance": stance,
                 "status": "success",
                 "verdict": response.content,
-                "metadata": {
-                    "provider": provider.get_provider_type().value,
-                    "model_name": model_name,
-                },
+                "metadata": consult_metadata,
             }
 
         except Exception as e:

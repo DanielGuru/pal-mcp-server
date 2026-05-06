@@ -146,6 +146,14 @@ class ModelProviderRegistry:
             # Initialize non-custom provider with just API key
             provider = provider_class(api_key=api_key)
 
+        # OAuth-first wrap (no-op when PANEL_OAUTH_FIRST=0). For models
+        # in clink.constants.MODEL_TO_CLI, the wrapper routes
+        # agenerate_content through the corresponding clink CLI before
+        # falling through to this provider's API. Idempotent — re-wrapping
+        # is a no-op. See providers/oauth_first.py for full design notes.
+        from providers.oauth_first import maybe_wrap
+        provider = maybe_wrap(provider)
+
         # Cache the instance
         instance._initialized_providers[provider_type] = provider
 

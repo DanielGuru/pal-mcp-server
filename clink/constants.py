@@ -65,3 +65,45 @@ INTERNAL_DEFAULTS: dict[str, CLIInternalDefaults] = {
         ),
     ),
 }
+
+
+def _build_model_to_cli() -> dict[str, str]:
+    """Inverse of ``oauth_fallback_model``: which CLI handles which model.
+
+    Derived from ``INTERNAL_DEFAULTS`` so env-driven overrides like
+    ``PANEL_CLAUDE_OAUTH_FALLBACK_MODEL`` automatically flow through to
+    the OAuth-first routing layer — no manual sync between two tables.
+
+    Augmented with a few extra flagships per CLI that the OAuth path can
+    reasonably serve; the ``oauth_fallback_model`` field on each CLI is
+    only ONE model, but each CLI subscription typically serves a small
+    family (claude → opus + sonnet; codex → gpt-5.5; gemini → 3.1 Pro
+    preview). Add more entries here as the registry grows; new flagships
+    should be opt-in (added to this map) rather than fuzzy-matched, since
+    silent re-routing of a user's specific model request is the failure
+    mode this layer must avoid.
+    """
+
+    # Start with the canonical inverse mapping.
+    mapping: dict[str, str] = {
+        defaults.oauth_fallback_model: cli_name
+        for cli_name, defaults in INTERNAL_DEFAULTS.items()
+        if defaults.oauth_fallback_model
+    }
+
+    # Hand-curated extras: models the same CLI can reasonably serve.
+    # For Claude: opus + sonnet share the claude CLI / Anthropic
+    # subscription, so both should route. Whichever is the configured
+    # ``oauth_fallback_model`` wins over the static entry if there's
+    # a collision (env override always takes precedence).
+    extras = {
+        "claude-opus-4-7": "claude",
+        "claude-sonnet-4-6": "claude",
+    }
+    for model, cli in extras.items():
+        mapping.setdefault(model, cli)
+
+    return mapping
+
+
+MODEL_TO_CLI: dict[str, str] = _build_model_to_cli()
