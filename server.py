@@ -609,20 +609,58 @@ def configure_providers():
     if registered_providers:
         logger.info(f"Registered providers: {', '.join(registered_providers)}")
 
-    # Require at least one valid provider
-    if not valid_providers:
-        raise ValueError(
-            "At least one API configuration is required. Please set either:\n"
-            "- ANTHROPIC_API_KEY for Claude models\n"
-            "- OPENAI_API_KEY for OpenAI models\n"
-            "- GEMINI_API_KEY for Gemini models\n"
-            "- XAI_API_KEY for X.AI GROK models\n"
-            "- DIAL_API_KEY for DIAL models\n"
-            "- OPENROUTER_API_KEY for OpenRouter (multiple models)\n"
-            "- CUSTOM_API_URL for local models (Ollama, vLLM, etc.)"
-        )
+    # Detect OAuth CLIs on PATH. Their presence means clink/panel/multiaudit
+    # work even with zero API keys (the user has subscription auth elsewhere).
+    # Does not probe auth state — the user might have the binary but not be
+    # logged in. clink itself surfaces a clear error in that case.
+    import shutil as _shutil
+    oauth_clis_available = [
+        cli for cli in ("codex", "gemini", "claude")
+        if _shutil.which(cli) is not None
+    ]
 
-    logger.info(f"Available providers: {', '.join(valid_providers)}")
+    # Soft-landing: if no API keys AND no OAuth CLIs on PATH, the server
+    # still starts. Tools that don't need a provider (clink/panel are
+    # blocked too in this case, but listmodels/version/web_url/graph
+    # queries always work) remain usable; tools that DO need a provider
+    # surface a per-call error with actionable guidance, rather than
+    # crashing the server at boot. This used to be a hard ValueError.
+    if not valid_providers and not oauth_clis_available:
+        logger.warning(
+            "No API providers and no OAuth CLIs detected. "
+            "The server will start with limited functionality:\n"
+            "  · always available: listmodels, version, web_url, list_runs/get_run/run_tree\n"
+            "  · need at least one OAuth CLI (codex / gemini / claude): clink, panel, multiaudit\n"
+            "  · need at least one API provider: chat, consensus, codereview, debug, thinkdeep, ...\n"
+            "To unlock more, set one of these and restart your MCP client:\n"
+            "  · ANTHROPIC_API_KEY  (paid; https://console.anthropic.com/settings/keys)\n"
+            "  · OPENAI_API_KEY     (paid; https://platform.openai.com/api-keys)\n"
+            "  · GEMINI_API_KEY     (paid; https://aistudio.google.com/app/apikey)\n"
+            "  · XAI_API_KEY        (paid; https://console.x.ai/)\n"
+            "  · OPENROUTER_API_KEY (paid; https://openrouter.ai/)\n"
+            "  · CUSTOM_API_URL     (free; e.g. http://localhost:11434/v1 for Ollama)\n"
+            "Or install + login to one of the OAuth CLIs (free):\n"
+            "  · `codex login`        (uses ChatGPT subscription)\n"
+            "  · `gemini` (first run) (uses Google account / Gemini subscription)\n"
+            "  · `claude /login`      (uses Claude subscription)\n"
+            "See ONBOARDING.md for the full setup walkthrough."
+        )
+    elif not valid_providers and oauth_clis_available:
+        logger.info(
+            "No API providers configured, but OAuth CLIs are available: %s. "
+            "clink / panel / multiaudit will work via OAuth (free); chat / "
+            "consensus / codereview / debug / etc. need an API provider — set "
+            "ANTHROPIC_API_KEY (or OPENAI/GEMINI/XAI) and restart to unlock them.",
+            ", ".join(oauth_clis_available),
+        )
+    else:
+        logger.info(f"Available providers: {', '.join(valid_providers)}")
+        if oauth_clis_available:
+            logger.info(
+                "OAuth CLIs detected: %s — clink/panel route through these "
+                "for free OAuth (with paid-API fallback on quota).",
+                ", ".join(oauth_clis_available),
+            )
 
     # Log provider priority
     priority_info = []
@@ -687,13 +725,20 @@ def configure_providers():
     if IS_AUTO_MODE:
         available_models = ModelProviderRegistry.get_available_models(respect_restrictions=True)
         if not available_models:
-            logger.error(
+            # Soft-landing: log a warning rather than raising. Tools that
+            # need auto-mode model selection (chat, thinkdeep, etc.) will
+            # fail per-call with a clear "no model available" error;
+            # tools that don't need a provider (clink, panel via OAuth,
+            # listmodels, version, web_url, graph queries) keep working.
+            #
+            # Used to be a hard ValueError that crashed startup, but the
+            # server is more useful as a partial install that tells the
+            # user what to fix than as a hard failure.
+            logger.warning(
                 "Auto mode is enabled but no models are available after applying restrictions. "
-                "Please check your OPENAI_ALLOWED_MODELS and GOOGLE_ALLOWED_MODELS settings."
-            )
-            raise ValueError(
-                "No models available for auto mode due to restrictions. "
-                "Please adjust your allowed model settings or disable auto mode."
+                "Tools that need auto-mode model selection will surface per-call errors until "
+                "you set an API key or adjust OPENAI_ALLOWED_MODELS / GOOGLE_ALLOWED_MODELS / "
+                "ANTHROPIC_ALLOWED_MODELS / XAI_ALLOWED_MODELS."
             )
 
 
