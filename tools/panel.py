@@ -74,11 +74,40 @@ def _derive_cost_tier(initial_tier: str, response_text: str) -> str:
     that happens, the response metadata carries oauth_fallback_used=true.
     Reading that here is the only way the panel result can honestly report
     what was actually billed.
+
+    Implementation note: prior version substring-matched the rendered JSON,
+    which was both spoofable (a model emitting the literal phrase) and
+    fragile to whitespace formatting. This version parses the response as
+    structured JSON and reads the metadata field directly. Falls back to
+    the initial tier if the response isn't JSON or doesn't carry the field.
     """
-    if initial_tier != "oauth_free":
+    import json
+
+    if initial_tier != "oauth_free" or not response_text:
         return initial_tier
-    if "\"oauth_fallback_used\": true" in response_text or "'oauth_fallback_used': True" in response_text:
-        return "oauth_fallback_paid"
+
+    # Inner tools return a JSON-serialised ToolOutput; if there are multiple
+    # TextContent chunks we joined them with "\n", so try the first chunk
+    # first then the whole blob.
+    candidates = [response_text]
+    if "\n" in response_text:
+        candidates.insert(0, response_text.split("\n", 1)[0])
+    for blob in candidates:
+        blob = blob.strip()
+        if not blob.startswith("{"):
+            continue
+        try:
+            payload = json.loads(blob)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        metadata = payload.get("metadata")
+        if isinstance(metadata, dict) and metadata.get("oauth_fallback_used") is True:
+            return "oauth_fallback_paid"
+        # Found valid JSON but no fallback marker — no need to try more.
+        break
+
     return initial_tier
 
 

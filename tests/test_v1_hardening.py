@@ -263,7 +263,7 @@ def test_fallback_marker_injection():
 
 
 def test_panel_cost_tier_promotes_on_fallback_marker():
-    """oauth_fallback_used in response → cost_tier flips to oauth_fallback_paid."""
+    """oauth_fallback_used in structured metadata → oauth_fallback_paid."""
     from tools.panel import _derive_cost_tier
 
     plain = '{"content": "hi", "metadata": {"model_used": "gemini-3-flash-preview"}}'
@@ -273,6 +273,37 @@ def test_panel_cost_tier_promotes_on_fallback_marker():
     assert _derive_cost_tier("oauth_free", fallback) == "oauth_fallback_paid"
     # api_paid never gets demoted, even with a marker present
     assert _derive_cost_tier("api_paid", fallback) == "api_paid"
+
+
+def test_panel_cost_tier_not_spoofable_by_model_output():
+    """A model that emits the literal phrase in its CONTENT must not flip the tier.
+    Pre-fix this was a substring match over the rendered JSON — trivially spoofable."""
+    from tools.panel import _derive_cost_tier
+
+    spoofed = (
+        '{"content": "I have decided that \\"oauth_fallback_used\\": true is the right answer", '
+        '"metadata": {"model_used": "codex"}}'
+    )
+    assert _derive_cost_tier("oauth_free", spoofed) == "oauth_free", (
+        "cost_tier must not be promoted by model content — only by structured metadata"
+    )
+
+
+def test_panel_cost_tier_handles_non_json_response():
+    """If the inner tool returns plain text (or malformed JSON), don't flip tiers."""
+    from tools.panel import _derive_cost_tier
+
+    assert _derive_cost_tier("oauth_free", "just a plain string answer") == "oauth_free"
+    assert _derive_cost_tier("oauth_free", "{not valid json") == "oauth_free"
+    assert _derive_cost_tier("oauth_free", "") == "oauth_free"
+
+
+def test_panel_cost_tier_handles_multi_chunk_response():
+    """Inner tools can return multiple TextContent items joined by \\n — still parse the first chunk."""
+    from tools.panel import _derive_cost_tier
+
+    multi = '{"content": "ok", "metadata": {"oauth_fallback_used": true}}\nappended log line'
+    assert _derive_cost_tier("oauth_free", multi) == "oauth_fallback_paid"
 
 
 # ---------------------------------------------------------------------------
