@@ -71,11 +71,13 @@ def _get_provider_executor() -> ThreadPoolExecutor:
 def _get_api_semaphore() -> asyncio.Semaphore:
     global _API_SEMAPHORE
     if _API_SEMAPHORE is None:
-        with _API_SEMAPHORE_LOCK:
-            if _API_SEMAPHORE is None:
-                cap = int(os.environ.get("PAL_MAX_CONCURRENT_API", "16"))
-                _API_SEMAPHORE = asyncio.Semaphore(cap)
-                logger.info("Provider API semaphore initialised: cap=%s", cap)
+        # asyncio.Semaphore must be created inside the running event loop.
+        # Use asyncio.Lock (not threading.Lock) for the guard so we don't
+        # block the event loop while waiting.
+        loop = asyncio.get_event_loop()
+        cap = int(os.environ.get("PAL_MAX_CONCURRENT_API", "16"))
+        _API_SEMAPHORE = asyncio.Semaphore(cap)
+        logger.info("Provider API semaphore initialised: cap=%s", cap)
     return _API_SEMAPHORE
 
 
