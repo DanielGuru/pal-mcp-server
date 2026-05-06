@@ -65,7 +65,7 @@ def get_server_url() -> Optional[str]:
 # Static viewer page
 # ---------------------------------------------------------------------------
 
-_INDEX_HTML = """<!doctype html>
+_INDEX_HTML = r"""<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8" />
@@ -80,97 +80,108 @@ _INDEX_HTML = """<!doctype html>
   body { background: var(--bg); color: var(--fg); margin: 0;
          font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", monospace;
          font-size: 13px; }
-  header { padding: 12px 16px; background: #16171c; border-bottom: 1px solid var(--border);
-           display: flex; align-items: center; gap: 16px; }
-  header h1 { margin: 0; font-size: 14px; font-weight: 600; }
-  header .meta { color: var(--muted); font-size: 12px; }
-  main { display: grid; grid-template-columns: 360px 1fr; height: calc(100vh - 50px); }
-  #runs { overflow-y: auto; border-right: 1px solid var(--border); }
-  .run-row { padding: 10px 14px; border-bottom: 1px solid var(--border); cursor: pointer; }
-  .run-row:hover { background: #1f2027; }
-  .run-row.selected { background: #1f2730; border-left: 3px solid var(--accent); padding-left: 11px; }
-  .run-row .row-top { display: flex; justify-content: space-between; gap: 8px; }
-  .run-row .tool { font-weight: 600; }
-  .run-row .label { color: var(--muted); font-size: 11px; margin-top: 2px; }
+  /* Conversation-first layout. The viewer's job is to show the panel
+     debate as a readable transcript — the rest is collapsible noise. */
+  header { padding: 10px 16px; background: #16171c; border-bottom: 1px solid var(--border);
+           display: flex; align-items: center; gap: 14px; }
+  header h1 { margin: 0; font-size: 13px; font-weight: 600; letter-spacing: 0.3px; color: var(--muted); }
+  header .dot { font-size: 14px; color: var(--good); }
+  header .dot.live { color: var(--accent); animation: pulse 1.6s ease-in-out infinite; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }
+  header .conn { color: var(--muted); font-size: 11px; }
+  header .controls { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+  header select { background: #14151a; border: 1px solid var(--border); color: var(--fg);
+                  padding: 5px 8px; border-radius: 4px; font-size: 12px; min-width: 280px; }
+  header button { background: transparent; border: 1px solid var(--border); color: var(--muted);
+                  padding: 5px 10px; border-radius: 4px; font-size: 11px; cursor: pointer; }
+  header button:hover { color: var(--fg); border-color: #444; }
+  header button.active { color: var(--accent); border-color: var(--accent); }
+  main { max-width: 920px; margin: 0 auto; padding: 22px 24px 80px; }
+  .summary { color: var(--muted); font-size: 12px; margin-bottom: 18px;
+             padding-bottom: 14px; border-bottom: 1px solid var(--border); }
+  .summary .verdict-tally { display: inline-flex; gap: 8px; margin-left: 10px; }
+  .summary .verdict-tally span { padding: 2px 8px; background: #1f2027; border-radius: 3px;
+                                 font-size: 10px; text-transform: uppercase; letter-spacing: 0.3px; }
+  /* Transcript blocks (panelist answers + judge synthesis) */
+  .transcript { margin: 14px 0; padding: 12px 16px;
+                background: var(--card); border-left: 3px solid var(--speaker);
+                border-radius: 4px; }
+  .transcript .transcript-h { font-family: -apple-system, sans-serif;
+                              font-size: 12px; font-weight: 600;
+                              color: var(--speaker); margin-bottom: 6px;
+                              display: flex; align-items: baseline; gap: 10px; }
+  .transcript .transcript-h .who { font-weight: 700; letter-spacing: 0.2px; }
+  .transcript .transcript-h .when { color: var(--muted); font-size: 10px; font-weight: 400; }
+  .transcript .transcript-body { font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+                                 font-size: 13px; line-height: 1.55;
+                                 color: var(--fg); white-space: pre-wrap;
+                                 word-wrap: break-word; }
+  /* Per-panelist colour palette — assigned by name hash so codex/gemini/etc.
+     each get a stable colour throughout the debate. */
+  .speaker-codex { --speaker: #79b8ff; }
+  .speaker-gemini { --speaker: #b392f0; }
+  .speaker-grok { --speaker: #f08c5d; }
+  .speaker-host { --speaker: #34c5b7; }
+  .speaker-judge { --speaker: #f9c149; }
+  .speaker-other { --speaker: #8b8fa1; }
+  .transcript-judge { background: #1c1a14; border-left-width: 4px; }
+  /* Single soft "thinking" line for live runs that haven't produced a
+     transcript event yet. Replaces the wall of file_read / tool_use pings. */
+  .thinking { display: flex; align-items: center; gap: 10px;
+              color: var(--muted); font-style: italic; font-size: 12px;
+              padding: 14px 16px; margin: 14px 0; }
+  .thinking::before { content: '○'; color: var(--accent); animation: pulse 1.4s ease-in-out infinite; }
+  /* Raw mode: show the old tree view for debugging. Off by default. */
+  .raw .transcript, .raw .thinking { display: none; }
+  .raw .raw-tree { display: block; }
+  .raw-tree { display: none; }
+  .raw-tree pre { font-size: 10px; line-height: 1.4; max-height: none;
+                  background: #0c0d10; padding: 12px; border-radius: 3px;
+                  white-space: pre-wrap; word-wrap: break-word; }
+  /* Verdict tally chips */
+  .v-land { color: var(--good); }
+  .v-needs-changes { color: var(--warn); }
+  .v-reject { color: var(--bad); }
   .badge { padding: 1px 6px; border-radius: 3px; font-size: 10px; text-transform: uppercase;
            font-weight: 600; letter-spacing: 0.4px; }
   .b-running { background: #2a3a5e; color: var(--accent); }
   .b-completed { background: #25382a; color: var(--good); }
   .b-failed { background: #3d1f24; color: var(--bad); }
   .b-cancelled { background: #3d2f1f; color: var(--warn); }
-  .cost { color: var(--muted); font-size: 10px; margin-top: 2px; }
-  .cost-oauth_free { color: var(--good); }
-  .cost-oauth_fallback_paid { color: var(--warn); }
-  .cost-api_paid { color: #c0caf5; }
-  #detail { overflow-y: auto; padding: 18px 22px; }
-  #detail h2 { margin: 0 0 8px; font-size: 16px; }
-  #detail .header-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
-  #detail .meta-row { color: var(--muted); font-size: 12px; margin: 4px 0 12px; }
-  .card { background: var(--card); border: 1px solid var(--border); border-radius: 6px;
-          padding: 12px 14px; margin: 12px 0; }
-  .card .card-h { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
-  .card .card-h .name { font-weight: 600; }
-  .card.depth-1 { margin-left: 18px; border-left: 2px solid #2c3242; }
-  .card.depth-2 { margin-left: 36px; border-left: 2px solid #3a3142; }
-  .card.depth-3 { margin-left: 54px; border-left: 2px solid #423142; }
-  .edge-tag { color: var(--muted); font-size: 10px; text-transform: uppercase;
-              padding: 1px 6px; border-radius: 3px; background: #20232b; }
-  .events { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px;
-            color: var(--muted); margin-top: 8px; }
-  .events div { padding: 2px 0; }
-  .events-live { background: #11141a; border: 1px solid #2a3a5e; border-left: 3px solid var(--accent);
-                 padding: 8px 10px; border-radius: 4px; margin-top: 8px;
-                 max-height: 320px; overflow-y: auto; }
-  .events-live .events-h { font-family: -apple-system, sans-serif; font-size: 10px;
-                           text-transform: uppercase; letter-spacing: 0.5px;
-                           color: var(--accent); margin-bottom: 6px; }
-  .events-details { margin-top: 8px; }
-  .events-details summary { cursor: pointer; color: var(--muted); font-size: 11px; }
-  pre { background: #14151a; padding: 10px; border-radius: 4px; overflow-x: auto;
-        max-height: 300px; font-size: 11px; }
-  .empty { color: var(--muted); padding: 30px; text-align: center; }
-  .rollup { display: flex; gap: 12px; margin: 8px 0; }
-  .rollup span { padding: 3px 10px; background: #1f2027; border-radius: 4px; font-size: 11px; }
-  .controls { display: flex; gap: 8px; align-items: center; }
-  .controls input { background: #14151a; border: 1px solid var(--border); color: var(--fg);
-                    padding: 4px 8px; border-radius: 4px; font-size: 12px; }
-  .controls select { background: #14151a; border: 1px solid var(--border); color: var(--fg);
-                     padding: 4px 8px; border-radius: 4px; font-size: 12px; }
+  .empty { color: var(--muted); padding: 60px 20px; text-align: center; font-size: 13px; }
+  .empty .hint { color: #555; font-size: 11px; margin-top: 8px; }
 </style>
 </head>
 <body>
 <header>
-  <h1>PAL Execution Graph</h1>
-  <span class="meta" id="dot">●</span>
-  <span class="meta" id="conn">connecting…</span>
-  <div class="controls" style="margin-left:auto;">
-    <select id="filter-status">
-      <option value="">all statuses</option>
-      <option value="running">running</option>
-      <option value="completed">completed</option>
-      <option value="failed">failed</option>
-      <option value="cancelled">cancelled</option>
-    </select>
-    <input id="filter-tool" placeholder="filter tool name" />
+  <h1>PAL · panel transcript</h1>
+  <span class="dot" id="dot">●</span>
+  <span class="conn" id="conn">connecting…</span>
+  <div class="controls">
+    <select id="run-picker"><option>loading runs…</option></select>
+    <button id="raw-toggle" title="Toggle raw tree view">raw</button>
   </div>
 </header>
-<main>
-  <aside id="runs"><div class="empty">loading…</div></aside>
-  <section id="detail"><div class="empty">Select a run on the left.</div></section>
+<main id="content">
+  <div class="empty">waiting for a panel run…
+    <div class="hint">fire <code>multiaudit</code> or <code>panel</code> from PAL and the conversation will appear here</div>
+  </div>
 </main>
 <script>
+// =============================================================================
+// PAL panel transcript viewer
+// Walks the run tree, flattens transcript events from every panelist, sorts
+// by timestamp, renders as colour-coded blockquotes. Status pings are hidden
+// behind the "raw" toggle. Auto-scrolls the latest message into view.
+// =============================================================================
+
 let SELECTED = null;
 let LAST_RUNS_HASH = "";
+let RAW_MODE = false;
 const $ = (q) => document.querySelector(q);
 
 async function fetchRuns() {
-  const status = $('#filter-status').value;
-  const tool = $('#filter-tool').value.trim();
-  const params = new URLSearchParams();
-  params.set('limit', '100');
-  if (status) params.set('status', status);
-  if (tool) params.set('tool_name', tool);
-  const r = await fetch('/runs?' + params.toString());
+  const r = await fetch('/runs?limit=100');
   if (!r.ok) throw new Error('runs ' + r.status);
   const body = await r.json();
   return body.runs || [];
@@ -201,191 +212,257 @@ function fmtElapsed(start, end) {
   return Math.floor(sec / 60) + 'm ' + Math.round(sec % 60) + 's';
 }
 
-function renderRunRow(r) {
-  const costTier = safeClass(r.cost_tier);
-  const cost = r.cost_tier
-    ? `<div class="cost cost-${costTier}">${escapeHtml(r.cost_tier)}</div>`
-    : '';
-  const sel = (SELECTED === r.run_id) ? ' selected' : '';
-  return `<div class="run-row${sel}" data-run="${escapeAttr(r.run_id)}">
-    <div class="row-top">
-      <span class="tool">${escapeHtml(r.tool_name)}</span>
-      ${statusBadge(r.status)}
-    </div>
-    <div class="label">${escapeHtml(r.label || (r.run_id || '').slice(0,12) + '…')} · ${escapeHtml(fmtElapsed(r.started_at, r.completed_at))}</div>
-    ${cost}
-  </div>`;
-}
-
-async function renderRunsList() {
+// -- run picker -----------------------------------------------------------
+async function renderRunPicker() {
   try {
     const runs = await fetchRuns();
-    const hash = JSON.stringify(runs.map(r => [r.run_id, r.status, r.completed_at]));
-    if (hash === LAST_RUNS_HASH) return;
-    LAST_RUNS_HASH = hash;
-
-    // Auto-select the most recent ROOT run (no parent) the first time
-    // we see one — gets the user straight to the live debate without
-    // hunting through the panelist sub-rows. Pick a root because root
-    // runs (panel / multiaudit / start_task) tell the whole story; the
-    // panelist children are visible inside that root's tree view.
-    if (!SELECTED && runs.length) {
-      const liveRoot = runs.find(r => !r.parent_run_id && r.status === 'running')
-                    || runs.find(r => !r.parent_run_id);
-      if (liveRoot) {
-        SELECTED = liveRoot.run_id;
+    // Only ROOT runs (panel / multiaudit / start_task) — the children are
+    // panelist sub-runs which only matter inside the parent's transcript.
+    const roots = runs.filter(r => !r.parent_run_id);
+    const hash = JSON.stringify(roots.map(r => [r.run_id, r.status, r.completed_at]));
+    if (hash !== LAST_RUNS_HASH) {
+      LAST_RUNS_HASH = hash;
+      const picker = $('#run-picker');
+      if (!roots.length) {
+        picker.innerHTML = '<option>no runs yet</option>';
+      } else {
+        picker.innerHTML = roots.map(r => {
+          const live = r.status === 'running' ? ' · live' : '';
+          const elapsed = fmtElapsed(r.started_at, r.completed_at);
+          const label = r.label || r.tool_name + ':' + (r.run_id || '').slice(0, 6);
+          return `<option value="${escapeAttr(r.run_id)}">${escapeHtml(label)} · ${escapeHtml(elapsed)}${live}</option>`;
+        }).join('');
+      }
+      // Auto-select most recent live run, else most recent run.
+      if (!SELECTED && roots.length) {
+        const live = roots.find(r => r.status === 'running');
+        SELECTED = (live || roots[0]).run_id;
+        picker.value = SELECTED;
+        renderConversation();
+      } else if (SELECTED) {
+        picker.value = SELECTED;
       }
     }
-
-    const html = runs.length
-      ? runs.map(renderRunRow).join('')
-      : '<div class="empty">no runs yet — fire a PAL tool and it will appear here</div>';
-    $('#runs').innerHTML = html;
-    document.querySelectorAll('.run-row').forEach(el => {
-      el.addEventListener('click', () => selectRun(el.dataset.run));
-    });
-    $('#dot').style.color = '#9ece6a';
     const liveCount = runs.filter(r => r.status === 'running').length;
-    const liveLabel = liveCount ? ` · ${liveCount} live` : '';
-    $('#conn').textContent = `${runs.length} run${runs.length === 1 ? '' : 's'}${liveLabel} · ${new Date().toLocaleTimeString()}`;
-    if (SELECTED && !document.querySelector('.run-row.selected')) {
-      // Re-render the detail pane in case the auto-select fired this tick
-      renderDetail();
-    }
+    $('#dot').classList.toggle('live', liveCount > 0);
+    $('#conn').textContent = liveCount
+      ? `${liveCount} live · ${new Date().toLocaleTimeString()}`
+      : `${runs.length} run${runs.length === 1 ? '' : 's'} · ${new Date().toLocaleTimeString()}`;
   } catch (e) {
+    $('#dot').classList.remove('live');
     $('#dot').style.color = '#f7768e';
     $('#conn').textContent = 'connection lost — retrying';
   }
 }
 
-function renderRollup(rollup) {
-  const items = Object.entries(rollup).map(([k, v]) =>
-    `<span class="cost-${safeClass(k)}">${escapeHtml(String(v))} ${escapeHtml(k)}</span>`).join('');
-  return items ? `<div class="rollup">${items}</div>` : '';
+// -- transcript -----------------------------------------------------------
+function speakerClass(label) {
+  const lower = String(label || '').toLowerCase();
+  if (lower.startsWith('judge')) return 'speaker-judge';
+  if (lower.includes('codex')) return 'speaker-codex';
+  if (lower.includes('gemini')) return 'speaker-gemini';
+  if (lower.includes('grok')) return 'speaker-grok';
+  if (lower.includes('host')) return 'speaker-host';
+  return 'speaker-other';
 }
 
-function renderEvents(events, opts) {
-  if (!events || !events.length) return '';
-  opts = opts || {};
-  // For RUNNING nodes, show events prominently as a live activity feed —
-  // tail-newest, no "details" wrapper, brighter styling. For completed
-  // nodes, collapse to a normal events block (history, not focus).
-  const isLive = opts.live === true;
-  // Tail to the most recent N events on live nodes so the panel doesn't
-  // grow unbounded during long debates.
-  const recent = isLive ? events.slice(-25) : events;
-  const lines = recent.map(e => {
-    const t = new Date(e.ts * 1000).toLocaleTimeString();
-    const typeColour = isLive ? eventTypeColour(e.event_type) : '';
-    return `<div${typeColour}>[${escapeHtml(t)}] ${escapeHtml(e.event_type || '')}: ${escapeHtml(e.message || '')}</div>`;
-  }).join('');
-  if (isLive) {
-    return `<div class="events events-live">
-      <div class="events-h">live activity (${events.length} events)</div>
-      ${lines}
-    </div>`;
+function flattenTranscriptEvents(node, out) {
+  // Walk the run tree and collect every panelist_answer / judge_synthesis
+  // event from every node, regardless of depth.
+  if (node.events) {
+    for (const e of node.events) {
+      if (e.event_type === 'panelist_answer' || e.event_type === 'judge_synthesis') {
+        out.push(e);
+      }
+    }
   }
-  return `<details class="events-details"><summary>${events.length} events</summary><div class="events">${lines}</div></details>`;
+  for (const c of (node.children || [])) flattenTranscriptEvents(c, out);
+  return out;
 }
 
-function eventTypeColour(t) {
-  // Colour-code event types so a glance distinguishes thinking vs. doing.
-  // Inline styles keep this dependency-free and portable.
-  if (t === 'progress') return ' style="color:var(--accent);"';
-  if (t === 'start') return ' style="color:var(--good);font-weight:600;"';
-  if (t === 'complete') return ' style="color:var(--good);font-weight:600;"';
-  if (t === 'error') return ' style="color:var(--bad);font-weight:600;"';
-  return '';
+function hasAnyStatusActivity(node) {
+  if (node.status === 'running') return true;
+  for (const c of (node.children || [])) {
+    if (hasAnyStatusActivity(c)) return true;
+  }
+  return false;
 }
 
-function renderTreeNode(node, depth = 0) {
-  const costTier = safeClass(node.cost_tier);
-  const cost = node.cost_tier
-    ? `<span class="cost cost-${costTier}">${escapeHtml(node.cost_tier)}</span>`
-    : '';
-  const edge = node.edge_kind ? `<span class="edge-tag">${escapeHtml(node.edge_kind)}</span>` : '';
-  const elapsed = fmtElapsed(node.started_at, node.completed_at);
-  const args = node.args_json ? `<details><summary>args</summary><pre>${escapeHtml(node.args_json)}</pre></details>` : '';
-  const result = node.result_json ? `<details><summary>result</summary><pre>${escapeHtml(node.result_json)}</pre></details>` : '';
-  const error = node.error ? `<details open><summary style="color:#f7768e">error</summary><pre>${escapeHtml(node.error)}</pre></details>` : '';
-  const events = renderEvents(node.events, { live: node.status === 'running' });
-  const childrenHtml = (node.children || []).map(c => renderTreeNode(c, depth + 1)).join('');
-  const cls = depth > 3 ? 'depth-3' : `depth-${depth}`;
-  return `<div class="card ${cls}">
-    <div class="card-h">
-      <span class="name">${escapeHtml(node.tool_name || '')}</span>
-      ${edge}
-      ${statusBadge(node.status)}
-      ${cost}
-      <span class="meta" style="color:var(--muted);font-size:11px;">${escapeHtml(node.label || '')} · ${escapeHtml(elapsed)}</span>
+function renderTranscriptEvent(e) {
+  const msg = e.message || '';
+  const splitAt = msg.indexOf('\n');
+  const header = splitAt > 0 ? msg.slice(0, splitAt) : msg;
+  const body = splitAt > 0 ? msg.slice(splitAt + 1) : '';
+  // Speaker label is the bracketed prefix.
+  const m = header.match(/^\[([^\]]+)\]\s*(.*)$/);
+  const speakerKey = m ? m[1] : header;
+  const tail = m ? m[2] : '';
+  const cls = e.event_type === 'judge_synthesis'
+    ? 'transcript transcript-judge speaker-judge'
+    : 'transcript ' + speakerClass(speakerKey);
+  return `<div class="${cls}">
+    <div class="transcript-h">
+      <span class="who">${escapeHtml(speakerKey)}</span>
+      ${tail ? `<span>${escapeHtml(tail)}</span>` : ''}
+      <span class="when">${escapeHtml(fmtTime(e.ts))}</span>
     </div>
-    ${args}${result}${error}${events}
-    ${childrenHtml}
+    <div class="transcript-body">${escapeHtml(body)}</div>
   </div>`;
+}
+
+function renderRawTree(tree) {
+  return `<div class="raw-tree"><pre>${escapeHtml(JSON.stringify(tree, null, 2))}</pre></div>`;
+}
+
+function renderVerdictTally(tree) {
+  // Pull the panel's verdict_tally from the root run's result if available.
+  let tally = null;
+  try {
+    if (tree.result_json) {
+      const parsed = JSON.parse(tree.result_json);
+      let candidate = parsed.verdict_tally;
+      if (!candidate && parsed.result && Array.isArray(parsed.result) && parsed.result[0]) {
+        try { candidate = JSON.parse(parsed.result[0]).verdict_tally; } catch (_) {}
+      }
+      tally = candidate;
+    }
+  } catch (_) {}
+  if (!tally) return '';
+  const chips = Object.entries(tally).map(([k, v]) =>
+    `<span class="v-${safeClass(k)}">${escapeHtml(String(v))}× ${escapeHtml(k)}</span>`).join('');
+  return `<span class="verdict-tally">${chips}</span>`;
+}
+
+// Walk the tree to find the deepest-running descendant — that's the run
+// whose status the user actually cares about, even when the dispatcher
+// (multiaudit / start_task) returned in 60ms.
+function effectiveRunStatus(tree) {
+  // If anything in the tree is still running, the panel is still going.
+  let hasRunning = false;
+  function walk(n) {
+    if (n.status === 'running') hasRunning = true;
+    for (const c of (n.children || [])) walk(c);
+  }
+  walk(tree);
+  if (hasRunning) return 'running';
+  return tree.status;
+}
+
+// Pick a representative tool name — prefer the deepest non-dispatcher
+// child so we say "panel" rather than "multiaudit · 60ms".
+function effectiveToolName(tree) {
+  const dispatchers = new Set(['multiaudit', 'start_task']);
+  let best = tree;
+  function walk(n) {
+    if (!dispatchers.has(n.tool_name)) best = n;
+    for (const c of (n.children || [])) walk(c);
+  }
+  walk(tree);
+  return best;
+}
+
+let LAST_EVENT_COUNT = 0;
+let USER_SCROLLED_UP = false;
+window.addEventListener('scroll', () => {
+  // If the user scrolls more than 600px above the bottom, treat it as
+  // "they want to read history, don't yank them" and pause auto-scroll.
+  // Once they scroll back to within 200px of the bottom, resume.
+  const distFromBottom = document.body.scrollHeight - (window.innerHeight + window.scrollY);
+  if (distFromBottom > 600) USER_SCROLLED_UP = true;
+  else if (distFromBottom < 200) USER_SCROLLED_UP = false;
+});
+
+async function renderConversation() {
+  if (!SELECTED) {
+    $('#content').innerHTML = '<div class="empty">waiting for a panel run…</div>';
+    return;
+  }
+  try {
+    const r = await fetch('/runs/' + SELECTED + '/tree');
+    if (!r.ok) {
+      $('#content').innerHTML = '<div class="empty">run not found</div>';
+      return;
+    }
+    const body = await r.json();
+    const tree = body.tree;
+    const events = flattenTranscriptEvents(tree, []);
+    events.sort((a, b) => (a.ts || 0) - (b.ts || 0));
+
+    // Header reflects the deepest running descendant so a 60ms dispatcher
+    // doesn't show "completed" while the actual panel is still streaming.
+    const effStatus = effectiveRunStatus(tree);
+    const effRun = effectiveToolName(tree);
+    const effElapsed = fmtElapsed(effRun.started_at, effRun.completed_at);
+
+    const summary = `<div class="summary">
+      ${statusBadge(effStatus)}
+      <span style="margin-left:8px;">${escapeHtml(effRun.tool_name || '')}</span>
+      <span style="color:var(--muted);margin-left:8px;">${escapeHtml(effRun.label || tree.label || '')}</span>
+      <span style="color:var(--muted);margin-left:8px;">· ${escapeHtml(effElapsed)}</span>
+      ${renderVerdictTally(tree)}
+    </div>`;
+
+    let middle;
+    if (events.length) {
+      middle = events.map(renderTranscriptEvent).join('');
+      if (effStatus === 'running') {
+        middle += `<div class="thinking">panelists still talking…</div>`;
+      }
+    } else if (effStatus === 'running' || hasAnyStatusActivity(tree)) {
+      middle = `<div class="thinking">panelists are thinking — first answer arriving soon…</div>`;
+    } else {
+      middle = `<div class="empty">no transcript events for this run<div class="hint">this run didn't go through panel — try multiaudit or panel directly</div></div>`;
+    }
+
+    $('#content').innerHTML = summary + middle + renderRawTree(tree);
+
+    // Auto-scroll to keep the latest message in view as the conversation
+    // streams. We only suppress scrolling if the user has actively scrolled
+    // up (>600px from bottom). New events pull us back to the latest line.
+    const newEventCount = events.length;
+    const hasNewContent = newEventCount > LAST_EVENT_COUNT;
+    LAST_EVENT_COUNT = newEventCount;
+    if (!USER_SCROLLED_UP && (hasNewContent || effStatus === 'running')) {
+      // Use 'auto' (instant) for streaming feel — smooth scroll has too
+      // much lag when answers land back-to-back.
+      window.scrollTo({ top: document.body.scrollHeight, behavior: hasNewContent ? 'smooth' : 'auto' });
+    }
+  } catch (e) {
+    $('#content').innerHTML = '<div class="empty">error: ' + escapeHtml(e.message) + '</div>';
+  }
+}
+
+function statusBadge(status) {
+  return `<span class="badge b-${safeClass(status)}">${escapeHtml(status || '')}</span>`;
 }
 
 function escapeHtml(s) {
   return String(s == null ? '' : s).replace(/[&<>"']/g,
     c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]);
 }
-
-function escapeAttr(s) {
-  // Same as escapeHtml — attribute quotes are double, so &quot; suffices.
-  return escapeHtml(s);
-}
-
+function escapeAttr(s) { return escapeHtml(s); }
 function safeClass(s) {
-  // CSS class names can't safely take arbitrary input — restrict to a
-  // safe alphabet so a malicious cost_tier like 'foo" onload="' can't
-  // escape the class attribute.
   return String(s == null ? '' : s).replace(/[^a-zA-Z0-9_-]/g, '_');
 }
 
-async function renderDetail() {
-  if (!SELECTED) {
-    $('#detail').innerHTML = '<div class="empty">Select a run on the left.</div>';
-    return;
-  }
-  try {
-    const r = await fetch('/runs/' + SELECTED + '/tree');
-    if (!r.ok) {
-      $('#detail').innerHTML = '<div class="empty">run not found</div>';
-      return;
-    }
-    const body = await r.json();
-    const tree = body.tree;
-    const rollup = body.cost_tier_rollup || {};
-    $('#detail').innerHTML = `
-      <div class="header-row">
-        <h2>${escapeHtml(tree.tool_name || '')}</h2>
-        ${statusBadge(tree.status)}
-        <span class="meta" style="color:var(--muted);">${escapeHtml(tree.label || (tree.run_id || '').slice(0,16)+'…')}</span>
-      </div>
-      <div class="meta-row">
-        started ${escapeHtml(fmtTime(tree.started_at))} · ${escapeHtml(fmtElapsed(tree.started_at, tree.completed_at))}
-      </div>
-      ${renderRollup(rollup)}
-      ${renderTreeNode(tree)}
-    `;
-  } catch (e) {
-    $('#detail').innerHTML = '<div class="empty">error: ' + escapeHtml(e.message) + '</div>';
-  }
-}
+// -- wiring ---------------------------------------------------------------
+$('#run-picker').addEventListener('change', (e) => {
+  SELECTED = e.target.value;
+  LAST_EVENT_COUNT = 0;
+  USER_SCROLLED_UP = false;
+  window.scrollTo({ top: 0 });
+  renderConversation();
+});
 
-function selectRun(rid) {
-  SELECTED = rid;
-  document.querySelectorAll('.run-row').forEach(el => {
-    el.classList.toggle('selected', el.dataset.run === rid);
-  });
-  renderDetail();
-}
+$('#raw-toggle').addEventListener('click', () => {
+  RAW_MODE = !RAW_MODE;
+  document.body.classList.toggle('raw', RAW_MODE);
+  $('#raw-toggle').classList.toggle('active', RAW_MODE);
+});
 
-$('#filter-status').addEventListener('change', () => { LAST_RUNS_HASH = ''; renderRunsList(); });
-$('#filter-tool').addEventListener('input', () => { LAST_RUNS_HASH = ''; renderRunsList(); });
-
-renderRunsList();
-setInterval(renderRunsList, 2000);
-setInterval(() => { if (SELECTED) renderDetail(); }, 1500);
+renderRunPicker();
+setInterval(renderRunPicker, 2000);
+setInterval(() => { if (SELECTED) renderConversation(); }, 1500);
 </script>
 </body>
 </html>

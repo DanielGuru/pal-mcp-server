@@ -38,6 +38,7 @@ class ModelProviderRegistry:
     PROVIDER_PRIORITY_ORDER = [
         ProviderType.GOOGLE,  # Direct Gemini access
         ProviderType.OPENAI,  # Direct OpenAI access
+        ProviderType.ANTHROPIC,  # Direct Claude access (paid API; clink claude→API fallback)
         ProviderType.AZURE,  # Azure-hosted OpenAI deployments
         ProviderType.XAI,  # Direct X.AI GROK access
         ProviderType.DIAL,  # DIAL unified API access
@@ -334,6 +335,7 @@ class ModelProviderRegistry:
         key_mapping = {
             ProviderType.GOOGLE: "GEMINI_API_KEY",
             ProviderType.OPENAI: "OPENAI_API_KEY",
+            ProviderType.ANTHROPIC: "ANTHROPIC_API_KEY",
             ProviderType.AZURE: "AZURE_OPENAI_API_KEY",
             ProviderType.XAI: "XAI_API_KEY",
             ProviderType.OPENROUTER: "OPENROUTER_API_KEY",
@@ -428,9 +430,11 @@ class ModelProviderRegistry:
             logging.debug(f"No provider preference, using first available: {first_available_model}")
             return first_available_model
 
-        # Ultimate fallback if no providers have models
+        # Ultimate fallback if no providers have models. Pick a current
+        # flagship from the trimmed registry; the legacy 'gemini-2.5-flash'
+        # default no longer exists.
         logging.warning("No models available from any provider, using default fallback")
-        return "gemini-2.5-flash"
+        return "gemini-3.1-pro-preview"
 
     @classmethod
     def get_available_providers_with_keys(cls) -> list[ProviderType]:

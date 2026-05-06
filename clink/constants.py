@@ -52,7 +52,8 @@ INTERNAL_DEFAULTS: dict[str, CLIInternalDefaults] = {
         additional_args=["--print", "--output-format", "json"],
         default_role_prompt="systemprompts/clink/default.txt",
         runner="claude",
-        # No Anthropic provider in this fork — claude OAuth has no API path.
-        oauth_fallback_model=None,
+        # When the user's Claude CLI subscription hits its quota, fall
+        # back to the paid Anthropic API. Requires ANTHROPIC_API_KEY.
+        oauth_fallback_model="claude-opus-4-7",
     ),
 }

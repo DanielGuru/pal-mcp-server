@@ -449,6 +449,7 @@ def configure_providers():
         value = get_env(key)
         logger.debug(f"  {key}: {'[PRESENT]' if value else '[MISSING]'}")
     from providers import ModelProviderRegistry
+    from providers.anthropic import AnthropicModelProvider
     from providers.azure_openai import AzureOpenAIProvider
     from providers.custom import CustomProvider
     from providers.dial import DIALModelProvider
@@ -470,6 +471,13 @@ def configure_providers():
         valid_providers.append("Gemini")
         has_native_apis = True
         logger.info("Gemini API key found - Gemini models available")
+
+    # Check for Anthropic API key (Claude)
+    anthropic_key = get_env("ANTHROPIC_API_KEY")
+    if anthropic_key and anthropic_key != "your_anthropic_api_key_here":
+        valid_providers.append("Anthropic (Claude)")
+        has_native_apis = True
+        logger.info("Anthropic API key found - Claude models available")
 
     # Check for OpenAI API key
     openai_key = get_env("OPENAI_API_KEY")
@@ -562,6 +570,10 @@ def configure_providers():
             ModelProviderRegistry.register_provider(ProviderType.OPENAI, OpenAIModelProvider)
             registered_providers.append(ProviderType.OPENAI.value)
             logger.debug(f"Registered provider: {ProviderType.OPENAI.value}")
+        if anthropic_key and anthropic_key != "your_anthropic_api_key_here":
+            ModelProviderRegistry.register_provider(ProviderType.ANTHROPIC, AnthropicModelProvider)
+            registered_providers.append(ProviderType.ANTHROPIC.value)
+            logger.debug(f"Registered provider: {ProviderType.ANTHROPIC.value}")
         if azure_models_available:
             ModelProviderRegistry.register_provider(ProviderType.AZURE, AzureOpenAIProvider)
             registered_providers.append(ProviderType.AZURE.value)
@@ -1676,11 +1688,13 @@ async def main():
 
     # Prepare dynamic instructions for the MCP client based on model mode
     cost_routing = (
-        " Cost routing: when the user asks for codex or gemini (without naming a specific paid model), "
-        "prefer the `clink` tool — it spawns the local CLI which uses OAuth (free via ChatGPT/Google "
-        "subscription). The `chat`/`consensus`/`codereview`/`debug`/`thinkdeep` tools call provider "
-        "APIs directly (paid per token). For grok or when the user names a specific paid model string "
-        "(gpt-5.5, gemini-3.1-pro-preview, grok-4.3, etc.), `chat`/`consensus` is the only path."
+        " Cost routing: when the user asks for codex, gemini, or claude (without naming a specific paid "
+        "model), prefer the `clink` tool — it spawns the local CLI which uses OAuth (free via "
+        "ChatGPT / Google / Claude subscription). The `chat`/`consensus`/`codereview`/`debug`/`thinkdeep` "
+        "tools call provider APIs directly (paid per token). For grok or when the user names a specific "
+        "paid model string (gpt-5.5, gemini-3.1-pro-preview, grok-4.3, etc.), `chat`/`consensus` is the "
+        "only path. Note: there is no Anthropic provider in the chat path — Claude consultation always "
+        "routes through `clink` (subprocess to the user's logged-in Claude CLI)."
     )
     async_routing = (
         " Async routing: any tool call that is likely to take >15s (whole-repo audits, multi-model "
@@ -1689,7 +1703,12 @@ async def main():
         "`arguments`, get a task_id back instantly, continue interacting with the user, then poll "
         "`task_status` or fetch via `task_result(task_id, wait_seconds=N)` when ready. Short calls "
         "(`chat` for a quick question, `listmodels`, `version`, simple `clink` chats) can stay "
-        "synchronous. Use `cancel_task` to stop a runaway task."
+        "synchronous. Use `cancel_task` to stop a runaway task. "
+        "CRITICAL: never call `task_result` with wait_seconds > 30. Long blocks freeze the user out "
+        "of the conversation channel — they cannot send messages while a tool call is in flight. "
+        "PAL emits a push-completion notification when a task finishes, so you can fire-and-forget "
+        "and resume on notification, or poll with short waits (wait_seconds=10–30 in a loop). The "
+        "wait_seconds field is hard-capped at the PAL_TASK_WAIT_CAP_S env (default 30)."
     )
     panel_routing = (
         " Panel routing: the `panel` tool fans out one prompt to multiple models in parallel and "
@@ -1701,9 +1720,9 @@ async def main():
         "→ panel with debate_rounds>=1 (adversarial mode: each model sees others' answers and revises)\n"
         "  - 'consensus' / 'agree on' / 'do they agree' → panel with judge='codex' (or 'gemini'); "
         "consider debate_rounds=1 if the topic is contested\n"
-        "Always wrap panel in start_task — it can run for several minutes per round. For free runs use "
-        "codex+gemini panelists with codex as judge. Add grok-4.3 only when the user asks for paid model "
-        "diversity or names it explicitly."
+        "Always wrap panel in start_task — it can run for several minutes per round. For free OAuth runs "
+        "use codex+gemini+claude panelists with codex as judge — three frontier families at zero cost. "
+        "Add grok-4.3 only when the user asks for paid model diversity or names it explicitly."
     )
 
     if IS_AUTO_MODE:

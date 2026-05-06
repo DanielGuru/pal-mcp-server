@@ -416,7 +416,7 @@ def test_oauth_fallback_models_wired_for_each_cli():
     expected = {
         "gemini": "gemini-3.1-pro-preview",
         "codex": "gpt-5.5",
-        "claude": None,  # No Anthropic provider in this fork
+        "claude": "claude-opus-4-7",  # Anthropic provider wired (this fork)
     }
     for cli_name, want in expected.items():
         if cli_name in r.list_clients():

@@ -148,6 +148,10 @@ CREATE INDEX IF NOT EXISTS idx_edges_parent ON edges(parent_run_id);
 
 # Cap stored arg/result snapshots so a 50MB attachment doesn't bloat the DB.
 _SNAPSHOT_CAP = int(os.environ.get("PAL_GRAPH_SNAPSHOT_CAP", "16384"))
+# Cap on individual event messages. Must accommodate full panel transcript
+# bodies (panelist answers run ~5-8KB; default cap holds two of those
+# end-to-end). Override via PAL_GRAPH_EVENT_CAP for tighter or looser caps.
+_EVENT_MESSAGE_CAP = int(os.environ.get("PAL_GRAPH_EVENT_CAP", "32768"))
 
 
 def _redact_arguments(args: dict[str, Any]) -> dict[str, Any]:
@@ -305,12 +309,19 @@ class ExecutionGraph:
         progress: float = 0.0,
         payload: Optional[dict[str, Any]] = None,
     ) -> None:
+        # Cap event messages to keep the events table bounded. Large enough
+        # to hold a full panelist transcript answer (panel emits up to 2 KB
+        # of prose body + a short header) without truncation. Audit-flagged
+        # in the streaming round: panel emitted 2 KB while this layer
+        # silently chopped at 1 KB, hiding half of every panelist's revised
+        # debate-round answer.
         now = time.time()
+        capped = message[:_EVENT_MESSAGE_CAP]
         with self._lock:
             self._conn.execute(
                 "INSERT INTO events (run_id, ts, event_type, message, progress, payload_json) "
                 "VALUES (?, ?, ?, ?, ?, ?)",
-                (run_id, now, event_type, message[:1024], progress, _serialise(payload)),
+                (run_id, now, event_type, capped, progress, _serialise(payload)),
             )
 
     def add_edge(self, parent_run_id: str, child_run_id: str, *, kind: str = "spawn") -> None:

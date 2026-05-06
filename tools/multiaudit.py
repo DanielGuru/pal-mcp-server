@@ -46,11 +46,24 @@ from tools.shared.base_tool import BaseTool
 logger = logging.getLogger(__name__)
 
 
-# 'host' is the reserved panel agent name that routes through MCP sampling
-# back to the connected client (Claude Code). Including it by default makes
-# multiaudit a true 4-way debate: Claude Code is a peer in the discussion of
-# its own PR, not just the dispatcher.
-DEFAULT_PANELISTS = ["host", "codex", "gemini", "grok-4.3"]
+# Default 5-way debate covering the four current frontier model families
+# at zero / minimal cost:
+#   - host    : MCP-sampling back to the connected client (Claude Code).
+#               Currently a no-op because Claude Code does not advertise
+#               the sampling capability (it gracefully fails); kept in
+#               the list so it lights up automatically once the host gains
+#               sampling support.
+#   - codex   : OpenAI flagship via clink OAuth (free).
+#   - gemini  : Google flagship via clink OAuth (free, falls back to paid
+#               on quota).
+#   - claude  : Anthropic Opus via clink OAuth (free with the user's
+#               Claude subscription). This is the in-family voice in the
+#               panel — gets us a Claude model arguing alongside the
+#               others without going through MCP sampling. Even if `host`
+#               is unavailable, `claude` ensures the debate has Anthropic
+#               representation.
+#   - grok-4.3: xAI flagship via paid API (no OAuth path on xAI).
+DEFAULT_PANELISTS = ["host", "codex", "gemini", "claude", "grok-4.3"]
 DEFAULT_JUDGE = "codex"
 DEFAULT_DEBATE_ROUNDS = 1
 DEFAULT_PANELIST_TIMEOUT_S = 300

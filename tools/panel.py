@@ -264,6 +264,36 @@ async def _run_host_panelist(
         }
 
     duration = round(time.monotonic() - started, 2)
+
+    # Record the host response as a child run in the execution graph so
+    # `run_tree(panel_run_id)` can recover the full text the same way it
+    # recovers clink/chat panelists. Without this, summary_only=true would
+    # tell callers "full responses are in the graph" — but the host's path
+    # bypasses execute_tool, so its run never gets created. Audit-flagged
+    # ("Data-loss bug on host panelist"), gemini severity=blocker.
+    try:
+        from utils.execution_graph import current_run_id, get_graph
+
+        graph = get_graph()
+        parent = current_run_id()
+        if graph is not None and parent:
+            host_run_id = graph.start_run(
+                tool_name="host_sampling",
+                label=f"panelist:{label}",
+                parent_run_id=parent,
+                args={"prompt_chars": len(prompt), "host_model": getattr(result, "model", None)},
+            )
+            graph.complete_run(
+                host_run_id,
+                result={"response": response_text, "host_model": getattr(result, "model", None)},
+                cost_tier="host_sampling",
+                model_used=getattr(result, "model", None),
+            )
+    except Exception:  # noqa: BLE001
+        # Graph writes are best-effort — never fail the panelist on graph
+        # error. The response text is still in the result dict below.
+        logger.debug("host panelist graph recording failed", exc_info=True)
+
     await emit_progress(f"panel/{label}: ✓ host responded ({duration}s)", progress=1.0)
     return {
         "agent": agent,
@@ -284,8 +314,16 @@ async def _run_panelist(
     files: list[str],
     images: list[str],
     timeout: float,
+    inject_schema_suffix: bool = True,
 ) -> dict[str, Any]:
-    """Run a single panelist. Returns a structured per-panelist outcome."""
+    """Run a single panelist. Returns a structured per-panelist outcome.
+
+    By default appends the structured-tail schema instruction so callers can
+    extract `verdict`/`headline`/`key_findings` reliably. Set
+    `inject_schema_suffix=False` for the judge call (which already follows
+    its own HEADLINE-only schema) and any other prompt that arrives
+    pre-formatted.
+    """
     agent = panelist.get("agent")
     if not isinstance(agent, str) or not agent:
         return {
@@ -299,6 +337,9 @@ async def _run_panelist(
     is_host = _is_host_agent(agent)
     is_clink = _is_clink_agent(agent)
     started = time.monotonic()
+
+    if inject_schema_suffix:
+        prompt = with_panelist_schema(prompt)
 
     await emit_progress(f"panel/{label}: dispatching", progress=0.0)
 
@@ -399,6 +440,81 @@ def _truncate(text: str, *, cap: int) -> str:
     return head + f"\n…[panel: truncated {len(text) - cap + 80:,} chars]"
 
 
+# Cap on the answer body streamed to the viewer per panelist. Set high
+# enough that real panelist responses (~5-8KB) survive intact — the user
+# wants the FULL conversation, not summaries. The graph layer's event-row
+# cap (PAL_GRAPH_EVENT_CAP, default 32KB) is the real ceiling; this is
+# just a defensive upper bound against pathological essays.
+TRANSCRIPT_BODY_CAP = 24000
+
+
+def _unwrap_chat_envelope(text: str) -> str:
+    """Strip the chat-tool JSON envelope so the user sees prose, not JSON.
+
+    Clink and chat tools return responses shaped like
+    `{"status":"continuation_available","content":"...\\n..."}`. Useful
+    machine-readable, but in a transcript view the user just wants the
+    prose — they don't want to read `\\n` escapes or curly braces.
+    Defensive: if the payload isn't a recognisable envelope, return the
+    original text unchanged.
+    """
+    if not text:
+        return text
+    s = text.lstrip()
+    if not (s.startswith("{") and '"content"' in s[:200]):
+        return text
+    try:
+        parsed = json.loads(s)
+    except json.JSONDecodeError:
+        return text
+    if isinstance(parsed, dict) and isinstance(parsed.get("content"), str):
+        return parsed["content"]
+    return text
+
+
+async def _emit_panelist_answer(
+    *,
+    label: str,
+    role: str,
+    response_text: str,
+    kind: str,
+    round_num: Optional[int] = None,
+) -> None:
+    """Stream a panelist's answer body to the live viewer.
+
+    The viewer renders these as transcript blockquotes — that's what makes
+    the live feed read as a real conversation between the models, not just
+    a pile of status pings. The structured tail is stripped, the chat-tool
+    JSON envelope is unwrapped, so the message contains only readable prose.
+
+    `kind`:
+      - "answer"            — round 1 (initial position)
+      - "debate"            — round 2+ (revised position after seeing peers)
+      - "judge"             — judge synthesis
+    """
+    body = _strip_tail_blocks(_unwrap_chat_envelope(response_text))
+    if len(body) > TRANSCRIPT_BODY_CAP:
+        body = body[:TRANSCRIPT_BODY_CAP] + "…"
+    if not body.strip():
+        return  # nothing useful to show
+
+    if kind == "judge":
+        prefix = f"[judge:{label}]"
+        event_type = "judge_synthesis"
+    elif kind == "debate":
+        prefix = f"[round {round_num} · {label}] (revised)"
+        event_type = "panelist_answer"
+    else:
+        prefix = f"[round 1 · {label}]"
+        event_type = "panelist_answer"
+
+    await emit_progress(
+        f"{prefix}\n{body}",
+        progress=0.0,
+        event_type=event_type,
+    )
+
+
 def _build_judge_prompt(original_prompt: str, panelist_results: list[dict[str, Any]]) -> str:
     sections: list[str] = []
     sections.append(
@@ -441,6 +557,219 @@ def _extract_headline(judge_response: str) -> str | None:
     if not m:
         return None
     return m.group(1).strip() or None
+
+
+# ---------------------------------------------------------------------------
+# Per-panelist structured-output schema
+#
+# Default panel result was a 50–80kB blob with each panelist's full essay
+# inlined as a single string field. Two problems: (a) blew the MCP response
+# size cap, forcing callers to spawn subagents to summarise; (b) the host
+# LLM couldn't address individual findings without re-reading everything.
+#
+# Fix: ask each panelist to END their response with fenced structured-tail
+# blocks (same trick as the judge's <HEADLINE>). The full prose stays in the
+# graph (each panelist is its own run record reachable via run_tree); the
+# default `task_result` payload now returns a parsed `summary` per panelist
+# plus an excerpt, keeping responses small enough to read inline.
+# ---------------------------------------------------------------------------
+
+# Excerpt cap on full response when returned in summary mode.
+SUMMARY_RESPONSE_EXCERPT_CHARS = 600
+
+# Sentinel anchoring the structured tail. Without this, an unanchored regex
+# would happily match `<VERDICT>...</VERDICT>` *inside reviewed code or a PR
+# diff* the panelist quoted in their answer — the audit caught this as a
+# security finding ("PR authors could spoof verdicts via untrusted diffs").
+# We require the panelist to emit this exact sentinel before any tag block;
+# parsing only considers text after the LAST occurrence so even a panelist
+# who quotes the schema mid-prose gets the right answer.
+_TAIL_SENTINEL = "<<<PAL_STRUCTURED_TAIL_v1>>>"
+
+_PANELIST_SCHEMA_SUFFIX = (
+    "\n\n---\n"
+    "OUTPUT FORMAT — when you have finished your analysis, append the following "
+    "fenced structured-tail blocks (in this order). Use them in addition to your "
+    "normal prose; do not let them replace your reasoning. Tags MUST be "
+    "uppercase. Empty/inapplicable blocks may be omitted EXCEPT <VERDICT> and "
+    "<HEADLINE> which are required.\n"
+    "\n"
+    f"Begin the structured tail with the literal sentinel `{_TAIL_SENTINEL}` on "
+    "its own line — this anchors the parser. Anything BEFORE the sentinel is "
+    "treated as your prose and not parsed for tags. Place this sentinel + the "
+    "tag blocks at the very end of your response.\n"
+    "\n"
+    f"{_TAIL_SENTINEL}\n"
+    "<VERDICT>land | needs-changes | reject</VERDICT>\n"
+    "<SEVERITY>blocker | major | minor | nit</SEVERITY>\n"
+    "<HEADLINE>One sentence (max 200 chars). Direct, no preamble.</HEADLINE>\n"
+    "<KEY_FINDINGS>\n"
+    "- [bug|design|security|test_gap|drift|nit] one finding per line, optional path:line ref\n"
+    "</KEY_FINDINGS>\n"
+    "<FILES_TO_PRESERVE>\n"
+    "- path/to/file.py — reason\n"
+    "</FILES_TO_PRESERVE>\n"
+    "<FILES_TO_BACKFILL>\n"
+    "- name_or_path — reason\n"
+    "</FILES_TO_BACKFILL>\n"
+    "<RECOMMENDED_ACTIONS>\n"
+    "- imperative bullet (start with a verb)\n"
+    "</RECOMMENDED_ACTIONS>\n"
+)
+
+
+def with_panelist_schema(prompt: str) -> str:
+    """Append the structured-tail schema to a panelist's prompt."""
+    return prompt.rstrip() + _PANELIST_SCHEMA_SUFFIX
+
+
+_TAIL_BLOCK_RE = re.compile(
+    r"<(VERDICT|SEVERITY|HEADLINE|KEY_FINDINGS|FILES_TO_PRESERVE|FILES_TO_BACKFILL|RECOMMENDED_ACTIONS)>"
+    r"(.*?)"
+    r"</\1>",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _isolate_structured_tail(response_text: str) -> str:
+    """Return the substring AFTER the last occurrence of the tail sentinel.
+
+    This is the security boundary for tail-block parsing: anything before the
+    last sentinel is the panelist's prose (which may quote the schema) and
+    must not contribute parsed tags. If the sentinel is absent the panelist
+    didn't follow the schema; return empty so no garbage is parsed.
+    """
+    if not response_text:
+        return ""
+    idx = response_text.rfind(_TAIL_SENTINEL)
+    if idx < 0:
+        return ""
+    return response_text[idx + len(_TAIL_SENTINEL):]
+_VALID_VERDICTS = {"land", "needs-changes", "reject"}
+_VALID_SEVERITIES = {"blocker", "major", "minor", "nit"}
+
+
+def _split_bullets(block: str) -> list[str]:
+    """Split a bullet-list block into clean string entries."""
+    out: list[str] = []
+    for raw in block.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        if line.startswith(("-", "*", "•")):
+            line = line[1:].lstrip()
+        if line.startswith(tuple(f"{n}." for n in range(10))):
+            line = line.split(".", 1)[1].lstrip()
+        if line:
+            out.append(line)
+    return out
+
+
+def extract_panelist_summary(response_text: str) -> dict[str, Any]:
+    """Parse the structured-tail blocks a panelist was instructed to emit.
+
+    Returns a summary dict. Always includes `parse_complete` (True iff at
+    least VERDICT and HEADLINE were extracted). Missing / unrecognised blocks
+    are silently elided so a slightly-non-compliant model still yields a
+    partial summary.
+
+    Only the substring AFTER the last `_TAIL_SENTINEL` is considered — this
+    prevents tag-shaped content quoted in the panelist's prose (e.g. from a
+    PR diff under review) from spoofing the verdict.
+    """
+    blocks: dict[str, str] = {}
+    tail = _isolate_structured_tail(response_text)
+    if tail:
+        for m in _TAIL_BLOCK_RE.finditer(tail):
+            tag = m.group(1).upper()
+            content = m.group(2).strip()
+            blocks[tag] = content
+
+    summary: dict[str, Any] = {}
+    verdict = blocks.get("VERDICT", "").strip().lower()
+    if verdict in _VALID_VERDICTS:
+        summary["verdict"] = verdict
+    elif verdict:
+        # Try to coerce e.g. "Needs Changes" → "needs-changes"
+        coerced = verdict.replace(" ", "-").replace("_", "-")
+        if coerced in _VALID_VERDICTS:
+            summary["verdict"] = coerced
+
+    severity = blocks.get("SEVERITY", "").strip().lower()
+    if severity in _VALID_SEVERITIES:
+        summary["severity"] = severity
+
+    headline = blocks.get("HEADLINE", "").strip()
+    if headline:
+        # Cap to one line, hard limit.
+        summary["headline"] = headline.split("\n", 1)[0].strip()[:280]
+
+    for tag, key in (
+        ("KEY_FINDINGS", "key_findings"),
+        ("FILES_TO_PRESERVE", "files_to_preserve"),
+        ("FILES_TO_BACKFILL", "files_to_backfill"),
+        ("RECOMMENDED_ACTIONS", "recommended_actions"),
+    ):
+        block = blocks.get(tag, "")
+        if block:
+            bullets = _split_bullets(block)
+            if bullets:
+                summary[key] = bullets
+
+    summary["parse_complete"] = "verdict" in summary and "headline" in summary
+    return summary
+
+
+def _strip_tail_blocks(response_text: str) -> str:
+    """Return the response body with the structured tail removed.
+
+    Used to build a clean excerpt of the panelist's prose without echoing
+    the structured tail (which is already parsed into `summary`). Splits at
+    the sentinel — everything after the LAST sentinel occurrence is the
+    structured tail and gets dropped. If the sentinel is absent we fall
+    back to the broader regex strip so partially-compliant responses still
+    yield a clean excerpt.
+    """
+    text = response_text or ""
+    idx = text.rfind(_TAIL_SENTINEL)
+    if idx >= 0:
+        return text[:idx].rstrip()
+    return _TAIL_BLOCK_RE.sub("", text).strip()
+
+
+def panelist_summary_view(result: dict[str, Any]) -> dict[str, Any]:
+    """Build a bounded-size view of a panelist outcome.
+
+    Drops the full `response` text in favour of `response_chars` +
+    `response_excerpt` + parsed `summary`. The full text is preserved in
+    the execution graph (each panelist's `execute_tool` call is its own
+    run record, queryable via `run_tree(panel_run_id)` or `get_run`).
+    """
+    view: dict[str, Any] = {
+        "agent": result.get("agent"),
+        "label": result.get("label"),
+        "role": result.get("role"),
+        "ok": bool(result.get("ok")),
+        "duration_s": result.get("duration_s"),
+    }
+    if result.get("cost_tier"):
+        view["cost_tier"] = result["cost_tier"]
+    if result.get("error"):
+        view["error"] = result["error"]
+
+    response_text = result.get("response") or ""
+    if response_text:
+        view["response_chars"] = len(response_text)
+        body = _strip_tail_blocks(response_text)
+        if len(body) > SUMMARY_RESPONSE_EXCERPT_CHARS:
+            view["response_excerpt"] = body[:SUMMARY_RESPONSE_EXCERPT_CHARS] + "…"
+            view["response_excerpt_truncated"] = True
+        else:
+            view["response_excerpt"] = body
+            view["response_excerpt_truncated"] = False
+        view["summary"] = extract_panelist_summary(response_text)
+
+    return view
 
 
 def _panel_status(panelists_ok: int, panelists_total: int) -> str:
@@ -563,6 +892,15 @@ async def _run_debate_round(
                 progress=float(finished),
                 total=float(len(panelists)),
             )
+            # Stream the revised answer for the live transcript.
+            if outcome.get("ok") and outcome.get("response"):
+                await _emit_panelist_answer(
+                    label=outcome.get("label", "?"),
+                    role=outcome.get("role", "default"),
+                    response_text=outcome["response"],
+                    kind="debate",
+                    round_num=round_num,
+                )
     except asyncio.CancelledError:
         for t in tasks:
             if not t.done():
@@ -672,6 +1010,18 @@ class PanelTool(BaseTool):
                         "judge synthesizes the FINAL round (with full history available)."
                     ),
                 },
+                "summary_only": {
+                    "type": "boolean",
+                    "description": (
+                        "When true (default), the result returns a parsed `summary` per panelist "
+                        "(verdict, severity, headline, key_findings, files_to_preserve, "
+                        "files_to_backfill, recommended_actions) plus a short `response_excerpt` — "
+                        "keeping the payload small enough to read inline. Full panelist responses "
+                        "are preserved in the execution graph; retrieve them via "
+                        "`run_tree(panel_run_id)` or `get_run(child_run_id)`. Set false to inline "
+                        "the full text (legacy behaviour; can blow MCP response size limits)."
+                    ),
+                },
             },
             "required": ["prompt", "panelists"],
             "additionalProperties": False,
@@ -773,6 +1123,11 @@ class PanelTool(BaseTool):
             return _err(f"'debate_rounds' must be between 0 and {MAX_DEBATE_ROUNDS}")
         debate_rounds = debate_rounds_raw
 
+        summary_only_raw = arguments.get("summary_only", True)
+        if not isinstance(summary_only_raw, bool):
+            return _err("'summary_only' must be a boolean")
+        summary_only = summary_only_raw
+
         # ----- fan out (streaming via as_completed) -----
         await emit_progress(
             f"panel: dispatching to {len(panelists)} panelists in parallel",
@@ -799,6 +1154,16 @@ class PanelTool(BaseTool):
                     progress=float(finished),
                     total=float(len(panelists) + (1 if judge else 0)),
                 )
+                # Stream the answer body itself to the viewer so the live
+                # feed reads as a panel transcript, not just status pings.
+                if outcome.get("ok") and outcome.get("response"):
+                    await _emit_panelist_answer(
+                        label=outcome.get("label", "?"),
+                        role=outcome.get("role", "default"),
+                        response_text=outcome["response"],
+                        kind="answer",
+                        round_num=1,
+                    )
         except asyncio.CancelledError:
             for t in panelist_tasks:
                 if not t.done():
@@ -885,6 +1250,7 @@ class PanelTool(BaseTool):
                         files=[],  # judge sees the panelist outputs, not the original files
                         images=[],
                         timeout=timeout,
+                        inject_schema_suffix=False,  # judge has its own HEADLINE-only schema
                     )
                 judge_outcome["duration_s"] = round(time.monotonic() - judge_started, 2)
                 # Extract the leading <HEADLINE> the judge was asked to write.
@@ -892,6 +1258,13 @@ class PanelTool(BaseTool):
                     headline = _extract_headline(judge_outcome.get("response", ""))
                     if headline:
                         judge_outcome["headline"] = headline
+                    # Stream the judge synthesis to the viewer transcript.
+                    await _emit_panelist_answer(
+                        label=judge,
+                        role="judge",
+                        response_text=judge_outcome.get("response", ""),
+                        kind="judge",
+                    )
                 judge_result = judge_outcome
 
         # Surface the judge's headline at the top level so callers can scan
@@ -900,17 +1273,97 @@ class PanelTool(BaseTool):
         if isinstance(judge_result, dict):
             top_headline = judge_result.get("headline")
 
-        payload: dict[str, Any] = {
-            "status": panel_status,
-            "headline": top_headline,
-            "panel_duration_s": panel_duration,
-            "rounds_run": len(debate_history),
-            "panelists_ok": ok_count,
-            "panelists_total": len(panelist_results),
-            "panelists": panelist_results,
-            "debate_history": debate_history if len(debate_history) > 1 else None,
-            "judge": judge_result,
-        }
+        # Pull the panel's own run_id (set by server.execute_tool when this
+        # call began) so callers can fetch the full graph with run_tree.
+        try:
+            from utils.execution_graph import current_run_id
+            panel_run_id = current_run_id()
+        except Exception:  # noqa: BLE001
+            panel_run_id = None
+
+        if summary_only:
+            # Bounded view: parsed structured summary per panelist + excerpt.
+            # Full responses live in the execution graph (one run per
+            # panelist sub-call) and are reachable via run_tree / get_run.
+            view_panelists = [panelist_summary_view(r) for r in panelist_results]
+            # Aggregate the verdict counts for a quick at-a-glance reading.
+            verdict_tally: dict[str, int] = {}
+            for v in view_panelists:
+                vd = (v.get("summary") or {}).get("verdict")
+                if vd:
+                    verdict_tally[vd] = verdict_tally.get(vd, 0) + 1
+
+            view_judge: Optional[dict[str, Any]] = None
+            if judge_result is not None:
+                if judge_result.get("ok"):
+                    judge_response = judge_result.get("response") or ""
+                    view_judge = {
+                        "agent": judge_result.get("agent"),
+                        "ok": True,
+                        "duration_s": judge_result.get("duration_s"),
+                        "headline": judge_result.get("headline"),
+                        "response_chars": len(judge_response),
+                    }
+                    if len(judge_response) > SUMMARY_RESPONSE_EXCERPT_CHARS * 4:
+                        view_judge["response_excerpt"] = (
+                            judge_response[: SUMMARY_RESPONSE_EXCERPT_CHARS * 4] + "…"
+                        )
+                        view_judge["response_excerpt_truncated"] = True
+                    else:
+                        view_judge["response_excerpt"] = judge_response
+                        view_judge["response_excerpt_truncated"] = False
+                else:
+                    view_judge = {
+                        "agent": judge_result.get("agent"),
+                        "ok": False,
+                        "error": judge_result.get("error"),
+                    }
+
+            view_history = None
+            if len(debate_history) > 1:
+                view_history = [
+                    {
+                        "round": entry["round"],
+                        "duration_s": entry.get("duration_s"),
+                        "panelists": [panelist_summary_view(p) for p in entry.get("panelists", [])],
+                    }
+                    for entry in debate_history
+                ]
+
+            payload: dict[str, Any] = {
+                "status": panel_status,
+                "headline": top_headline,
+                "panel_run_id": panel_run_id,
+                "panel_duration_s": panel_duration,
+                "rounds_run": len(debate_history),
+                "panelists_ok": ok_count,
+                "panelists_total": len(panelist_results),
+                "verdict_tally": verdict_tally or None,
+                "panelists": view_panelists,
+                "debate_history": view_history,
+                "judge": view_judge,
+                "full_response_access": (
+                    "Full panelist responses are stored in the execution graph. "
+                    "Use `run_tree` with this panel_run_id to walk every panelist's "
+                    "sub-run (which contains the verbatim response in its result), "
+                    "or pass `summary_only=false` to inline the full text in this "
+                    "result (warning: can exceed MCP response size limits)."
+                ) if panel_run_id else None,
+            }
+        else:
+            # Legacy verbose payload: full panelist responses inlined.
+            payload = {
+                "status": panel_status,
+                "headline": top_headline,
+                "panel_run_id": panel_run_id,
+                "panel_duration_s": panel_duration,
+                "rounds_run": len(debate_history),
+                "panelists_ok": ok_count,
+                "panelists_total": len(panelist_results),
+                "panelists": panelist_results,
+                "debate_history": debate_history if len(debate_history) > 1 else None,
+                "judge": judge_result,
+            }
         return [
             TextContent(
                 type="text",

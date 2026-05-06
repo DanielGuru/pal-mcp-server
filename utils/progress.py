@@ -48,6 +48,7 @@ async def emit_progress(
     *,
     progress: float,
     total: Optional[float] = None,
+    event_type: str = "progress",
 ) -> bool:
     """Send an MCP progress notification on the current request, if any.
 
@@ -63,6 +64,12 @@ async def emit_progress(
         message: Short human-readable status (e.g. "codex: reading 12 files").
         progress: Monotonically increasing scalar.
         total: Optional upper bound for `progress`.
+        event_type: Tag stored on the graph event so the web viewer can
+            render different kinds of activity distinctly. Defaults to
+            "progress" for ordinary status pings. Use "panelist_answer" for
+            full panel-debate prose blocks (the viewer renders these as a
+            transcript blockquote) and "judge_synthesis" for the judge's
+            final summary.
 
     Returns:
         True if delivered (to a sink or via MCP), False if skipped.
@@ -80,7 +87,7 @@ async def emit_progress(
         if run_id is not None and graph is not None:
             graph.add_event(
                 run_id,
-                event_type="progress",
+                event_type=event_type,
                 message=message,
                 progress=progress,
             )

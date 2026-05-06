@@ -59,8 +59,16 @@ MAX_COMPLETED_RECORDS = 64
 GC_INTERVAL_S = 30.0
 # Max progress events held per task (rolling buffer; oldest dropped).
 PROGRESS_BUFFER_SIZE = 200
-# Cap on task_result wait_seconds — never block longer than this even if asked.
-MAX_WAIT_SECONDS = 600
+# Cap on task_result wait_seconds. Hard ceiling on how long any single
+# task_result call can block the host LLM's turn. 30s default keeps the
+# conversation channel responsive to user input even mid-audit (the host can't
+# receive new messages while a tool call is in-flight). Override via
+# PAL_TASK_WAIT_CAP_S only when running headless / non-interactive.
+import os as _os
+try:
+    MAX_WAIT_SECONDS = max(1.0, float(_os.environ.get("PAL_TASK_WAIT_CAP_S", "30")))
+except (TypeError, ValueError):
+    MAX_WAIT_SECONDS = 30.0
 # Bound on cancel_task awaiting teardown before responding.
 CANCEL_TEARDOWN_GRACE_S = 8.0
 
@@ -710,7 +718,10 @@ class TaskResultTool(BaseTool):
         return (
             "Fetch the final response from a background task started via start_task. "
             "If the task has not finished and wait_seconds > 0, blocks up to that "
-            "many seconds for it to complete. Returns the wrapped tool's output verbatim."
+            "many seconds for it to complete. Returns the wrapped tool's output verbatim. "
+            f"NOTE: wait_seconds is capped at {int(MAX_WAIT_SECONDS)}s. Long blocks freeze the "
+            "user out of the conversation; prefer short polls or wait for the push-completion "
+            "notification PAL emits when the task finishes."
         )
 
     def get_input_schema(self) -> dict[str, Any]:

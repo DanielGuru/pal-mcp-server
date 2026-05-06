@@ -273,3 +273,8 @@ def test_default_panelist_set_includes_host(tmp_path, monkeypatch):
     asyncio.run(go())
     panelists = captured["arguments"]["arguments"]["panelists"]
     assert "host" in panelists, f"expected 'host' as default panelist; got {panelists}"
+    # Panel must include all four current frontier families by default —
+    # codex (OpenAI), gemini (Google), claude (Anthropic), grok-4.3 (xAI).
+    # Anything missing means the audit only hears from a subset of vendors.
+    for required in ("codex", "gemini", "claude", "grok-4.3"):
+        assert required in panelists, f"expected '{required}' in defaults; got {panelists}"

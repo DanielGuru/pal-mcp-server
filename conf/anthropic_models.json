@@ -1,0 +1,85 @@
+{
+  "_README": {
+    "description": "Model metadata for Anthropic's Claude API access. Used by providers/anthropic.py and the clink claude→API OAuth fallback.",
+    "usage": "Models listed here are exposed directly through the Anthropic provider. Aliases are case-insensitive.",
+    "field_notes": "Matches providers/shared/model_capabilities.py. Anthropic models support extended thinking via the SDK's 'thinking' parameter; the provider maps PAL's effort levels to those budgets."
+  },
+  "models": [
+    {
+      "model_name": "claude-opus-4-7",
+      "friendly_name": "Claude Opus 4.7",
+      "aliases": [
+        "opus",
+        "opus-4.7",
+        "claude-opus-4.7",
+        "claude-opus",
+        "claude-opus4",
+        "claude-opus4.7"
+      ],
+      "intelligence_score": 20,
+      "description": "Claude Opus 4.7 — Anthropic's flagship reasoning model. 1M-token context. Strongest for deep code review, architecture, and adversarial debate. Powers panel/multiaudit's claude panelist.",
+      "context_window": 1000000,
+      "max_output_tokens": 65536,
+      "max_thinking_tokens": 32768,
+      "supports_extended_thinking": true,
+      "supports_system_prompts": true,
+      "supports_streaming": true,
+      "supports_function_calling": true,
+      "supports_json_mode": true,
+      "supports_images": true,
+      "supports_temperature": true,
+      "allow_code_generation": true,
+      "max_image_size_mb": 30.0
+    },
+    {
+      "model_name": "claude-sonnet-4-6",
+      "friendly_name": "Claude Sonnet 4.6",
+      "aliases": [
+        "sonnet",
+        "sonnet-4.6",
+        "claude-sonnet-4.6",
+        "claude-sonnet",
+        "claude-sonnet4",
+        "claude-sonnet4.6"
+      ],
+      "intelligence_score": 16,
+      "description": "Claude Sonnet 4.6 — balanced flagship. Strong reasoning at a lower cost and faster latency than Opus.",
+      "context_window": 200000,
+      "max_output_tokens": 32768,
+      "max_thinking_tokens": 16384,
+      "supports_extended_thinking": true,
+      "supports_system_prompts": true,
+      "supports_streaming": true,
+      "supports_function_calling": true,
+      "supports_json_mode": true,
+      "supports_images": true,
+      "supports_temperature": true,
+      "allow_code_generation": true,
+      "max_image_size_mb": 20.0
+    },
+    {
+      "model_name": "claude-haiku-4-5-20251001",
+      "friendly_name": "Claude Haiku 4.5",
+      "aliases": [
+        "haiku",
+        "haiku-4.5",
+        "claude-haiku-4.5",
+        "claude-haiku",
+        "claude-haiku4",
+        "claude-haiku4.5"
+      ],
+      "intelligence_score": 11,
+      "description": "Claude Haiku 4.5 — small, fast, and cheap. Best for high-volume review or quick second opinions.",
+      "context_window": 200000,
+      "max_output_tokens": 16384,
+      "supports_extended_thinking": false,
+      "supports_system_prompts": true,
+      "supports_streaming": true,
+      "supports_function_calling": true,
+      "supports_json_mode": true,
+      "supports_images": true,
+      "supports_temperature": true,
+      "max_image_size_mb": 10.0
+    }
+  ]
+}

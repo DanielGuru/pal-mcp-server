@@ -114,55 +114,61 @@ class OpenAIModelProvider(RegistryBackedProviderMixin, OpenAICompatibleProvider)
             return None
 
         if category == ToolModelCategory.EXTENDED_REASONING:
-            # Prefer models with extended thinking support
-            # GPT-5.4 flagship first, then GPT-5.1 Codex for coding tasks
+            # gpt-5.5 is the current flagship reasoning model. gpt-5.1-codex
+            # second for coding-shaped questions. Older entries kept for
+            # users on legacy allowlists.
             preferred = find_first(
                 [
+                    "gpt-5.5",
                     "gpt-5.4",
                     "gpt-5.1-codex",
-                    "gpt-5.2",
                     "gpt-5-codex",
-                    "gpt-5.2-pro",
-                    "o3-pro",
                     "gpt-5",
-                    "o3",
                 ]
             )
             return preferred if preferred else allowed_models[0]
 
         elif category == ToolModelCategory.FAST_RESPONSE:
-            # Prefer fast, cost-efficient models
-            # GPT-5.4-mini/nano for speed, then older models
+            # Flagship gpt-5.5 must NOT lead this list — it's the slowest
+            # and most expensive SKU. The trimmed registry only ships
+            # codex-grade SKUs as "fast"; mini/nano variants are upstream
+            # leftovers and aren't in conf/openai_models.json.
             preferred = find_first(
                 [
-                    "gpt-5.4-mini",
-                    "gpt-5.4-nano",
-                    "gpt-5.2",
-                    "gpt-5.1-codex-mini",
-                    "gpt-5",
-                    "gpt-5-mini",
+                    "gpt-5.1-codex",
                     "gpt-5-codex",
-                    "o4-mini",
-                    "o3-mini",
+                    "gpt-5",
                 ]
             )
-            return preferred if preferred else allowed_models[0]
+            if preferred:
+                return preferred
+            # Audit-flagged edge case: if the allowlist contains ONLY the
+            # flagship (e.g. OPENAI_ALLOWED_MODELS=gpt-5.5), `allowed_models[0]`
+            # would silently return gpt-5.5 — defeating the "fast tier never
+            # serves the flagship" invariant. Pick the first non-flagship
+            # entry instead, and only if none exist does the caller see the
+            # flagship (with an explicit log warning).
+            non_flagship = [m for m in allowed_models if m != "gpt-5.5"]
+            if non_flagship:
+                return non_flagship[0]
+            logging.warning(
+                "OpenAI FAST_RESPONSE: allowlist contains only gpt-5.5; "
+                "returning flagship reluctantly. Add a cheaper SKU to "
+                "OPENAI_ALLOWED_MODELS to honour the fast-tier invariant."
+            )
+            return allowed_models[0]
 
         else:  # BALANCED or default
-            # Prefer balanced performance/cost models
-            # GPT-5.4 family for latest capabilities
+            # All entries below must be canonical names in
+            # conf/openai_models.json. gpt-5.4-mini / gpt-5-mini were
+            # upstream leftovers; the trimmed registry doesn't ship them.
             preferred = find_first(
                 [
+                    "gpt-5.5",
                     "gpt-5.4",
-                    "gpt-5.4-mini",
-                    "gpt-5.2",
                     "gpt-5.1-codex",
                     "gpt-5",
                     "gpt-5-codex",
-                    "gpt-5.2-pro",
-                    "gpt-5-mini",
-                    "o4-mini",
-                    "o3-mini",
                 ]
             )
             return preferred if preferred else allowed_models[0]
