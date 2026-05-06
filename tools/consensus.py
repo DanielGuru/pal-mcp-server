@@ -491,7 +491,7 @@ of the evidence, even when it strongly points in one direction.""",
                     "next_step_required": request.step_number < request.total_steps,
                 }
 
-                # Add CLAI Agent's analysis to step 1
+                # Add CLI Agent's analysis to step 1
                 if request.step_number == 1:
                     response_data["agent_analysis"] = {
                         "initial_analysis": request.step,

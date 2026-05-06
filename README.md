@@ -35,9 +35,9 @@ The new **[`clink`](docs/tools/clink.md)** (CLI + Link) tool connects external A
 ```bash
 # Codex spawns Codex subagent for isolated code review in fresh context
 clink with codex codereviewer to audit auth module for security issues
-# Subagent reviews in isolation, returns final report without cluttering your context as codex reads each file and walks the directory structure
+# Subagent reviews in isolation, returns final report without cluttering your context
 
-# Consensus from different AI models → Implementation handoff with full context preservation between tools
+# Consensus from different AI models → Implementation handoff with full context preservation
 Use consensus with gpt-5 and gemini-pro to decide: dark mode or offline support next
 Continue with clink gemini - implement the recommended feature
 # Gemini receives full debate context and starts coding immediately
@@ -51,9 +51,7 @@ Continue with clink gemini - implement the recommended feature
 
 **Why rely on one AI model when you can orchestrate them all?**
 
-A Model Context Protocol server that supercharges tools like [Claude Code](https://www.anthropic.com/claude-code), [Codex CLI](https://developers.openai.com/codex/cli), and IDE clients such
-as [Cursor](https://cursor.com) or the [Claude Dev VS Code extension](https://marketplace.visualstudio.com/items?itemName=Anthropic.claude-vscode). **PAL MCP connects your favorite AI tool
-to multiple AI models** for enhanced code analysis, problem-solving, and collaborative development.
+A Model Context Protocol server that supercharges tools like [Claude Code](https://www.anthropic.com/claude-code), [Codex CLI](https://developers.openai.com/codex/cli), and IDE clients such as [Cursor](https://cursor.com) or the [Claude Dev VS Code extension](https://marketplace.visualstudio.com/items?itemName=Anthropic.claude-vscode). **PAL MCP connects your favorite AI tool to multiple AI models** for enhanced code analysis, problem-solving, and collaborative development.
 
 ### True AI Collaboration with Conversation Continuity
 
@@ -61,14 +59,14 @@ PAL supports **conversation threading** so your CLI can **discuss ideas with mul
 
 Your CLI always stays in control but gets perspectives from the best AI for each subtask. Context carries forward seamlessly across tools and models, enabling complex workflows like: code reviews with multiple models → automated planning → implementation → pre-commit validation.
 
-> **You're in control.** Your CLI of choice orchestrates the AI team, but you decide the workflow. Craft powerful prompts that bring in Gemini Pro, GPT 5, Flash, or local offline models exactly when needed.
+> **You're in control.** Your CLI of choice orchestrates the AI team, but you decide the workflow. Craft powerful prompts that bring in Gemini Pro, GPT-5, Flash, or local offline models exactly when needed.
 
 <details>
 <summary><b>Reasons to Use PAL MCP</b></summary>
 
 A typical workflow with Claude Code as an example:
 
-1. **Multi-Model Orchestration** - Claude coordinates with Gemini Pro, O3, GPT-5, and 50+ other models to get the best analysis for each task
+1. **Multi-Model Orchestration** - Claude coordinates with Gemini 3.1 Pro, O3, GPT-5, and 50+ other models to get the best analysis for each task
 
 2. **Context Revival Magic** - Even after Claude's context resets, continue conversations seamlessly by having other models "remind" Claude of the discussion
 
@@ -92,6 +90,8 @@ A typical workflow with Claude Code as an example:
 
 12. **Bypass MCP Token Limits** - Automatically works around MCP's 25K limit for large prompts and responses
 
+13. **SQLite Execution Graph** - Every tool dispatch is recorded in `~/.pal/execution_graph.db`. Resume panels after restart, audit cost attribution, replay prior runs — durable across process restarts.
+
 **The Killer Feature:** When Claude's context resets, just ask to "continue with O3" - the other model's response magically revives Claude's understanding without re-ingesting documents!
 
 #### Example: Multi-Model Code Review Workflow
@@ -101,15 +101,14 @@ A typical workflow with Claude Code as an example:
 3. After multiple passes, collects relevant code and makes note of issues along the way
 4. Maintains a `confidence` level between `exploring`, `low`, `medium`, `high` and `certain` to track how confidently it's been able to find and identify issues
 5. Generates a detailed list of critical -> low issues
-6. Shares the relevant files, findings, etc with **Gemini Pro** to perform a deep dive for a second [`codereview`](docs/tools/codereview.md)
+6. Shares the relevant files, findings, etc with **Gemini 3.1 Pro** to perform a deep dive for a second [`codereview`](docs/tools/codereview.md)
 7. Comes back with a response and next does the same with o3, adding to the prompt if a new discovery comes to light
 8. When done, Claude takes in all the feedback and combines a single list of all critical -> low issues, including good patterns in your code. The final list includes new findings or revisions in case Claude misunderstood or missed something crucial and one of the other models pointed this out
 9. It then uses the [`planner`](docs/tools/planner.md) workflow to break the work down into simpler steps if a major refactor is required
 10. Claude then performs the actual work of fixing highlighted issues
-11. When done, Claude returns to Gemini Pro for a [`precommit`](docs/tools/precommit.md) review
+11. When done, Claude returns to Gemini 3.1 Pro for a [`precommit`](docs/tools/precommit.md) review
 
-All within a single conversation thread! Gemini Pro in step 11 _knows_ what was recommended by O3 in step 7! Taking that context
-and review into consideration to aid with its final pre-commit review.
+All within a single conversation thread! Gemini Pro in step 11 _knows_ what was recommended by O3 in step 7!
 
 **Think of it as Claude Code _for_ Claude Code.** This MCP isn't magic. It's just **super-glue**.
 
@@ -125,19 +124,19 @@ and review into consideration to aid with its final pre-commit review.
 <details>
 <summary>For Claude Code Users</summary>
 
-For best results when using [Claude Code](https://claude.ai/code):  
+For best results when using [Claude Code](https://claude.ai/code):
 
-- **Sonnet 4.5** - All agentic work and orchestration
-- **Gemini 3.0 Pro** OR **GPT-5.2 / Pro** - Deep thinking, additional code reviews, debugging and validations, pre-commit analysis
+- **claude-sonnet-4-5** or **claude-opus-4-7** - All agentic work and orchestration
+- **`gemini-3.1-pro-preview`** (`pro`) OR **`gpt-5.5`** - Deep thinking, additional code reviews, debugging and validations, pre-commit analysis
 </details>
 
 <details>
 <summary>For Codex Users</summary>
 
-For best results when using [Codex CLI](https://developers.openai.com/codex/cli):  
+For best results when using [Codex CLI](https://developers.openai.com/codex/cli):
 
-- **GPT-5.2 Codex Medium** - All agentic work and orchestration
-- **Gemini 3.0 Pro** OR **GPT-5.2-Pro** - Deep thinking, additional code reviews, debugging and validations, pre-commit analysis
+- **`gpt-5.5`** or **`gpt-5.1-codex`** - All agentic work and orchestration
+- **`gemini-3.1-pro-preview`** (`pro`) OR **`gpt-5.5`** - Deep thinking, additional code reviews, debugging and validations, pre-commit analysis
 </details>
 
 ## Quick Start (5 minutes)
@@ -148,7 +147,7 @@ For best results when using [Codex CLI](https://developers.openai.com/codex/cli)
 - **[OpenRouter](https://openrouter.ai/)** - Access multiple models with one API
 - **[Gemini](https://makersuite.google.com/app/apikey)** - Google's latest models
 - **[OpenAI](https://platform.openai.com/api-keys)** - O3, GPT-5 series
-- **[Azure OpenAI](https://learn.microsoft.com/azure/ai-services/openai/)** - Enterprise deployments of GPT-4o, GPT-4.1, GPT-5 family
+- **[Azure OpenAI](https://learn.microsoft.com/azure/ai-services/openai/)** - Enterprise deployments
 - **[X.AI](https://console.x.ai/)** - Grok models
 - **[DIAL](https://dialx.ai/)** - Vendor-agnostic model access
 - **[Ollama](https://ollama.ai/)** - Local models (free)
@@ -160,10 +159,13 @@ For best results when using [Codex CLI](https://developers.openai.com/codex/cli)
 git clone https://github.com/BeehiveInnovations/pal-mcp-server.git
 cd pal-mcp-server
 
-# Handles everything: setup, config, API keys from system environment. 
+# Copy and edit config
+cp .env.example .env
+# Edit .env and add your API keys
+
+# Handles everything: setup, config, API keys from system environment.
 # Auto-configures Claude Desktop, Claude Code, Gemini CLI, Codex CLI, Qwen CLI
-# Enable / disable additional settings in .env
-./run-server.sh  
+./run-server.sh
 ```
 
 **Option B: Instant Setup with [uvx](https://docs.astral.sh/uv/getting-started/installation/)**
@@ -194,13 +196,13 @@ cd pal-mcp-server
 "clink with cli_name=\"gemini\" role=\"planner\" to draft a phased rollout plan"
 ```
 
-👉 **[Complete Setup Guide](docs/getting-started.md)** with detailed installation, configuration for Gemini / Codex / Qwen, and troubleshooting
-👉 **[Cursor & VS Code Setup](docs/getting-started.md#ide-clients)** for IDE integration instructions
+👉 **[Complete Setup Guide](docs/getting-started.md)** with detailed installation, configuration for Gemini / Codex / Qwen, and troubleshooting  
+👉 **[Cursor & VS Code Setup](docs/getting-started.md#ide-clients)** for IDE integration instructions  
 📺 **[Watch tools in action](#-watch-tools-in-action)** to see real-world examples
 
 ## Provider Configuration
 
-PAL activates any provider that has credentials in your `.env`. See `.env.example` for deeper customization.
+PAL activates any provider that has credentials in your `.env`. Copy `.env.example` to `.env` and add your keys. See `.env.example` for the full list of options.
 
 ## Core Tools
 
@@ -208,10 +210,11 @@ PAL activates any provider that has credentials in your `.env`. See `.env.exampl
 
 **Collaboration & Planning** *(Enabled by default)*
 - **[`clink`](docs/tools/clink.md)** - Bridge requests to external AI CLIs (Gemini planner, codereviewer, etc.)
-- **[`chat`](docs/tools/chat.md)** - Brainstorm ideas, get second opinions, validate approaches. With capable models (GPT-5.2 Pro, Gemini 3.0 Pro), generates complete code / implementation
+- **[`chat`](docs/tools/chat.md)** - Brainstorm ideas, get second opinions, validate approaches. With capable models (GPT-5, Gemini 3.1 Pro), generates complete code / implementation
 - **[`thinkdeep`](docs/tools/thinkdeep.md)** - Extended reasoning, edge case analysis, alternative perspectives
 - **[`planner`](docs/tools/planner.md)** - Break down complex projects into structured, actionable plans
 - **[`consensus`](docs/tools/consensus.md)** - Get expert opinions from multiple AI models with stance steering
+- **[`panel`](#-panel-tool)** - Fan-out one prompt to N models in parallel, with optional adversarial debate rounds and judge synthesis
 
 **Code Analysis & Quality**
 - **[`debug`](docs/tools/debug.md)** - Systematic investigation and root cause analysis
@@ -225,10 +228,51 @@ PAL activates any provider that has credentials in your `.env`. See `.env.exampl
 - **[`secaudit`](docs/tools/secaudit.md)** - Security audits with OWASP Top 10 analysis
 - **[`docgen`](docs/tools/docgen.md)** - Generate documentation with complexity analysis
 
+**Async Task System**
+- **`start_task`** - Kick off a long-running tool call in the background (non-blocking)
+- **`task_status`** - Poll whether a background task is still running
+- **`task_result`** - Retrieve the result of a completed background task
+- **`cancel_task`** - Cancel a running background task
+
+**Execution Graph** *(SQLite-backed, survives restarts)*
+- **`list_runs`** - List recent tool dispatches; filter by status or tool name
+- **`get_run`** - Full details for a single run: events, cost, timing, result
+- **`run_tree`** - Show the parent→child lineage of a run (panel → panelists → clink fallbacks)
+
 **Utilities**
 - **[`apilookup`](docs/tools/apilookup.md)** - Forces current-year API/SDK documentation lookups in a sub-process (saves tokens within the current context window), prevents outdated training data responses
 - **[`challenge`](docs/tools/challenge.md)** - Prevent "You're absolutely right!" responses with critical analysis
 - **[`tracer`](docs/tools/tracer.md)** *(disabled by default - [enable](#tool-configuration))* - Static analysis prompts for call-flow mapping
+- **`listmodels`** - List all available AI models across configured providers
+- **`version`** - Show server version and system information
+
+---
+
+## 🔀 Panel Tool
+
+`panel` fans out a single prompt to N models simultaneously, runs optional adversarial debate rounds between them, and synthesises a final verdict via a judge model — all in one tool call.
+
+```
+"Use panel with gemini-pro, gpt-5, and o3 to evaluate three caching strategies, 
+ then run a debate round and have gemini judge the outcome"
+```
+
+Each panelist gets the same prompt, responds independently, and (in debate mode) sees the other responses before giving a revised stance. The judge synthesises the final answer. Results are written to the SQLite execution graph so you can query them later with `get_run` / `run_tree`.
+
+---
+
+## 🗄️ SQLite Execution Graph
+
+Every tool dispatch — including nested panel fanouts, clink subagents, and async tasks — is recorded in `~/.pal/execution_graph.db`. This gives you:
+
+- **Restart-safe panels** — if PAL restarts mid-panel, prior results are still readable
+- **Cost attribution** — see exactly which sub-call drove token spend
+- **Audit trail** — replay prior runs, compare model behaviour over time
+- **Run lineage** — `run_tree` shows the full parent→child call graph
+
+Configure the DB path with `PAL_GRAPH_DB` (default: `~/.pal/execution_graph.db`). Set to empty string to disable.
+
+---
 
 <details>
 <summary><b id="tool-configuration">👉 Tool Configuration</b></summary>
@@ -238,17 +282,19 @@ PAL activates any provider that has credentials in your `.env`. See `.env.exampl
 To optimize context window usage, only essential tools are enabled by default:
 
 **Enabled by default:**
-- `chat`, `thinkdeep`, `planner`, `consensus` - Core collaboration tools
+- `chat`, `thinkdeep`, `planner`, `consensus`, `panel` - Core collaboration tools
 - `codereview`, `precommit`, `debug` - Essential code quality tools
 - `apilookup` - Rapid API/SDK information lookup
 - `challenge` - Critical thinking utility
+- `clink` - CLI-to-CLI bridge
+- `start_task`, `task_status`, `task_result`, `cancel_task` - Async task system
+- `list_runs`, `get_run`, `run_tree` - Execution graph queries
+- `listmodels`, `version` - Always enabled, cannot be disabled
 
 **Disabled by default:**
 - `analyze`, `refactor`, `testgen`, `secaudit`, `docgen`, `tracer`
 
 ### Enabling Additional Tools
-
-To enable additional tools, remove them from the `DISABLED_TOOLS` list:
 
 **Option 1: Edit your .env file**
 ```bash
@@ -265,24 +311,18 @@ DISABLED_TOOLS=
 
 **Option 2: Configure in MCP settings**
 ```json
-// In ~/.claude/settings.json or .mcp.json
 {
   "mcpServers": {
     "pal": {
       "env": {
-        // Tool configuration
         "DISABLED_TOOLS": "refactor,testgen,secaudit,docgen,tracer",
         "DEFAULT_MODEL": "pro",
         "DEFAULT_THINKING_MODE_THINKDEEP": "high",
-        
-        // API configuration
         "GEMINI_API_KEY": "your-gemini-key",
         "OPENAI_API_KEY": "your-openai-key",
         "OPENROUTER_API_KEY": "your-openrouter-key",
-        
-        // Logging and performance
         "LOG_LEVEL": "INFO",
-        "CONVERSATION_TIMEOUT_HOURS": "6",
+        "CONVERSATION_TIMEOUT_HOURS": "3",
         "MAX_CONVERSATION_TURNS": "50"
       }
     }
@@ -292,7 +332,6 @@ DISABLED_TOOLS=
 
 **Option 3: Enable all tools**
 ```json
-// Remove or empty the DISABLED_TOOLS to enable everything
 {
   "mcpServers": {
     "pal": {
@@ -308,6 +347,26 @@ DISABLED_TOOLS=
 - Essential tools (`version`, `listmodels`) cannot be disabled
 - After changing tool configuration, restart your Claude session for changes to take effect
 - Each tool adds to context window usage, so only enable what you need
+
+</details>
+
+<details>
+<summary><b>⚙️ Advanced Environment Variables</b></summary>
+
+These variables are not shown by default but control important behaviour:
+
+| Variable | Default | Description |
+|---|---|---|
+| `PAL_MAX_CONCURRENT_API` | `16` | Max parallel API calls to model providers |
+| `PAL_MAX_PROVIDER_THREADS` | `32` | Thread pool size for provider workers |
+| `PAL_API_TIMEOUT_S` | `600` | Per-call SDK timeout in seconds |
+| `PAL_GRAPH_DB` | `~/.pal/execution_graph.db` | SQLite execution graph path. Set to `""` to disable |
+| `PAL_CLINK_METADATA_CAP` | *(internal)* | Max chars of clink metadata injected into prompts |
+| `PAL_CLINK_RAW_OUTPUT_CAP` | *(internal)* | Max chars of raw CLI output returned to MCP client |
+| `PAL_DEBUG_CLI_OUTPUT` | unset | **⚠️ Disables all secret redaction in clink output. Never set in shared environments.** |
+| `PAL_MCP_FORCE_ENV_OVERRIDE` | unset | Force env vars to override `.env` file values |
+| `CONVERSATION_TIMEOUT_HOURS` | `3` | Hours before a conversation thread expires |
+| `MAX_CONVERSATION_TURNS` | `50` | Max turns per thread (50 turns = 25 exchanges) |
 
 </details>
 
@@ -379,10 +438,12 @@ DISABLED_TOOLS=
 - **Multi-model workflows** - Chain different models in single conversations
 - **Conversation continuity** - Context preserved across tools and models
 - **[Context revival](docs/context-revival.md)** - Continue conversations even after context resets
+- **Panel debates** - Fan-out to N models with adversarial rounds and judge synthesis
+- **Async tasks** - Long-running calls run in background, poll for results
 
 **Model Support**
 - **Multiple providers** - Gemini, OpenAI, Azure, X.AI, OpenRouter, DIAL, Ollama
-- **Latest models** - GPT-5, Gemini 3.0 Pro, O3, Grok-4, local Llama
+- **Latest models** - GPT-5, GPT-5.5, `gemini-3.1-pro-preview`, O3, Grok-4, local Llama
 - **[Thinking modes](docs/advanced-usage.md#thinking-modes)** - Control reasoning depth vs cost
 - **Vision support** - Analyze images, diagrams, screenshots
 
@@ -391,6 +452,7 @@ DISABLED_TOOLS=
 - **Smart file handling** - Auto-expand directories, manage token limits
 - **Web search integration** - Access current documentation and best practices
 - **[Large prompt support](docs/advanced-usage.md#working-with-large-prompts)** - Bypass MCP's 25K token limit
+- **SQLite execution graph** - Durable audit trail at `~/.pal/execution_graph.db`
 
 ## Example Workflows
 
@@ -398,7 +460,7 @@ DISABLED_TOOLS=
 ```
 "Perform a codereview using gemini pro and o3, then use planner to create a fix strategy"
 ```
-→ Claude reviews code systematically → Consults Gemini Pro → Gets O3's perspective → Creates unified action plan
+→ Claude reviews code systematically → Consults Gemini 3.1 Pro → Gets O3's perspective → Creates unified action plan
 
 **Collaborative Debugging:**
 ```
@@ -411,6 +473,20 @@ DISABLED_TOOLS=
 "Plan our microservices migration, get consensus from pro and o3 on the approach"
 ```
 → Structured planning → Multiple expert opinions → Consensus building → Implementation roadmap
+
+**Panel Debate:**
+```
+"Use panel with gemini-pro, gpt-5, and grok to debate: REST vs GraphQL for our API"
+```
+→ 3 models respond independently → Debate round → Judge synthesises final recommendation
+
+**Async Long Task:**
+```
+"start_task: run secaudit on the entire codebase with o3"
+# ... keep working ...
+"task_status <task_id>" → check progress
+"task_result <task_id>" → get full report when done
+```
 
 👉 **[Advanced Usage Guide](docs/advanced-usage.md)** for complex workflows, model configuration, and power-user features
 

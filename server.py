@@ -121,7 +121,7 @@ try:
     file_handler = RotatingFileHandler(
         log_dir / "mcp_server.log",
         maxBytes=20 * 1024 * 1024,  # 20MB max file size
-        backupCount=5,  # Keep 10 rotated files (100MB total)
+        backupCount=5,  # Keep 6 rotated files (120MB total)
         encoding="utf-8",
     )
     file_handler.setLevel(getattr(logging, log_level, logging.INFO))
@@ -132,8 +132,8 @@ try:
     mcp_logger = logging.getLogger("mcp_activity")
     mcp_file_handler = RotatingFileHandler(
         log_dir / "mcp_activity.log",
-        maxBytes=10 * 1024 * 1024,  # 20MB max file size
-        backupCount=2,  # Keep 5 rotated files (20MB total)
+        maxBytes=10 * 1024 * 1024,  # 10MB max file size
+        backupCount=2,  # Keep 3 rotated files (30MB total)
         encoding="utf-8",
     )
     mcp_file_handler.setLevel(logging.INFO)
@@ -413,7 +413,7 @@ PROMPT_TEMPLATES = {
     "apilookup": {
         "name": "apilookup",
         "description": "Look up the latest API or SDK information",
-        "template": "Lookup latest API docs for {model}",
+        "template": "Lookup latest API docs for the requested library or SDK",
     },
     "listmodels": {
         "name": "listmodels",
@@ -1030,8 +1030,8 @@ def parse_model_option(model_string: str) -> tuple[str, Optional[str]]:
             parts = model_string.split(":", 1)
             suffix = parts[1].strip().lower()
 
-            # Known OpenRouter suffixes to preserve
-            if suffix in ["free", "beta", "preview"]:
+            # Known OpenRouter suffixes to preserve (extend as needed)
+            if suffix in ["free", "beta", "preview", "extended", "online", "nitro", "floor", "turbo"]:
                 return model_string.strip(), None
 
         # For other patterns (Ollama tags, consensus stances), split normally
