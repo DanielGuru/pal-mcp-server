@@ -40,6 +40,12 @@ logger = logging.getLogger(__name__)
 _DEFAULT_PORT = int(os.environ.get("PAL_WEB_PORT", "8765"))
 _BIND_HOST = os.environ.get("PAL_WEB_HOST", "127.0.0.1")  # local-only by default
 _DISABLED = bool(os.environ.get("PAL_WEB_DISABLE"))
+# Default ON so the operator gets zero-effort visibility on every PAL launch.
+# Set PAL_WEB_AUTO_OPEN=0 (or any falsy value) if you don't want the browser
+# tab popped each time Claude Code restarts the MCP server.
+_AUTO_OPEN = os.environ.get("PAL_WEB_AUTO_OPEN", "1").strip().lower() not in (
+    "0", "false", "no", "off", "",
+)
 
 # Module-level state for the running server, so callers can probe its URL.
 _SERVER: Optional[ThreadingHTTPServer] = None
@@ -467,7 +473,27 @@ def start_web_viewer() -> Optional[str]:
         _SERVER_PORT = port
         url = get_server_url()
         logger.info("web viewer started at %s", url)
+        if _AUTO_OPEN and url:
+            _try_open_browser(url)
         return url
+
+
+def _try_open_browser(url: str) -> None:
+    """Open the URL in the operator's default browser. Best-effort —
+    headless / SSH / container environments return False without raising.
+
+    Runs in a separate thread because some platforms block briefly while
+    spawning the browser process; we don't want PAL startup to wait."""
+    import webbrowser
+
+    def _go():
+        try:
+            opened = webbrowser.open(url, new=2, autoraise=False)
+            logger.info("auto-opened browser tab: opened=%s url=%s", opened, url)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("auto-open failed (%s); user can navigate manually", exc)
+
+    threading.Thread(target=_go, name="pal-web-autoopen", daemon=True).start()
 
 
 def stop_web_viewer() -> None:

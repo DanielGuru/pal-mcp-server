@@ -39,6 +39,7 @@ def graph_with_data(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(wv, "_SERVER_THREAD", None)
     monkeypatch.setattr(wv, "_SERVER_PORT", None)
     monkeypatch.setattr(wv, "_DISABLED", False)
+    monkeypatch.setattr(wv, "_AUTO_OPEN", False)  # don't open a tab during tests
     monkeypatch.setattr(wv, "_DEFAULT_PORT", 18765)
 
     url = wv.start_web_viewer()
