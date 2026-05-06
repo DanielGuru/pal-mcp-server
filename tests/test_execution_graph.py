@@ -188,6 +188,61 @@ def test_args_snapshot_caps_long_strings(tmp_path: Path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+def test_default_db_path_is_per_repo_under_cwd(tmp_path, monkeypatch):
+    """The default execution-graph DB lives under cwd, not $HOME — each
+    repo Claude Code opens gets its own debate history. Critical for
+    multi-repo workflows where the web viewer should only show this
+    project's runs."""
+    import utils.execution_graph as eg
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("PAL_GRAPH_DB", raising=False)
+    p = eg._default_db_path()
+    assert p == tmp_path / ".pal" / "execution_graph.db"
+
+
+def test_default_db_path_respects_explicit_override(tmp_path, monkeypatch):
+    """PAL_GRAPH_DB still wins for users who want a global / shared graph."""
+    import utils.execution_graph as eg
+
+    custom = tmp_path / "shared" / "graph.db"
+    monkeypatch.setenv("PAL_GRAPH_DB", str(custom))
+    assert eg._default_db_path() == custom
+
+
+def test_two_repos_get_isolated_graphs(tmp_path, monkeypatch):
+    """End-to-end: switching cwd between two project directories yields two
+    separate DBs — runs from one repo never appear in the other's viewer."""
+    import utils.execution_graph as eg
+
+    repo_a = tmp_path / "repoA"
+    repo_b = tmp_path / "repoB"
+    repo_a.mkdir()
+    repo_b.mkdir()
+    monkeypatch.delenv("PAL_GRAPH_DB", raising=False)
+
+    monkeypatch.chdir(repo_a)
+    g_a = eg.ExecutionGraph(eg._default_db_path())
+    a_run = g_a.start_run("chat", label="from-A")
+    g_a.complete_run(a_run)
+    g_a.close()
+
+    monkeypatch.chdir(repo_b)
+    g_b = eg.ExecutionGraph(eg._default_db_path())
+    b_run = g_b.start_run("chat", label="from-B")
+    g_b.complete_run(b_run)
+
+    # repo_b's graph must NOT see repo_a's run
+    assert g_b.get_run(a_run) is None
+    # repo_b's graph must see its own run
+    assert g_b.get_run(b_run) is not None
+    g_b.close()
+
+    # And the two DB files are physically separate
+    assert (repo_a / ".pal" / "execution_graph.db").exists()
+    assert (repo_b / ".pal" / "execution_graph.db").exists()
+
+
 def test_get_graph_returns_none_when_disabled(monkeypatch):
     """PAL_GRAPH_DB='' is the explicit opt-out."""
     import utils.execution_graph as eg

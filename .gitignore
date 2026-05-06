@@ -182,6 +182,10 @@ CLAUDE.local.md
 .pal_venv/
 .docker_cleaned
 logs/
+
+# PAL per-repo execution graph (SQLite) — auto-created when PAL runs against
+# this repo, holds the local debate/run history. Unique per machine.
+.pal/
 *.backup
 *.backup-*.json
 /.desktop_configured

@@ -61,7 +61,26 @@ logger = logging.getLogger(__name__)
 
 
 def _default_db_path() -> Path:
-    return Path(os.environ.get("PAL_GRAPH_DB", str(Path.home() / ".pal" / "execution_graph.db")))
+    """Where to put the execution graph by default.
+
+    Per-repo isolation: drops in `<cwd>/.pal/execution_graph.db` so each
+    project Claude Code opens gets its own memory of PAL runs. The web
+    viewer attached to that PAL instance then shows only that repo's
+    debate history — no cross-contamination from other projects running
+    PAL at the same time.
+
+    Override semantics:
+      - `PAL_GRAPH_DB=<absolute path>` — pin to a specific file (e.g.
+        the legacy `~/.pal/execution_graph.db` for users who liked the
+        global view).
+      - `PAL_GRAPH_DB=""`              — disable the graph entirely.
+    """
+    override = os.environ.get("PAL_GRAPH_DB")
+    if override is not None:
+        # Empty string means "disabled" — handled by get_graph(); for path
+        # resolution just pass through whatever the user set.
+        return Path(override)
+    return Path.cwd() / ".pal" / "execution_graph.db"
 
 
 # ---------------------------------------------------------------------------

@@ -1616,6 +1616,25 @@ async def main():
     # Validate and configure providers based on available API keys
     configure_providers()
 
+    # Touch the execution graph early so users see exactly which DB this PAL
+    # instance is using. Per-repo by default (<cwd>/.pal/execution_graph.db);
+    # PAL_GRAPH_DB overrides. Keeping this log line surfaces accidental
+    # cross-repo contamination from a bad override and makes "where is my
+    # debate history?" a non-question.
+    try:
+        from utils.execution_graph import get_graph
+        graph = get_graph()
+        if graph is not None:
+            logger.info("Execution graph: %s", graph.db_path)
+            try:
+                logging.getLogger("mcp_activity").info(f"GRAPH_DB: {graph.db_path}")
+            except Exception:  # noqa: BLE001
+                pass
+        else:
+            logger.info("Execution graph: disabled (PAL_GRAPH_DB='' or init failed)")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Execution graph startup probe failed (%s); continuing", exc)
+
     # Spin up the read-only web viewer in a daemon thread. Lets the operator
     # watch panel runs unfold in a browser instead of polling task_status by
     # hand. Best-effort — failures log and continue.

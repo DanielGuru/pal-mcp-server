@@ -296,7 +296,9 @@ Every tool dispatch — including nested panel fanouts, clink subagents, async t
 - **Audit trail** — replay prior runs, compare model behaviour over time
 - **Run lineage** — `run_tree` shows the full parent→child call graph including `fallback` edges
 
-Configure the DB path with `PAL_GRAPH_DB` (default: `~/.pal/execution_graph.db`). Set to empty string to disable.
+**Per-repo by default.** Default DB path is `<cwd>/.pal/execution_graph.db` — each project Claude Code opens has its own isolated debate history, so the live web viewer for one repo never shows runs from another. The `.pal/` directory is gitignored.
+
+Override with `PAL_GRAPH_DB=<absolute path>` for a shared / global view (e.g. the legacy `~/.pal/execution_graph.db`). Set to empty string to disable the graph entirely.
 
 ---
 
