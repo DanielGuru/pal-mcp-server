@@ -840,8 +840,12 @@ async def execute_tool(name: str, arguments: dict[str, Any]) -> list[TextContent
     panel audit (codex+gemini+grok+gpt-5.5) flagged this as the highest-
     leverage fix.
 
-    Side effects: mutates ``arguments`` to inject ``_model_context`` and
-    ``_resolved_model_name`` (matches existing tool expectations).
+    Side effects: copies ``arguments`` once at the boundary then injects
+    ``_model_context`` / ``_resolved_model_name`` into the copy. The caller's
+    dict is never mutated. This matters for start_task (which stores the
+    user-supplied dict and could replay it later), for panel internal
+    dispatch (one panelist's resolved model leaking into another), and for
+    any future persistence layer.
     """
     if name not in TOOLS:
         raise KeyError(f"Unknown tool: {name!r}")
@@ -849,6 +853,10 @@ async def execute_tool(name: str, arguments: dict[str, Any]) -> list[TextContent
     logger.info(f"Executing tool '{name}' with {len(arguments)} parameter(s)")
     # Fresh instance per request — tools mutate state on self during execute().
     tool = make_tool(name)
+    # Shallow copy at the boundary so the caller's dict isn't mutated by
+    # model resolution / context injection. We only assign new top-level
+    # keys, never mutate nested values, so shallow is sufficient.
+    arguments = dict(arguments)
 
     from providers.registry import ModelProviderRegistry
     from utils.file_utils import check_total_file_size

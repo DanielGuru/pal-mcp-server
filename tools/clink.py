@@ -202,16 +202,37 @@ class CLinkTool(SimpleTool):
     pass instructions and file references suitable for another CLI agent.
     """
 
-    def __init__(self) -> None:
-        # Cache registry metadata so the schema surfaces concrete enum values.
-        self._registry = get_registry()
-        self._cli_names = self._registry.list_clients()
-        self._role_map: dict[str, list[str]] = {name: self._registry.list_roles(name) for name in self._cli_names}
-        self._all_roles: list[str] = sorted({role for roles in self._role_map.values() for role in roles})
-        if "gemini" in self._cli_names:
-            self._default_cli_name = "gemini"
+    # Class-level cache for registry-derived metadata. make_tool('clink') runs
+    # per panelist + per OAuth fallback, so __init__ fires N+ times per panel
+    # call. The registry itself is memoized but the dict comprehensions below
+    # are wasted work for static config. Audit panel finding (Codex + Grok).
+    _CLI_NAMES_CACHE: list[str] | None = None
+    _ROLE_MAP_CACHE: dict[str, list[str]] | None = None
+    _ALL_ROLES_CACHE: list[str] | None = None
+    _DEFAULT_CLI_NAME_CACHE: str | None = None
+
+    @classmethod
+    def _ensure_registry_cache(cls) -> None:
+        if cls._CLI_NAMES_CACHE is not None:
+            return
+        registry = get_registry()
+        names = registry.list_clients()
+        cls._CLI_NAMES_CACHE = names
+        cls._ROLE_MAP_CACHE = {name: registry.list_roles(name) for name in names}
+        cls._ALL_ROLES_CACHE = sorted({role for roles in cls._ROLE_MAP_CACHE.values() for role in roles})
+        if "gemini" in names:
+            cls._DEFAULT_CLI_NAME_CACHE = "gemini"
         else:
-            self._default_cli_name = self._cli_names[0] if self._cli_names else None
+            cls._DEFAULT_CLI_NAME_CACHE = names[0] if names else None
+
+    def __init__(self) -> None:
+        # Populate class-level cache once; per-instance attrs just point at it.
+        type(self)._ensure_registry_cache()
+        self._registry = get_registry()  # registry itself is memoized; cheap
+        self._cli_names = type(self)._CLI_NAMES_CACHE
+        self._role_map = type(self)._ROLE_MAP_CACHE
+        self._all_roles = type(self)._ALL_ROLES_CACHE
+        self._default_cli_name = type(self)._DEFAULT_CLI_NAME_CACHE
         self._active_system_prompt: str = ""
         super().__init__()
 
@@ -749,7 +770,16 @@ class CLinkTool(SimpleTool):
         except Exception:  # noqa: BLE001
             return result
         if isinstance(payload, dict):
-            metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+            existing = payload.get("metadata")
+            # If metadata exists but isn't a dict, preserve the original under
+            # metadata_original_non_dict instead of silently dropping it. The
+            # audit panel flagged the silent-drop as "real but narrow data loss"
+            # — losing upstream metadata when chat returns an unexpected schema.
+            metadata: dict[str, Any] = {}
+            if isinstance(existing, dict):
+                metadata = dict(existing)
+            elif existing is not None:
+                metadata["metadata_original_non_dict"] = existing
             metadata["oauth_fallback_used"] = True
             metadata["oauth_fallback_from_cli"] = cli_name
             metadata["oauth_fallback_model"] = fallback_model

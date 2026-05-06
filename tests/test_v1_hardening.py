@@ -415,6 +415,65 @@ def test_get_default_api_timeout_default():
         assert get_default_api_timeout() == 600.0
 
 
+def test_execute_tool_does_not_mutate_caller_arguments():
+    """execute_tool used to inject _model_context / _resolved_model_name into
+    the caller's dict. start_task stored that dict; replay would persist
+    internal-only fields. Fix: shallow-copy at the boundary."""
+    import server
+
+    args = {"prompt": "hello", "panelists": ["codex"]}
+    snapshot = dict(args)
+
+    async def go():
+        try:
+            await server.execute_tool("panel", args)
+        except Exception:
+            pass  # we don't care if panel itself errors; we care about args mutation
+
+    asyncio.run(go())
+    assert args == snapshot, f"caller's arguments mutated: was {snapshot}, now {args}"
+
+
+def test_clinktool_caches_registry_metadata_at_class_level():
+    """make_tool('clink') runs per panelist + per fallback. The registry
+    pulls and dict comprehensions in __init__ should run once total, not
+    once per instance."""
+    from tools.clink import CLinkTool
+
+    # Reset cache to simulate first ever construction
+    CLinkTool._CLI_NAMES_CACHE = None
+    CLinkTool._ROLE_MAP_CACHE = None
+    CLinkTool._ALL_ROLES_CACHE = None
+    CLinkTool._DEFAULT_CLI_NAME_CACHE = None
+
+    a = CLinkTool()
+    b = CLinkTool()
+
+    # Both instances point at the SAME class-level cache objects
+    assert a._cli_names is b._cli_names
+    assert a._role_map is b._role_map
+    assert a._all_roles is b._all_roles
+
+
+def test_oauth_fallback_preserves_non_dict_metadata():
+    """If chat returns a body whose metadata isn't a dict, we keep the
+    original under metadata_original_non_dict instead of silently dropping."""
+    import json
+
+    from mcp.types import TextContent
+
+    from tools.clink import CLinkTool
+
+    payload = {"status": "success", "content": "hi", "metadata": "this is a string not a dict"}
+    result = [TextContent(type="text", text=json.dumps(payload))]
+    out = CLinkTool._mark_fallback_in_result(
+        result, cli_name="gemini", fallback_model="gemini-3.1-pro-preview", original_failure="..."
+    )
+    body = json.loads(out[0].text)
+    assert body["metadata"]["oauth_fallback_used"] is True
+    assert body["metadata"]["metadata_original_non_dict"] == "this is a string not a dict"
+
+
 def test_provider_executor_no_duplicate_under_concurrent_first_burst(monkeypatch):
     """Lazy init must be thread-safe: 32 threads racing the first call should
     end up sharing one executor, not creating duplicates that leak threads."""

@@ -133,6 +133,12 @@ class TaskRecord:
     completed_at: Optional[float] = None
     result_text: Optional[list[str]] = None  # serialized list[TextContent].text
     error: Optional[str] = None
+    # Structured form of `error` when the exception was ToolExecutionError —
+    # whose message body is JSON-serialised ToolOutput. Lets automation read
+    # status/content/metadata fields without re-parsing the string. Audit
+    # finding (codex): pre-fix the only error surface was a stringified
+    # JSON-inside-a-traceback-line, hostile to programmatic consumers.
+    error_payload: Optional[dict[str, Any]] = None
     progress_events: deque = field(default_factory=lambda: deque(maxlen=PROGRESS_BUFFER_SIZE))
     asyncio_task: Optional[asyncio.Task] = field(default=None, repr=False)
     completion_event: asyncio.Event = field(default_factory=asyncio.Event, repr=False)
@@ -364,6 +370,18 @@ class TaskManager:
         except Exception as exc:  # noqa: BLE001
             record.status = "failed"
             record.error = f"{type(exc).__name__}: {exc}"
+            # Best-effort structured payload for automation. ToolExecutionError
+            # carries a JSON-serialised ToolOutput in its message; parse it so
+            # callers don't have to peel the string back open.
+            try:
+                from tools.shared.exceptions import ToolExecutionError as _TEE
+                import json as _json
+                if isinstance(exc, _TEE):
+                    parsed = _json.loads(str(exc))
+                    if isinstance(parsed, dict):
+                        record.error_payload = parsed
+            except Exception:  # noqa: BLE001 — payload is best-effort
+                pass
             logger.exception("Background task %s failed", record.task_id)
         finally:
             reset_progress_sink(token)
@@ -768,6 +786,8 @@ class TaskResultTool(BaseTool):
             payload["result"] = record.result_text
         if record.error is not None:
             payload["error"] = record.error
+        if record.error_payload is not None:
+            payload["error_payload"] = record.error_payload
         return _json_response(payload)
 
 
