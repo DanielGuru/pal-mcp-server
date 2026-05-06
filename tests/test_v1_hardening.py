@@ -149,10 +149,12 @@ def test_redaction_strips_jwt_and_bearer():
     assert "[REDACTED" in out
 
 
-def test_redaction_preserves_non_secret_text():
+def test_redaction_preserves_genuinely_non_sensitive_text():
+    """Regular prose, version numbers, ports, code-shaped text pass through.
+    User-home paths are now redacted (see test_redaction_strips_home_paths)."""
     from tools.clink import _redact_and_cap
 
-    text = "Just a regular path: /Users/foo/Projects/server.py and a port :8080"
+    text = "App version 1.2.3 listening on :8080. Status: OK. Latency 145ms."
     assert _redact_and_cap(text, cap=200) == text
 
 
@@ -162,6 +164,73 @@ def test_redaction_truncates_at_cap():
     out = _redact_and_cap("X" * 5000, cap=1000)
     assert len(out) <= 1000 + 100  # cap + truncation marker
     assert "truncated" in out
+
+
+def test_redaction_strips_home_paths():
+    """Audit finding: comments promised HOME path scrubbing but pre-fix
+    only API-key shapes were stripped. /Users/<name>/... should be redacted."""
+    import os
+
+    from tools.clink import _redact_only
+
+    # The literal HOME for this process must collapse to <HOME>
+    home = os.path.expanduser("~")
+    if home and home != "/":
+        text = f"Failed reading {home}/Projects/secret_repo/file.py at line 42"
+        out = _redact_only(text)
+        assert home not in out, f"HOME path leaked: {out!r}"
+        assert "<HOME>" in out
+
+    # Generic /Users/... patterns from other identities
+    out2 = _redact_only("Permission denied for /Users/alice/.ssh/id_rsa")
+    assert "/Users/alice" not in out2
+    assert "/Users/<USER>" in out2
+
+    # Linux home pattern
+    out3 = _redact_only("File at /home/bob/.config/secret.toml")
+    assert "/home/bob" not in out3
+    assert "/home/<USER>" in out3
+
+
+def test_redact_only_does_not_truncate():
+    """Content path uses _redact_only — secrets stripped but full text preserved."""
+    from tools.clink import _redact_only
+
+    long_payload = "answer line " * 5000  # ~60KB of plain text
+    out = _redact_only(long_payload)
+    assert out == long_payload  # nothing to redact, nothing truncated
+
+
+def test_safe_merge_drops_protected_metadata_fields():
+    """Audit finding: pre-fix metadata.update(result.parsed.metadata) let a
+    parser smuggle giant strings through 'command' / 'stderr' / etc. Now
+    those fields are dropped from parser metadata."""
+    from tools.clink import _safe_merge_parser_metadata
+
+    base = {"cli_name": "codex", "stderr": "[REDACTED ALREADY]", "command": ["safe"]}
+    parser_supplied = {
+        "stderr": "X" * 100_000,  # parser tries to override sanitised stderr
+        "command": "rm -rf /",  # parser tries to override real command
+        "model_used": "gpt-5.5",  # legit, not in protected list
+        "usage": {"input_tokens": 100},
+    }
+    out = _safe_merge_parser_metadata(base, parser_supplied)
+    assert out["stderr"] == "[REDACTED ALREADY]"
+    assert out["command"] == ["safe"]
+    assert out["model_used"] == "gpt-5.5"
+    assert out["usage"] == {"input_tokens": 100}
+
+
+def test_safe_merge_caps_oversized_string_in_unknown_field():
+    """Even non-protected fields get capped if they're strings — a parser
+    can't smuggle 1MB through a custom field name."""
+    from tools.clink import _CLI_METADATA_TEXT_CAP, _safe_merge_parser_metadata
+
+    base: dict = {}
+    out = _safe_merge_parser_metadata(base, {"some_field": "Z" * (_CLI_METADATA_TEXT_CAP + 5000)})
+    # Capped + truncation marker
+    assert len(out["some_field"]) <= _CLI_METADATA_TEXT_CAP + 100
+    assert "truncated" in out["some_field"]
 
 
 def test_pal_debug_cli_output_disables_redaction(monkeypatch):

@@ -40,22 +40,55 @@ _CLI_METADATA_TEXT_CAP = int(os.environ.get("PAL_CLINK_METADATA_CAP", "2048"))
 _CLI_RAW_OUTPUT_CAP = int(os.environ.get("PAL_CLINK_RAW_OUTPUT_CAP", "8192"))
 
 # Pattern -> redaction-token. Matched against stderr/stdout/raw_output_file
-# before forwarding to MCP. Conservative: real provider errors usually only
-# include API-key strings if they were echoed back by an angry SDK. We strip
-# anything shaped like a known token format.
+# AND CLI content before forwarding to MCP. Conservative: real provider errors
+# usually only include API-key strings if they were echoed back by an angry
+# SDK. We strip anything shaped like a known token format.
+#
 #   - sk-... and sk-ant-...  : OpenAI / Anthropic API keys
 #   - AIza...                : Google API keys
 #   - xai-...                : xAI keys
 #   - eyJhbG... (JWT-shaped) : OAuth bearer tokens
 #   - Bearer <hex/jwt>       : Authorization headers echoed in errors
-# Plus paths under the user's home (best-effort, never perfect on macOS/Linux).
-_REDACTION_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
-    (re.compile(r"sk-(?:ant-)?[A-Za-z0-9_\-]{20,}"), "[REDACTED_API_KEY]"),
-    (re.compile(r"AIza[0-9A-Za-z_\-]{30,}"), "[REDACTED_API_KEY]"),
-    (re.compile(r"xai-[A-Za-z0-9_\-]{20,}"), "[REDACTED_API_KEY]"),
-    (re.compile(r"eyJ[A-Za-z0-9_\-]{20,}\.[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+"), "[REDACTED_JWT]"),
-    (re.compile(r"(?i)Bearer\s+[A-Za-z0-9_\-\.=]{16,}"), "Bearer [REDACTED]"),
-)
+#   - HOME-rooted paths      : /Users/<name>/... (mac), /home/<name>/... (linux),
+#                              C:\Users\<name>\... (windows)
+#                              The user's actual home is detected at module load
+#                              and rewritten to <HOME>; the more general patterns
+#                              catch other users' paths the CLI might surface.
+_HOME = os.path.expanduser("~")
+
+
+def _build_redaction_patterns() -> tuple[tuple[re.Pattern[str], str], ...]:
+    patterns: list[tuple[re.Pattern[str], str]] = [
+        (re.compile(r"sk-(?:ant-)?[A-Za-z0-9_\-]{20,}"), "[REDACTED_API_KEY]"),
+        (re.compile(r"AIza[0-9A-Za-z_\-]{30,}"), "[REDACTED_API_KEY]"),
+        (re.compile(r"xai-[A-Za-z0-9_\-]{20,}"), "[REDACTED_API_KEY]"),
+        (re.compile(r"eyJ[A-Za-z0-9_\-]{20,}\.[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+"), "[REDACTED_JWT]"),
+        (re.compile(r"(?i)Bearer\s+[A-Za-z0-9_\-\.=]{16,}"), "Bearer [REDACTED]"),
+    ]
+    # The literal home for this process, redacted to the marker. Done first
+    # so it takes precedence over the more general /Users/... pattern below.
+    if _HOME and _HOME not in ("/", ""):
+        patterns.append((re.compile(re.escape(_HOME)), "<HOME>"))
+    # Generic user-home patterns for paths from other identities (less common
+    # but real: a CLI run as a different user, or referencing peers' files).
+    patterns.append((re.compile(r"/Users/[^/\s'\"]+"), "/Users/<USER>"))
+    patterns.append((re.compile(r"/home/[^/\s'\"]+"), "/home/<USER>"))
+    patterns.append((re.compile(r"C:\\Users\\[^\\\s'\"]+", re.IGNORECASE), r"C:\\Users\\<USER>"))
+    return tuple(patterns)
+
+
+_REDACTION_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = _build_redaction_patterns()
+
+
+def _redact_only(text: str) -> str:
+    """Strip secret/path patterns without truncating. Use on CLI content where
+    we want the full answer but still don't want credentials leaking through."""
+    if not text or os.environ.get("PAL_DEBUG_CLI_OUTPUT"):
+        return text
+    redacted = text
+    for pattern, replacement in _REDACTION_PATTERNS:
+        redacted = pattern.sub(replacement, redacted)
+    return redacted
 
 
 def _redact_and_cap(text: str, *, cap: int) -> str:
@@ -66,12 +99,49 @@ def _redact_and_cap(text: str, *, cap: int) -> str:
         # Opt-in escape hatch for local debugging. Keeps full text and skips
         # secret redaction. Never leak this in logs of real user calls.
         return text
-    redacted = text
-    for pattern, replacement in _REDACTION_PATTERNS:
-        redacted = pattern.sub(replacement, redacted)
+    redacted = _redact_only(text)
     if len(redacted) > cap:
         return redacted[:cap] + f"\n[…truncated {len(redacted) - cap} chars by clink metadata cap]"
     return redacted
+
+
+# Metadata field names a CLI parser must NEVER override on its own — these are
+# the safety-critical ones we sanitised on the way in. If a parser supplies any
+# of them via result.parsed.metadata they get silently dropped (the parser is
+# untrusted: a malicious or buggy CLI could put 50MB of stderr into a "command"
+# field expecting it to ride through). Audit panel finding from codex.
+_PROTECTED_METADATA_FIELDS: frozenset[str] = frozenset({
+    "stdout",
+    "stderr",
+    "command",
+    "raw_output_file",
+    "cli_name",
+    "return_code",
+    "duration_seconds",
+    "parser",
+    "role",
+})
+
+
+def _safe_merge_parser_metadata(
+    base: dict[str, Any],
+    parser_metadata: dict[str, Any],
+) -> dict[str, Any]:
+    """Merge parser-supplied metadata into the sanitised base, dropping any
+    keys the parser is not allowed to override and capping any string values
+    that survive (so a parser can't smuggle a 10MB JSON dump through a
+    custom field name)."""
+    if not parser_metadata:
+        return base
+    for key, value in parser_metadata.items():
+        if key in _PROTECTED_METADATA_FIELDS:
+            logger.debug("clink: parser tried to override protected metadata field %r — dropped", key)
+            continue
+        if isinstance(value, str):
+            base[key] = _redact_and_cap(value, cap=_CLI_METADATA_TEXT_CAP)
+        else:
+            base[key] = value
+    return base
 
 # Substrings (case-insensitive) in a CLI's stdout/stderr that mark a recoverable
 # OAuth-side failure: the caller's free quota / login is the problem, not the
@@ -312,9 +382,13 @@ class CLinkTool(SimpleTool):
         metadata = self._build_success_metadata(client_config, role_config, result)
         metadata = self._prune_metadata(metadata, client_config, reason="normal")
 
+        # Redact secrets/HOME paths from the actual CLI answer too, not just
+        # metadata. A CLI that prints a key in its normal output (codex CLI
+        # echoing env, a debug-mode session, etc.) would otherwise forward
+        # them verbatim. Don't truncate — _apply_output_limit handles size.
         content, metadata = self._apply_output_limit(
             client_config,
-            result.parsed.content,
+            _redact_only(result.parsed.content),
             metadata,
         )
 
@@ -409,7 +483,11 @@ class CLinkTool(SimpleTool):
             "parser": result.parser_name,
             "return_code": result.returncode,
         }
-        metadata.update(result.parsed.metadata)
+        # Safe merge: parser-supplied metadata is untrusted. It cannot
+        # override the safety-critical fields we just built (would let a
+        # CLI smuggle 50MB stderr through a "command" override) and any
+        # string values it contributes are capped + secret-redacted.
+        metadata = _safe_merge_parser_metadata(metadata, result.parsed.metadata)
 
         if result.stderr.strip():
             metadata.setdefault(
