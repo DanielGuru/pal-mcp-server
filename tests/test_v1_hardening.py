@@ -276,6 +276,42 @@ def test_oauth_failure_detected_for_codex_auth_lapse():
     assert CLinkTool._looks_like_oauth_failure(exc)
 
 
+def test_timeout_does_not_trigger_fallback_by_default():
+    """A 'timed out' clink failure must NOT auto-fallback unless the operator
+    opts in via PAL_FALLBACK_ON_TIMEOUT — timeout could mean a legitimately
+    long-thinking model and falling back would double-charge."""
+    import os
+
+    from clink.agents import CLIAgentError
+    from tools.clink import _looks_like_recoverable_failure
+
+    # Ensure the env var is unset / falsy
+    prior = os.environ.pop("PAL_FALLBACK_ON_TIMEOUT", None)
+    try:
+        exc = CLIAgentError(
+            "CLI 'gemini' timed out after 1800 seconds",
+            returncode=None, stdout="", stderr="",
+        )
+        assert _looks_like_recoverable_failure(exc) is False
+    finally:
+        if prior is not None:
+            os.environ["PAL_FALLBACK_ON_TIMEOUT"] = prior
+
+
+def test_timeout_triggers_fallback_when_env_opt_in(monkeypatch):
+    """With PAL_FALLBACK_ON_TIMEOUT=1, timeout is treated like an OAuth failure
+    and triggers the paid-API fallback."""
+    from clink.agents import CLIAgentError
+    from tools.clink import _looks_like_recoverable_failure
+
+    monkeypatch.setenv("PAL_FALLBACK_ON_TIMEOUT", "1")
+    exc = CLIAgentError(
+        "CLI 'gemini' timed out after 1800 seconds",
+        returncode=None, stdout="", stderr="",
+    )
+    assert _looks_like_recoverable_failure(exc) is True
+
+
 def test_real_prompt_error_not_misclassified_as_oauth_failure():
     """Negative case — false positive costs a paid-API call."""
     from clink.agents import CLIAgentError

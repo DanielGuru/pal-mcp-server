@@ -46,7 +46,11 @@ from tools.shared.base_tool import BaseTool
 logger = logging.getLogger(__name__)
 
 
-DEFAULT_PANELISTS = ["codex", "gemini", "grok-4.3"]
+# 'host' is the reserved panel agent name that routes through MCP sampling
+# back to the connected client (Claude Code). Including it by default makes
+# multiaudit a true 4-way debate: Claude Code is a peer in the discussion of
+# its own PR, not just the dispatcher.
+DEFAULT_PANELISTS = ["host", "codex", "gemini", "grok-4.3"]
 DEFAULT_JUDGE = "codex"
 DEFAULT_DEBATE_ROUNDS = 1
 DEFAULT_PANELIST_TIMEOUT_S = 300

@@ -212,3 +212,30 @@ def test_handles_web_viewer_disabled(tmp_path, monkeypatch):
     body = json.loads(asyncio.run(go())[0].text)
     assert body["web_viewer_url"] is None
     assert "web_viewer_note" in body
+
+
+def test_default_panelist_set_includes_host(tmp_path, monkeypatch):
+    """multiaudit pulls Claude Code into the debate by default via the
+    'host' MCP-sampling agent — not just dispatching to other models."""
+    repo = _git_repo(tmp_path)
+
+    captured: dict = {}
+
+    async def fake_execute(name, arguments):
+        captured["arguments"] = arguments
+        from mcp.types import TextContent
+        return [TextContent(type="text", text=json.dumps({"status": "started", "task_id": "t"}))]
+
+    import server
+
+    monkeypatch.setattr(server, "execute_tool", fake_execute)
+
+    from tools.multiaudit import MultiauditTool
+
+    async def go():
+        # No panelists override → default
+        return await MultiauditTool().execute({"working_directory_absolute_path": str(repo)})
+
+    asyncio.run(go())
+    panelists = captured["arguments"]["arguments"]["panelists"]
+    assert "host" in panelists, f"expected 'host' as default panelist; got {panelists}"

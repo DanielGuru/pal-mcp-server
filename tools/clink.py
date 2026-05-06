@@ -167,6 +167,29 @@ OAUTH_FAILURE_PATTERNS: tuple[str, ...] = (
     "unauthenticated",
 )
 
+# Opt-in: when PAL_FALLBACK_ON_TIMEOUT=1, a clink subprocess that hangs past
+# its timeout (vs. failing with a quota signal) ALSO triggers the OAuth-to-API
+# fallback. Off by default because timeout is ambiguous — could be a stuck
+# CLI (where you'd want to fall back) or a legitimately long-running request
+# the model is just thinking through (where falling back would double-charge).
+# Set this when running unattended panels where any answer beats no answer.
+_TIMEOUT_FALLBACK_PATTERNS: tuple[str, ...] = (
+    "timed out",
+    "timeout",
+)
+
+
+def _looks_like_recoverable_failure(exc: CLIAgentError) -> bool:
+    """OAuth signals always trigger fallback. Timeouts trigger only when
+    PAL_FALLBACK_ON_TIMEOUT is set."""
+    haystack = " ".join(filter(None, [str(exc), exc.stdout or "", exc.stderr or ""])).lower()
+    if any(p in haystack for p in OAUTH_FAILURE_PATTERNS):
+        return True
+    if os.environ.get("PAL_FALLBACK_ON_TIMEOUT", "").strip().lower() in ("1", "true", "yes", "on"):
+        if any(p in haystack for p in _TIMEOUT_FALLBACK_PATTERNS):
+            return True
+    return False
+
 
 class CLinkRequest(BaseModel):
     """Request model for clink tool."""
@@ -670,7 +693,7 @@ class CLinkTool(SimpleTool):
         first F1 cut).
         """
         fallback_model = client_config.oauth_fallback_model
-        if not fallback_model or not self._looks_like_oauth_failure(exc):
+        if not fallback_model or not _looks_like_recoverable_failure(exc):
             return None
 
         from providers.registry import ModelProviderRegistry
