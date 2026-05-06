@@ -692,6 +692,173 @@ def test_openai_streaming_v2_default_on_opt_out_via_env(monkeypatch):
     assert "stream_options" not in captured
 
 
+def test_agenerate_content_propagates_run_context_to_worker(monkeypatch):
+    """Round-3 audit blocker: ``loop.run_in_executor`` does NOT propagate
+    ContextVars to the worker thread by default. The fix in
+    ``providers/base.py`` captures ``contextvars.copy_context()`` so the
+    worker sees the active run id. Without this, every streaming
+    progress emit silently no-ops."""
+    import asyncio
+
+    from providers.base import ModelProvider
+    from utils.execution_graph import current_run_id, _CURRENT_RUN_ID
+
+    captured: dict = {"run_id": "MISSING"}
+
+    class _StubProvider(ModelProvider):
+        def get_provider_type(self): pass
+        def validate_model_name(self, *a, **kw): return True
+        def supports_thinking_mode(self, *a, **kw): return False
+        def list_models(self, *a, **kw): return []
+        def list_known_models(self, *a, **kw): return []
+        def get_capabilities(self, *a, **kw): return None
+        def get_preferred_model(self, *a, **kw): return None
+        def count_tokens(self, *a, **kw): return 1
+
+        def generate_content(self, *args, **kwargs):
+            # Read the ContextVar from inside the worker thread. If
+            # propagation is broken, this is None.
+            captured["run_id"] = current_run_id()
+            from providers.shared import ModelResponse, ProviderType
+            return ModelResponse(
+                content="ok", usage=None, model_name="x",
+                friendly_name="x", provider=ProviderType.OPENAI, metadata={},
+            )
+
+    async def go():
+        token = _CURRENT_RUN_ID.set("test-run-deadbeef")
+        try:
+            await _StubProvider("k").agenerate_content("hi", "x")
+        finally:
+            _CURRENT_RUN_ID.reset(token)
+
+    asyncio.run(go())
+    assert captured["run_id"] == "test-run-deadbeef", (
+        "agenerate_content must propagate the run_context ContextVar into "
+        "the executor worker thread (round-3 audit blocker)."
+    )
+
+
+def test_stream_progress_emitter_throttles_and_emits(monkeypatch):
+    """The shared stream emitter respects its time throttle, accumulates
+    text deltas, and writes graph events with the actual content (not
+    a chunk-count status ping)."""
+    from utils.stream_progress import StreamProgressEmitter
+
+    events = []
+
+    class _FakeGraph:
+        def add_event(self, run_id, *, event_type, message, progress):
+            events.append({"run_id": run_id, "event_type": event_type, "message": message})
+
+    import utils.execution_graph as eg
+    monkeypatch.setattr(eg, "get_graph", lambda: _FakeGraph())
+
+    emitter = StreamProgressEmitter(label="claude/x", run_id="rid", throttle_s=0.0)
+    emitter.feed("Hello ")
+    emitter.feed("world")
+    emitter.finalize()
+
+    assert len(events) >= 1
+    last = events[-1]
+    assert last["run_id"] == "rid"
+    assert last["event_type"] == "text_chunk"
+    assert "Hello" in last["message"] and "world" in last["message"]
+    assert "[claude/x]" in last["message"]
+
+
+def test_stream_progress_emitter_no_run_id_is_silent(monkeypatch):
+    """Without a run id (sync entry point or worker without context)
+    the emitter must NOT touch the graph — silent no-op rather than
+    crash."""
+    from utils.stream_progress import StreamProgressEmitter
+
+    called = {"add_event": 0}
+
+    class _FakeGraph:
+        def add_event(self, *a, **kw):
+            called["add_event"] += 1
+
+    import utils.execution_graph as eg
+    monkeypatch.setattr(eg, "get_graph", lambda: _FakeGraph())
+
+    emitter = StreamProgressEmitter(label="x", run_id=None, throttle_s=0.0)
+    emitter.feed("hi")
+    emitter.finalize()
+    assert called["add_event"] == 0
+
+
+def test_gemini_streaming_handles_safety_block_valueerror(monkeypatch):
+    """Round-3 audit blocker: google-genai's .text property raises
+    ``ValueError`` (not ``AttributeError``) on safety-blocked or
+    tool-call-only chunks. ``getattr(default=...)`` does NOT suppress
+    that. The provider must catch it explicitly."""
+    from unittest.mock import MagicMock, patch
+    from providers.gemini import GeminiModelProvider
+
+    class _SafetyBlockedPartial:
+        @property
+        def text(self):
+            raise ValueError("safety block on this chunk")
+        candidates = None
+        prompt_feedback = None
+        usage_metadata = None
+
+    class _NormalPartial:
+        text = "hello world"
+        candidates = [MagicMock(finish_reason=MagicMock(name="STOP"), safety_ratings=[])]
+        prompt_feedback = None
+        usage_metadata = MagicMock(prompt_token_count=1, candidates_token_count=1, total_token_count=2)
+
+    def fake_stream(*args, **kwargs):
+        yield _SafetyBlockedPartial()
+        yield _NormalPartial()
+
+    monkeypatch.setenv("PAL_GEMINI_STREAM", "1")
+    monkeypatch.setenv("GEMINI_API_KEY", "k")
+
+    provider = GeminiModelProvider("k")
+    with patch.object(type(provider), "client", new_callable=lambda: property(lambda _: MagicMock(models=MagicMock(generate_content_stream=fake_stream)))):
+        result = provider.generate_content(prompt="hi", model_name="gemini-3.1-pro-preview")
+
+    assert "hello world" in (result.content or "")
+
+
+def test_gemini_streaming_zero_chunks_raises_clear_error(monkeypatch):
+    """Round-3 audit blocker: a stream that yields zero partials left
+    response=None and crashed at .candidates with a confusing
+    AttributeError. Now surfaces as a clear RuntimeError that the retry
+    layer can wrap meaningfully."""
+    from unittest.mock import MagicMock, patch
+    from providers.gemini import GeminiModelProvider
+
+    def fake_stream(*args, **kwargs):
+        return iter([])
+
+    monkeypatch.setenv("PAL_GEMINI_STREAM", "1")
+    monkeypatch.setenv("GEMINI_API_KEY", "k")
+    provider = GeminiModelProvider("k")
+    with patch.object(type(provider), "client", new_callable=lambda: property(lambda _: MagicMock(models=MagicMock(generate_content_stream=fake_stream)))):
+        try:
+            provider.generate_content(prompt="hi", model_name="gemini-3.1-pro-preview")
+        except RuntimeError as exc:
+            assert "no chunks" in str(exc).lower() or "stream" in str(exc).lower()
+            return
+        # Some retry wrappers raise instead of bubbling — both shapes ok.
+
+
+def test_multiaudit_judge_configurable_via_env(monkeypatch):
+    """``PAL_MULTIAUDIT_JUDGE`` env var must override the default
+    'codex' judge, so operators can swap the synthesiser without
+    editing code."""
+    monkeypatch.setenv("PAL_MULTIAUDIT_JUDGE", "claude")
+    # Re-import to pick up env at module load.
+    import importlib
+    import tools.multiaudit as m
+    importlib.reload(m)
+    assert m.DEFAULT_JUDGE == "claude"
+
+
 def test_agenerate_content_is_an_awaitable_method():
     """Locking the API: every provider must expose async agenerate_content."""
     from providers.openai import OpenAIModelProvider

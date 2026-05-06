@@ -128,6 +128,10 @@ _INDEX_HTML = r"""<!doctype html>
   .speaker-judge { --speaker: #f9c149; }
   .speaker-other { --speaker: #8b8fa1; }
   .transcript-judge { background: #1c1a14; border-left-width: 4px; }
+  /* In-progress streaming — italic + dimmed body so the operator can
+     visually tell they're watching live writing, not the final answer. */
+  .transcript-streaming .transcript-body { color: #aab1c5; font-style: italic;
+                                           opacity: 0.85; }
   /* Single soft "thinking" line for live runs that haven't produced a
      transcript event yet. Replaces the wall of file_read / tool_use pings. */
   .thinking { display: flex; align-items: center; gap: 10px;
@@ -353,13 +357,54 @@ function speakerClass(label) {
 }
 
 function flattenTranscriptEvents(node, out) {
-  // Walk the run tree and collect every panelist_answer / judge_synthesis
-  // event from every node, regardless of depth.
+  // Walk the run tree and collect transcript-renderable events from
+  // every node, regardless of depth.
+  //
+  // Three event types feed the transcript pane:
+  //   panelist_answer / judge_synthesis — final, authoritative
+  //   text_chunk — provider streaming progress; aggregated per node
+  //                into one transcript block.
+  //
+  // Per-node logic: if the node has any panelist_answer/judge_synthesis,
+  // use those (they carry the full response). Otherwise fall back to
+  // aggregated text_chunk events. Critically the fallback runs whether
+  // the node is running OR completed — that way when a streamed panelist
+  // finishes, its accumulated chunks stay baked into the transcript even
+  // if the final panelist_answer hasn't been emitted yet (e.g. on early
+  // termination, error path, or the brief gap between stream-end and
+  // emit). Previously the streaming block disappeared the instant
+  // status flipped from running → completed.
   if (node.events) {
+    let hasFinal = false;
+    const chunks = [];
     for (const e of node.events) {
       if (e.event_type === 'panelist_answer' || e.event_type === 'judge_synthesis') {
         out.push(e);
+        hasFinal = true;
+      } else if (e.event_type === 'text_chunk') {
+        chunks.push(e);
       }
+    }
+    if (!hasFinal && chunks.length) {
+      // Synthesize an aggregate event from concatenated chunk messages.
+      // Each chunk message is "[label] content" — strip the bracket and
+      // join the bodies into one growing transcript block.
+      let label = '';
+      const bodyParts = [];
+      for (const c of chunks) {
+        const m = String(c.message || '').match(/^\[([^\]]+)\]\s*([\s\S]*)$/);
+        if (m) {
+          if (!label) label = m[1];
+          bodyParts.push(m[2]);
+        }
+      }
+      const isRunning = node.status === 'running';
+      out.push({
+        event_type: 'panelist_streaming',
+        ts: chunks[chunks.length - 1].ts,
+        message: `[${label}] ${isRunning ? '(writing live…)' : '(streamed)'}\n${bodyParts.join('')}`,
+        _streaming_running: isRunning,
+      });
     }
   }
   for (const c of (node.children || [])) flattenTranscriptEvents(c, out);
@@ -383,9 +428,16 @@ function renderTranscriptEvent(e) {
   const m = header.match(/^\[([^\]]+)\]\s*(.*)$/);
   const speakerKey = m ? m[1] : header;
   const tail = m ? m[2] : '';
-  const cls = e.event_type === 'judge_synthesis'
-    ? 'transcript transcript-judge speaker-judge'
-    : 'transcript ' + speakerClass(speakerKey);
+  let cls;
+  if (e.event_type === 'judge_synthesis') {
+    cls = 'transcript transcript-judge speaker-judge';
+  } else if (e.event_type === 'panelist_streaming') {
+    // In-progress streaming — distinct visual treatment so the operator
+    // can tell they're watching live writing, not the final answer.
+    cls = 'transcript transcript-streaming ' + speakerClass(speakerKey);
+  } else {
+    cls = 'transcript ' + speakerClass(speakerKey);
+  }
   return `<div class="${cls}">
     <div class="transcript-h">
       <span class="who">${escapeHtml(speakerKey)}</span>

@@ -47,27 +47,6 @@ from .shared import ModelResponse, ProviderType
 logger = logging.getLogger(__name__)
 
 
-def _safe_emit_progress(message: str, *, event_type: str = "text_chunk") -> None:
-    """Best-effort graph event so streaming progress lands in the live viewer.
-
-    The provider runs inside a worker thread (sync SDK call dispatched via
-    asyncio.to_thread); emit_progress is async and not callable from here.
-    We write directly to the execution graph against the current run_id —
-    that's exactly what the viewer reads. The MCP progress notification is
-    skipped on this hot path; it doesn't matter for the viewer.
-
-    Swallows everything: outside an active run_context there's no consumer
-    and we don't want a streaming hot-path to fail because of telemetry."""
-    try:
-        from utils.execution_graph import current_run_id, get_graph
-        run_id = current_run_id()
-        graph = get_graph()
-        if run_id is not None and graph is not None:
-            graph.add_event(run_id, event_type=event_type, message=message, progress=0.0)
-    except Exception:  # noqa: BLE001
-        pass
-
-
 class AnthropicModelProvider(RegistryBackedProviderMixin, ModelProvider):
     """First-party Anthropic Claude integration via the official SDK.
 
@@ -282,19 +261,19 @@ class AnthropicModelProvider(RegistryBackedProviderMixin, ModelProvider):
         def _attempt() -> ModelResponse:
             attempt_counter["value"] += 1
             # Streaming path: accumulate text deltas and ask the SDK for the
-            # final assembled message (carries usage + stop_reason). Per-token
-            # deltas are emitted to the live viewer via emit_progress when a
-            # run_context is active — this is the streaming-v2 surface for
-            # direct-API providers that previously showed nothing mid-flight.
-            chunk_count = 0
+            # final assembled message (carries usage + stop_reason). The
+            # shared StreamProgressEmitter pushes the actual accumulating
+            # content to the execution graph so the viewer renders the
+            # model writing in real time, not just chunk counters. Run_id
+            # is captured eagerly via the ContextVar (now propagated into
+            # the worker thread by providers/base.py).
+            from utils.stream_progress import make_emitter
+            emitter = make_emitter(label=f"claude/{resolved}")
             with self.client.messages.stream(**request_kwargs) as stream:
-                for _ in stream.text_stream:
-                    chunk_count += 1
-                    if chunk_count % 16 == 0:
-                        _safe_emit_progress(
-                            f"anthropic/{resolved}: streaming… ({chunk_count} chunks)",
-                            event_type="text_chunk",
-                        )
+                for piece in stream.text_stream:
+                    if piece:
+                        emitter.feed(piece)
+                emitter.finalize()
                 response = stream.get_final_message()
             text = self._extract_text(response)
             usage = self._extract_usage(response)

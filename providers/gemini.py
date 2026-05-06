@@ -21,24 +21,6 @@ from .shared import ModelCapabilities, ModelResponse, ProviderType
 logger = logging.getLogger(__name__)
 
 
-def _safe_emit_progress(message: str, *, event_type: str = "text_chunk") -> None:
-    """Best-effort graph event so streaming chunks land in the live viewer.
-
-    The provider runs inside a worker thread; emit_progress is async and
-    not callable from here. We write directly to the execution graph
-    against the current run_id — the viewer reads from the graph anyway.
-    Outside an active run_context there's no consumer and we don't want a
-    streaming hot-path to fail because of telemetry."""
-    try:
-        from utils.execution_graph import current_run_id, get_graph
-        run_id = current_run_id()
-        graph = get_graph()
-        if run_id is not None and graph is not None:
-            graph.add_event(run_id, event_type=event_type, message=message, progress=0.0)
-    except Exception:  # noqa: BLE001
-        pass
-
-
 class GeminiModelProvider(RegistryBackedProviderMixin, ModelProvider):
     """First-party Gemini integration built on the official Google SDK.
 
@@ -237,25 +219,45 @@ class GeminiModelProvider(RegistryBackedProviderMixin, ModelProvider):
         def _attempt() -> ModelResponse:
             attempt_counter["value"] += 1
             if _stream_enabled:
+                from utils.stream_progress import make_emitter
+                emitter = make_emitter(label=f"gemini/{resolved_model_name}")
                 content_parts: list[str] = []
+                # Track the last partial that carried text-bearing
+                # candidates separately from the very last partial.
+                # google-genai often closes a stream with a usage-only
+                # partial whose ``.text`` is empty; if we read finish /
+                # safety metadata from THAT one, we'd flip
+                # is_blocked_by_safety=True even though streamed_text is
+                # populated. Round-3 audit blocker.
                 response = None
-                chunk_count = 0
+                last_text_response = None
                 for partial in self.client.models.generate_content_stream(
                     model=resolved_model_name,
                     contents=contents,
                     config=generation_config,
                 ):
-                    chunk_count += 1
-                    response = partial  # last one wins for finish_reason / usage
-                    piece = getattr(partial, "text", None)
+                    response = partial  # carries usage on the final tick
+                    # Gemini's ``.text`` is a property that raises
+                    # ValueError on safety-blocked / tool-only chunks.
+                    # ``getattr(default=...)`` only suppresses
+                    # AttributeError, not ValueError — round-3 blocker.
+                    try:
+                        piece = partial.text
+                    except (AttributeError, ValueError):
+                        piece = None
                     if piece:
                         content_parts.append(piece)
-                        if chunk_count % 16 == 0:
-                            _safe_emit_progress(
-                                f"gemini/{resolved_model_name}: streaming… "
-                                f"({chunk_count} chunks)",
-                                event_type="text_chunk",
-                            )
+                        last_text_response = partial
+                        emitter.feed(piece)
+                emitter.finalize()
+                if response is None:
+                    # Zero-chunk stream — possible content filter or SDK
+                    # error before the first partial. Surface a clear
+                    # error rather than NPE'ing on .candidates below.
+                    raise RuntimeError(
+                        f"Gemini stream returned no chunks for model "
+                        f"{resolved_model_name} (possible content filter)."
+                    )
                 streamed_text = "".join(content_parts)
             else:
                 response = self.client.models.generate_content(
@@ -264,6 +266,12 @@ class GeminiModelProvider(RegistryBackedProviderMixin, ModelProvider):
                     config=generation_config,
                 )
                 streamed_text = None  # use response.text below
+                last_text_response = None
+
+            # When streaming, prefer the partial that actually carried
+            # candidates/safety/finish_reason for those metadata reads.
+            # Falls through to ``response`` for non-streaming.
+            metadata_response = last_text_response or response
 
             usage = self._extract_usage(response)
 
@@ -271,8 +279,8 @@ class GeminiModelProvider(RegistryBackedProviderMixin, ModelProvider):
             is_blocked_by_safety = False
             safety_feedback_details = None
 
-            if response.candidates:
-                candidate = response.candidates[0]
+            if metadata_response.candidates:
+                candidate = metadata_response.candidates[0]
 
                 try:
                     finish_reason_enum = candidate.finish_reason
@@ -286,7 +294,17 @@ class GeminiModelProvider(RegistryBackedProviderMixin, ModelProvider):
                 except AttributeError:
                     finish_reason_str = "STOP"
 
-                if not response.text:
+                # Round-3 audit blocker: a usage-only final partial
+                # leaves response.text falsy even when streamed_text has
+                # the complete answer; that flipped is_blocked_by_safety
+                # incorrectly. Read the streamed text first.
+                # ``.text`` access can raise ValueError on safety blocks
+                # in google-genai — wrap in try/except.
+                try:
+                    has_text = bool(streamed_text) or bool(metadata_response.text)
+                except (AttributeError, ValueError):
+                    has_text = bool(streamed_text)
+                if not has_text:
                     try:
                         safety_ratings = candidate.safety_ratings
                         if safety_ratings:
@@ -316,13 +334,13 @@ class GeminiModelProvider(RegistryBackedProviderMixin, ModelProvider):
                     except (AttributeError, TypeError):
                         pass
 
-            elif response.candidates is not None and len(response.candidates) == 0:
+            elif metadata_response.candidates is not None and len(metadata_response.candidates) == 0:
                 is_blocked_by_safety = True
                 finish_reason_str = "SAFETY"
                 safety_feedback_details = "Prompt blocked, reason unavailable"
 
                 try:
-                    prompt_feedback = response.prompt_feedback
+                    prompt_feedback = metadata_response.prompt_feedback
                     if prompt_feedback and prompt_feedback.block_reason:
                         try:
                             block_reason_name = prompt_feedback.block_reason.name

@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -62,7 +63,17 @@ logger = logging.getLogger(__name__)
 # host that DOES support sampling (or want to invite the host explicitly)
 # can pass panelists=["host", "codex", ...] manually.
 DEFAULT_PANELISTS = ["codex", "gemini", "claude", "grok-4.3"]
-DEFAULT_JUDGE = "codex"
+# The judge synthesises the panel's final headline. Default is codex
+# (free OAuth) but anyone can be the judge. Override precedence:
+#   1. ``judge=`` arg on the multiaudit call
+#   2. ``PAL_MULTIAUDIT_JUDGE`` env var (e.g. set in ~/.claude.json env
+#      block to make a global default like "claude" or "grok-4.3")
+#   3. Hardcoded "codex"
+DEFAULT_JUDGE = os.environ.get("PAL_MULTIAUDIT_JUDGE", "").strip() or "codex"
+# Same env-var-overridable pattern for panelists. Comma-separated list.
+_panelists_env = (os.environ.get("PAL_MULTIAUDIT_PANELISTS") or "").strip()
+if _panelists_env:
+    DEFAULT_PANELISTS = [p.strip() for p in _panelists_env.split(",") if p.strip()]
 DEFAULT_DEBATE_ROUNDS = 1
 DEFAULT_PANELIST_TIMEOUT_S = 300
 
@@ -128,7 +139,7 @@ class MultiauditTool(BaseTool):
                 },
                 "judge": {
                     "type": "string",
-                    "description": "Override the default judge agent (codex).",
+                    "description": "Agent that synthesises the final headline. Defaults to PAL_MULTIAUDIT_JUDGE env var, else 'codex'. Use any panelist name (e.g. 'claude', 'gemini', 'grok-4.3', 'codex') or any valid model id.",
                 },
                 "debate_rounds": {
                     "type": "integer",

@@ -314,20 +314,31 @@ class ModelProvider(ABC):
         executor = _get_provider_executor()
         loop = asyncio.get_running_loop()
 
+        # Round-3 audit blocker: ``loop.run_in_executor`` does NOT
+        # propagate ContextVars to the worker thread. Streaming-progress
+        # emitters in the providers read ``current_run_id()`` and got
+        # None on every call — the whole feature was silent dead code.
+        # Fix: capture the caller's context here (where the run_context
+        # ContextVar IS set) and run the worker inside it. Now provider
+        # threads see the active run id and emit graph events correctly.
+        import contextvars
+        ctx = contextvars.copy_context()
+
+        def _call_in_context() -> ModelResponse:
+            return ctx.run(
+                self.generate_content,
+                prompt,
+                model_name,
+                system_prompt,
+                temperature,
+                max_output_tokens,
+                **kwargs,
+            )
+
         async with sem:
             # Use the bounded executor instead of asyncio's default unbounded
             # one, so a stuck thread can't grow the pool without limit.
-            return await loop.run_in_executor(
-                executor,
-                lambda: self.generate_content(
-                    prompt,
-                    model_name,
-                    system_prompt,
-                    temperature,
-                    max_output_tokens,
-                    **kwargs,
-                ),
-            )
+            return await loop.run_in_executor(executor, _call_in_context)
 
     def count_tokens(self, text: str, model_name: str) -> int:
         """Estimate token usage for a piece of text."""

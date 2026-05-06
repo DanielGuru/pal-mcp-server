@@ -19,24 +19,6 @@ from .shared import (
 )
 
 
-def _safe_emit_progress(message: str, *, event_type: str = "text_chunk") -> None:
-    """Best-effort graph event so streaming chunks land in the live viewer.
-
-    The provider runs inside a worker thread; emit_progress is async and
-    not callable from here. We write directly to the execution graph
-    against the current run_id — the viewer reads from the graph anyway.
-    Outside an active run_context there's no consumer and we don't want a
-    streaming hot-path to fail because of telemetry."""
-    try:
-        from utils.execution_graph import current_run_id, get_graph
-        run_id = current_run_id()
-        graph = get_graph()
-        if run_id is not None and graph is not None:
-            graph.add_event(run_id, event_type=event_type, message=message, progress=0.0)
-    except Exception:  # noqa: BLE001
-        pass
-
-
 class OpenAICompatibleProvider(ModelProvider):
     """Shared implementation for OpenAI API lookalikes.
 
@@ -692,17 +674,17 @@ class OpenAICompatibleProvider(ModelProvider):
             # returns a single ChatCompletion. Tests still mock the
             # non-streaming path, so we keep the legacy branch live.
             if completion_params.get("stream"):
+                from utils.stream_progress import make_emitter
+                emitter = make_emitter(
+                    label=f"{self.FRIENDLY_NAME.lower()}/{resolved_model}",
+                )
                 content_parts: list[str] = []
                 finish_reason = None
                 response_id = ""
                 response_model = resolved_model
                 created = 0
                 usage_chunk = None
-                chunk_count = 0
                 for chunk in response:
-                    chunk_count += 1
-                    if not getattr(chunk, "id", None) and not response_id:
-                        pass  # some providers fill id only on first chunk
                     response_id = response_id or getattr(chunk, "id", "") or ""
                     response_model = getattr(chunk, "model", None) or response_model
                     created = getattr(chunk, "created", 0) or created
@@ -713,18 +695,14 @@ class OpenAICompatibleProvider(ModelProvider):
                             piece = getattr(delta, "content", None)
                             if piece:
                                 content_parts.append(piece)
-                                if chunk_count % 16 == 0:
-                                    _safe_emit_progress(
-                                        f"{self.FRIENDLY_NAME.lower()}/{resolved_model}: "
-                                        f"streaming… ({chunk_count} chunks)",
-                                        event_type="text_chunk",
-                                    )
+                                emitter.feed(piece)
                         fr = getattr(choices[0], "finish_reason", None)
                         if fr:
                             finish_reason = fr
                     # Final usage chunk (stream_options.include_usage=True)
                     if getattr(chunk, "usage", None) is not None:
                         usage_chunk = chunk
+                emitter.finalize()
                 content = "".join(content_parts)
                 usage = self._extract_usage(usage_chunk) if usage_chunk is not None else None
                 return ModelResponse(
