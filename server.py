@@ -864,6 +864,17 @@ async def execute_tool(name: str, arguments: dict[str, Any]) -> list[TextContent
     if name not in TOOLS:
         raise KeyError(f"Unknown tool: {name!r}")
 
+    # Lazy-start the web viewer on the first PAL tool call this session.
+    # No tab pops if the user never touches PAL. start_web_viewer is
+    # idempotent (returns the existing URL if already running) so this is
+    # safe to call on every dispatch. Best-effort — viewer boot failures
+    # don't break the tool call.
+    try:
+        from utils.web_viewer import start_web_viewer
+        start_web_viewer()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("lazy web-viewer start raised (%s); ignoring", exc)
+
     logger.info(f"Executing tool '{name}' with {len(arguments)} parameter(s)")
     # Fresh instance per request — tools mutate state on self during execute().
     tool = make_tool(name)
@@ -1633,21 +1644,12 @@ async def main():
     except Exception as exc:  # noqa: BLE001
         logger.warning("Execution graph startup probe failed (%s); continuing", exc)
 
-    # Spin up the read-only web viewer in a daemon thread. Lets the operator
-    # watch panel runs unfold in a browser instead of polling task_status by
-    # hand. Best-effort — failures log and continue.
-    try:
-        from utils.web_viewer import start_web_viewer
-
-        web_url = start_web_viewer()
-        if web_url:
-            logger.info("Web viewer ready at %s", web_url)
-            try:
-                logging.getLogger("mcp_activity").info(f"WEB_VIEWER_URL: {web_url}")
-            except Exception:  # noqa: BLE001
-                pass
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("Web viewer startup raised (%s); continuing without UI", exc)
+    # Web viewer is now lazy-started on the first execute_tool call rather
+    # than at MCP server boot. Reasoning: PAL's MCP server boots whenever
+    # Claude Code opens the project, even if the user never calls a PAL
+    # tool. Auto-popping a browser tab on every Claude Code launch was
+    # noise. Now: if you never use PAL, no tab. If you trigger any PAL
+    # tool, the tab pops on first use and shows that run live.
 
     # Log startup message
     logger.info("PAL MCP Server starting up...")

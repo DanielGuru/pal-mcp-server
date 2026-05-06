@@ -211,6 +211,38 @@ def test_web_url_tool_returns_running_url(graph_with_data):
     assert payload["url"].startswith("http://")
 
 
+def test_viewer_lazy_starts_on_first_tool_call(tmp_path, monkeypatch):
+    """Pre-fix: viewer started in main() at MCP server boot — popped a tab
+    on every Claude Code launch even if the user never used PAL.
+    Now: viewer starts only when execute_tool fires its first dispatch.
+    """
+    import utils.execution_graph as eg
+    import utils.web_viewer as wv
+
+    monkeypatch.setattr(eg, "_GRAPH", eg.ExecutionGraph(tmp_path / "g.db"))
+    monkeypatch.setattr(eg, "_GRAPH_DISABLED", False)
+    monkeypatch.setattr(wv, "_SERVER", None)
+    monkeypatch.setattr(wv, "_SERVER_THREAD", None)
+    monkeypatch.setattr(wv, "_SERVER_PORT", None)
+    monkeypatch.setattr(wv, "_DISABLED", False)
+    monkeypatch.setattr(wv, "_AUTO_OPEN", False)
+    monkeypatch.setattr(wv, "_DEFAULT_PORT", 18888)
+
+    # Before any tool call: viewer not running
+    assert wv.get_server_url() is None
+
+    # First dispatch lazy-starts it
+    import asyncio
+    import server
+
+    asyncio.run(server.execute_tool("version", {}))
+
+    # Now running
+    assert wv.get_server_url() is not None
+    assert wv.get_server_url().startswith("http://")
+    wv.stop_web_viewer()
+
+
 def test_web_url_tool_reports_disabled(monkeypatch):
     """When the viewer isn't running the tool reports gracefully."""
     import asyncio
