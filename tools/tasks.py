@@ -334,6 +334,7 @@ class TaskManager:
             }
 
     async def _run(self, record: TaskRecord) -> None:
+        from utils.host_session import reset_host_session, set_host_session
         from utils.progress import reset_progress_sink, set_progress_sink
 
         async def sink(msg: str, progress: float, total: Optional[float]) -> None:
@@ -342,6 +343,10 @@ class TaskManager:
             )
 
         token = set_progress_sink(sink)
+        # Propagate the MCP session captured at start_task time so any nested
+        # tool that needs sampling (panel's 'host' agent) can find it via the
+        # contextvar — request_ctx isn't valid in this background asyncio task.
+        host_token = set_host_session(record.session) if record.session is not None else None
         record.status = "running"
         record.started_at = time.time()
         record.progress_events.append(
@@ -385,6 +390,8 @@ class TaskManager:
             logger.exception("Background task %s failed", record.task_id)
         finally:
             reset_progress_sink(token)
+            if host_token is not None:
+                reset_host_session(host_token)
             record.completed_at = time.time()
             record.progress_events.append(
                 {

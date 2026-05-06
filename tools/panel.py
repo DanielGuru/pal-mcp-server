@@ -47,13 +47,28 @@ JUDGE_PER_PANELIST_CHAR_CAP = 8000
 DEBATE_PER_PEER_CHAR_CAP = 4000
 
 
+# Reserved panelist name that means "the MCP host's own LLM" — i.e. Claude
+# Code itself when PAL is running under it. Routed through MCP sampling
+# (mcp/createMessage), not clink and not chat. Counts as a peer panelist
+# in the debate; the host model sees the prompt and answers like any other.
+HOST_AGENT_NAME = "host"
+
+
+def _is_host_agent(name: str) -> bool:
+    """Match the literal panelist name 'host' (the MCP-side LLM)."""
+    return name.lower() == HOST_AGENT_NAME
+
+
 def _is_clink_agent(name: str) -> bool:
     """Decide whether `name` should route through clink.
 
     Derived from clink's runtime registry rather than a hard-coded set, so
     adding a new clink CLI in conf/cli_clients/ makes panel route to it
-    automatically.
+    automatically. Excludes the reserved 'host' name (sampling, not clink)
+    even when a clink config happens to be named that.
     """
+    if _is_host_agent(name):
+        return False
     try:
         from clink.registry import get_registry
         return name.lower() in {n.lower() for n in get_registry().list_clients()}
@@ -120,6 +135,137 @@ def _normalize_panelist(entry: Any) -> dict[str, Any]:
     raise ValueError(f"Each panelist must be a string or object, got {type(entry).__name__}")
 
 
+async def _run_host_panelist(
+    *,
+    agent: str,
+    label: str,
+    role: str,
+    prompt: str,
+    timeout: float,
+    started: float,
+) -> dict[str, Any]:
+    """Dispatch the prompt to the MCP host LLM (Claude Code) via sampling.
+
+    Returns the same per-panelist outcome shape as _run_panelist's regular
+    path, with cost_tier='host_sampling' (host eats the cost, not us).
+
+    Failure modes (each returns ok=False with a clear error message):
+      - No session reachable in this context (running in a non-MCP test,
+        or the captured session has been torn down).
+      - Host doesn't advertise the sampling capability (older clients).
+      - The host rejects / errors on the create_message call.
+      - Timeout — the host's model took longer than `timeout` seconds.
+    """
+    from utils.host_session import get_host_session, host_supports_sampling
+
+    session = get_host_session()
+    if session is None:
+        await emit_progress(f"panel/{label}: ✗ host sampling unavailable", progress=1.0)
+        return {
+            "agent": agent,
+            "label": label,
+            "role": role,
+            "ok": False,
+            "duration_s": round(time.monotonic() - started, 2),
+            "error": (
+                "host sampling unavailable: no MCP session is reachable in this "
+                "context. This usually means PAL was invoked outside a real MCP "
+                "client request, or the captured session was torn down before "
+                "the panel ran."
+            ),
+        }
+
+    if not host_supports_sampling(session):
+        await emit_progress(
+            f"panel/{label}: ✗ host doesn't support sampling", progress=1.0
+        )
+        return {
+            "agent": agent,
+            "label": label,
+            "role": role,
+            "ok": False,
+            "duration_s": round(time.monotonic() - started, 2),
+            "error": (
+                "host LLM did not advertise the 'sampling' capability during "
+                "the MCP handshake. Use a host that supports sampling (Claude "
+                "Code does) or pick a different panelist."
+            ),
+        }
+
+    # MCP createMessage takes a list of SamplingMessages. We pass the panel
+    # prompt as a single user turn. include_context='thisServer' lets the
+    # host see PAL's tools/resources during sampling — usually wanted for
+    # PR-shaped audits where the host might want to peek at the diff.
+    try:
+        from mcp.types import SamplingMessage, TextContent as MCPTextContent
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "agent": agent, "label": label, "role": role, "ok": False,
+            "duration_s": round(time.monotonic() - started, 2),
+            "error": f"mcp.types import failed: {exc}",
+        }
+
+    sampling_msg = SamplingMessage(
+        role="user",
+        content=MCPTextContent(type="text", text=prompt),
+    )
+
+    try:
+        result = await asyncio.wait_for(
+            session.create_message(
+                messages=[sampling_msg],
+                max_tokens=4096,
+                include_context="thisServer",
+            ),
+            timeout=timeout,
+        )
+    except asyncio.TimeoutError:
+        await emit_progress(f"panel/{label}: ✗ host timed out", progress=1.0)
+        return {
+            "agent": agent, "label": label, "role": role, "ok": False,
+            "duration_s": round(time.monotonic() - started, 2),
+            "error": f"host sampling timed out after {timeout}s",
+        }
+    except Exception as exc:  # noqa: BLE001
+        await emit_progress(f"panel/{label}: ✗ host error", progress=1.0)
+        return {
+            "agent": agent, "label": label, "role": role, "ok": False,
+            "duration_s": round(time.monotonic() - started, 2),
+            "error": f"host sampling failed: {type(exc).__name__}: {exc}",
+        }
+
+    # Extract the text content from the host's response. SamplingMessage's
+    # content is a single block; if it's text, take .text — otherwise stringify.
+    # We check whether `.text` exists (could be empty string) before falling
+    # back to str(); empty .text means the host genuinely returned nothing.
+    content = getattr(result, "content", None)
+    if content is None:
+        response_text = ""
+    elif hasattr(content, "text"):
+        response_text = content.text or ""
+    else:
+        response_text = str(content)
+    if not response_text.strip():
+        return {
+            "agent": agent, "label": label, "role": role, "ok": False,
+            "duration_s": round(time.monotonic() - started, 2),
+            "error": "host returned empty content",
+        }
+
+    duration = round(time.monotonic() - started, 2)
+    await emit_progress(f"panel/{label}: ✓ host responded ({duration}s)", progress=1.0)
+    return {
+        "agent": agent,
+        "label": label,
+        "role": role,
+        "ok": True,
+        "cost_tier": "host_sampling",
+        "duration_s": duration,
+        "response": response_text,
+        "host_model": getattr(result, "model", None),
+    }
+
+
 async def _run_panelist(
     panelist: dict[str, Any],
     *,
@@ -139,12 +285,28 @@ async def _run_panelist(
 
     role = panelist.get("role") or "default"
     label = panelist.get("label") or agent
+    is_host = _is_host_agent(agent)
     is_clink = _is_clink_agent(agent)
     started = time.monotonic()
 
     await emit_progress(f"panel/{label}: dispatching", progress=0.0)
 
     try:
+        # Host-LLM panelist: route through MCP sampling instead of clink/chat.
+        # Lets Claude Code (or any MCP host with sampling support) be a true
+        # peer in the debate without spawning a subprocess or hitting a paid
+        # API. The host's tokens + cost are the host's problem; PAL just
+        # routes the prompt through mcp/createMessage.
+        if is_host:
+            return await _run_host_panelist(
+                agent=agent,
+                label=label,
+                role=role,
+                prompt=prompt,
+                timeout=timeout,
+                started=started,
+            )
+
         # Dispatch through server.execute_tool so panelists get the same
         # validation as MCP-boundary calls (model resolution, file-size cap).
         # Pre-fix, panel was a quiet way to bypass MCP-boundary validation.

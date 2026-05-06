@@ -954,6 +954,16 @@ async def execute_tool(name: str, arguments: dict[str, Any]) -> list[TextContent
     # form a tree without explicit threading. Best-effort: graph failures are
     # swallowed inside run_context, never break the actual tool call.
     from utils.execution_graph import get_graph, run_context
+    from utils.host_session import capture_from_request_ctx, reset_host_session, set_host_session
+
+    # Make the MCP host session reachable to nested tools (e.g. panel's
+    # 'host' agent that samples Claude Code via mcp/createMessage). This is
+    # best-effort — capture returns None outside a real MCP request, which
+    # is fine; the host panelist fails cleanly if no session is reachable.
+    _host_token = None
+    captured = capture_from_request_ctx()
+    if captured is not None:
+        _host_token = set_host_session(captured)
 
     # All graph-only hints come off args BEFORE tool.execute() sees them so
     # pydantic-strict tools don't reject the unknown keys. They're consumed
@@ -964,52 +974,56 @@ async def execute_tool(name: str, arguments: dict[str, Any]) -> list[TextContent
     if not isinstance(graph_label, str):
         graph_label = None
 
-    with run_context(name, label=graph_label, args=arguments, edge_kind=edge_kind) as run_id:
-        try:
-            result = await tool.execute(arguments)
-        except Exception as exc:
-            # run_context will mark the run as failed via __exit__; also
-            # capture structured payload when this is a ToolExecutionError.
-            graph = get_graph()
-            if graph is not None and run_id is not None:
-                from tools.shared.exceptions import ToolExecutionError as _TEE
-                payload = None
-                if isinstance(exc, _TEE):
+    try:
+        with run_context(name, label=graph_label, args=arguments, edge_kind=edge_kind) as run_id:
+            try:
+                result = await tool.execute(arguments)
+            except Exception as exc:
+                # run_context will mark the run as failed via __exit__; also
+                # capture structured payload when this is a ToolExecutionError.
+                graph = get_graph()
+                if graph is not None and run_id is not None:
+                    from tools.shared.exceptions import ToolExecutionError as _TEE
+                    payload = None
+                    if isinstance(exc, _TEE):
+                        try:
+                            import json as _json
+                            parsed = _json.loads(str(exc))
+                            if isinstance(parsed, dict):
+                                payload = parsed
+                        except Exception:  # noqa: BLE001
+                            pass
                     try:
-                        import json as _json
-                        parsed = _json.loads(str(exc))
-                        if isinstance(parsed, dict):
-                            payload = parsed
+                        graph.fail_run(run_id, error=f"{type(exc).__name__}: {exc}", error_payload=payload)
                     except Exception:  # noqa: BLE001
                         pass
+                raise
+
+            # Mark complete with cost_tier/model derived from caller hints + the
+            # resolved model so aggregate spend rollups work.
+            graph = get_graph()
+            if graph is not None and run_id is not None:
+                model_used = arguments.get("_resolved_model_name") or arguments.get("model")
                 try:
-                    graph.fail_run(run_id, error=f"{type(exc).__name__}: {exc}", error_payload=payload)
+                    graph.complete_run(
+                        run_id,
+                        result={"text_chunks": [getattr(c, "text", str(c)) for c in (result or [])]},
+                        cost_tier=graph_cost_tier,
+                        model_used=model_used if isinstance(model_used, str) else None,
+                    )
                 except Exception:  # noqa: BLE001
                     pass
-            raise
 
-        # Mark complete with cost_tier/model derived from caller hints + the
-        # resolved model so aggregate spend rollups work.
-        graph = get_graph()
-        if graph is not None and run_id is not None:
-            model_used = arguments.get("_resolved_model_name") or arguments.get("model")
-            try:
-                graph.complete_run(
-                    run_id,
-                    result={"text_chunks": [getattr(c, "text", str(c)) for c in (result or [])]},
-                    cost_tier=graph_cost_tier,
-                    model_used=model_used if isinstance(model_used, str) else None,
-                )
-            except Exception:  # noqa: BLE001
-                pass
-
-    logger.info(f"Tool '{name}' execution completed")
-    try:
-        mcp_activity_logger = logging.getLogger("mcp_activity")
-        mcp_activity_logger.info(f"TOOL_COMPLETED: {name}")
-    except Exception:
-        pass
-    return result
+        logger.info(f"Tool '{name}' execution completed")
+        try:
+            mcp_activity_logger = logging.getLogger("mcp_activity")
+            mcp_activity_logger.info(f"TOOL_COMPLETED: {name}")
+        except Exception:
+            pass
+        return result
+    finally:
+        if _host_token is not None:
+            reset_host_session(_host_token)
 
 
 def parse_model_option(model_string: str) -> tuple[str, Optional[str]]:
