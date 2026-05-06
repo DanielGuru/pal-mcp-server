@@ -25,7 +25,16 @@ from typing import TYPE_CHECKING, Any, ClassVar, Optional
 if TYPE_CHECKING:
     from tools.models import ToolModelCategory
 
-import anthropic
+# Soft import. Configure_providers() only registers AnthropicModelProvider
+# when ANTHROPIC_API_KEY is set, but the *module* still loads on every PAL
+# boot (server.py imports it inside configure_providers, which still
+# executes module-level code). A missing `anthropic` SDK on a machine that
+# only uses other providers would otherwise crash the entire MCP server.
+# Raise the clear error at provider instantiation instead.
+try:
+    import anthropic  # type: ignore[import-not-found]
+except ImportError:  # pragma: no cover — exercised only on misconfigured installs
+    anthropic = None  # type: ignore[assignment]
 
 from utils.env import get_env
 from utils.image_utils import validate_image
@@ -36,6 +45,27 @@ from .registry_provider_mixin import RegistryBackedProviderMixin
 from .shared import ModelResponse, ProviderType
 
 logger = logging.getLogger(__name__)
+
+
+def _safe_emit_progress(message: str, *, event_type: str = "text_chunk") -> None:
+    """Best-effort graph event so streaming progress lands in the live viewer.
+
+    The provider runs inside a worker thread (sync SDK call dispatched via
+    asyncio.to_thread); emit_progress is async and not callable from here.
+    We write directly to the execution graph against the current run_id —
+    that's exactly what the viewer reads. The MCP progress notification is
+    skipped on this hot path; it doesn't matter for the viewer.
+
+    Swallows everything: outside an active run_context there's no consumer
+    and we don't want a streaming hot-path to fail because of telemetry."""
+    try:
+        from utils.execution_graph import current_run_id, get_graph
+        run_id = current_run_id()
+        graph = get_graph()
+        if run_id is not None and graph is not None:
+            graph.add_event(run_id, event_type=event_type, message=message, progress=0.0)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 class AnthropicModelProvider(RegistryBackedProviderMixin, ModelProvider):
@@ -68,6 +98,11 @@ class AnthropicModelProvider(RegistryBackedProviderMixin, ModelProvider):
     DEFAULT_MAX_TOKENS = 4096
 
     def __init__(self, api_key: str, **kwargs: Any) -> None:
+        if anthropic is None:
+            raise RuntimeError(
+                "anthropic SDK not installed but ANTHROPIC_API_KEY is set. "
+                "Install with `pip install anthropic` or remove the key."
+            )
         self._ensure_registry()
         super().__init__(api_key, **kwargs)
         self._client: Optional[anthropic.Anthropic] = None
@@ -180,28 +215,13 @@ class AnthropicModelProvider(RegistryBackedProviderMixin, ModelProvider):
             or self.DEFAULT_MAX_TOKENS
         )
 
-        # Anthropic refuses non-streaming `messages.create()` when extended
-        # thinking is enabled with max_tokens above ~21,333 (the SDK
-        # explicitly errors `stream=True is required`). We don't yet have
-        # streaming support here, so cap below the threshold whenever
-        # thinking will be enabled. Audit-flagged blocker: registry max
-        # was 65k for opus / 32k for sonnet, both above the threshold.
-        ANTHROPIC_NONSTREAMING_THINKING_LIMIT = 21000
-        will_enable_thinking = (
-            capabilities.supports_extended_thinking
-            and thinking_mode in self.THINKING_BUDGETS
-            and model_cfg is not None
-            and model_cfg.max_thinking_tokens > 0
-        )
-        if will_enable_thinking and max_tokens > ANTHROPIC_NONSTREAMING_THINKING_LIMIT:
-            logger.debug(
-                "Capping max_tokens %d → %d for %s (non-streaming + thinking)",
-                max_tokens,
-                ANTHROPIC_NONSTREAMING_THINKING_LIMIT,
-                resolved,
-            )
-            max_tokens = ANTHROPIC_NONSTREAMING_THINKING_LIMIT
-
+        # We use ``client.messages.stream(...)`` for ALL Anthropic calls so
+        # the registry-advertised max_output_tokens (e.g. 65k for Opus, 32k
+        # for Sonnet) is actually usable. Non-streaming + extended thinking
+        # would otherwise error at ~21,333 with `stream=True is required`,
+        # silently capping output for any large codegen request. Streaming
+        # also lets us pump per-chunk progress events to the live viewer
+        # (see ``_attempt`` below).
         request_kwargs: dict[str, Any] = {
             "model": resolved,
             "max_tokens": int(max_tokens),
@@ -246,7 +266,21 @@ class AnthropicModelProvider(RegistryBackedProviderMixin, ModelProvider):
 
         def _attempt() -> ModelResponse:
             attempt_counter["value"] += 1
-            response = self.client.messages.create(**request_kwargs)
+            # Streaming path: accumulate text deltas and ask the SDK for the
+            # final assembled message (carries usage + stop_reason). Per-token
+            # deltas are emitted to the live viewer via emit_progress when a
+            # run_context is active — this is the streaming-v2 surface for
+            # direct-API providers that previously showed nothing mid-flight.
+            chunk_count = 0
+            with self.client.messages.stream(**request_kwargs) as stream:
+                for _ in stream.text_stream:
+                    chunk_count += 1
+                    if chunk_count % 16 == 0:
+                        _safe_emit_progress(
+                            f"anthropic/{resolved}: streaming… ({chunk_count} chunks)",
+                            event_type="text_chunk",
+                        )
+                response = stream.get_final_message()
             text = self._extract_text(response)
             usage = self._extract_usage(response)
             return ModelResponse(
@@ -259,6 +293,8 @@ class AnthropicModelProvider(RegistryBackedProviderMixin, ModelProvider):
                     "thinking_mode": effective_thinking,
                     "stop_reason": getattr(response, "stop_reason", None),
                     "anthropic_id": getattr(response, "id", None),
+                    "max_tokens_requested": int(max_tokens),
+                    "streamed": True,
                 },
             )
 

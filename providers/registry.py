@@ -430,11 +430,12 @@ class ModelProviderRegistry:
             logging.debug(f"No provider preference, using first available: {first_available_model}")
             return first_available_model
 
-        # Ultimate fallback if no providers have models. Pick a current
-        # flagship from the trimmed registry; the legacy 'gemini-2.5-flash'
-        # default no longer exists.
+        # Ultimate fallback if no providers have models. Pick the cheapest
+        # current SKU from the trimmed registry — failing closed to a
+        # flagship like 3.1-pro burns money on the unhappy path. The legacy
+        # 'gemini-2.5-flash' default no longer exists in the trimmed registry.
         logging.warning("No models available from any provider, using default fallback")
-        return "gemini-3.1-pro-preview"
+        return "gemini-3.1-flash-lite-preview"
 
     @classmethod
     def get_available_providers_with_keys(cls) -> list[ProviderType]:

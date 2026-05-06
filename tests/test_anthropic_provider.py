@@ -3,11 +3,11 @@
 Audit-flagged regressions tested here:
   - temperature MUST NOT be sent when extended thinking is enabled
     (Anthropic API rejects the combination).
-  - max_tokens above ~21,333 with thinking on triggers the SDK's
-    "stream=True required" error; we cap below that threshold.
   - thinking-budget clamp must satisfy `1024 <= budget < max_tokens`;
     when the constraint is unsatisfiable (max_tokens<=1024) thinking
     is disabled entirely.
+  - max_tokens passes through unchanged — the registry-advertised cap
+    (e.g. 65k Opus) is usable because the provider streams responses.
   - image data: URLs must NOT bypass validate_image()'s decoded bytes.
   - Lazy client construction is lock-protected so concurrent panel
     fan-out doesn't build duplicate Anthropic SDK clients.
@@ -45,19 +45,23 @@ class AnthropicRequestShapeTest(unittest.TestCase):
 
     def _capture_call(self, **gen_kwargs) -> dict:
         """Run generate_content with patched SDK; return the kwargs the
-        provider passed to messages.create()."""
+        provider passed to messages.stream()."""
         provider = self._provider()
         captured: dict = {}
 
-        def fake_create(**kwargs):
+        def fake_stream(**kwargs):
             captured.update(kwargs)
-            return self._fake_response()
+            ctx = MagicMock()
+            ctx.__enter__ = MagicMock(return_value=ctx)
+            ctx.__exit__ = MagicMock(return_value=False)
+            ctx.text_stream = iter(["ok"])
+            ctx.get_final_message = MagicMock(return_value=self._fake_response())
+            return ctx
 
         with patch.object(provider, "_client", None):
-            # Force lazy property to construct a mock client.
             with patch("providers.anthropic.anthropic.Anthropic") as mock_ctor:
                 mock_client = MagicMock()
-                mock_client.messages.create.side_effect = fake_create
+                mock_client.messages.stream.side_effect = fake_stream
                 mock_ctor.return_value = mock_client
                 provider.generate_content(prompt="hi", model_name="opus", **gen_kwargs)
         return captured
@@ -77,34 +81,45 @@ class AnthropicRequestShapeTest(unittest.TestCase):
         """When thinking_mode resolves to disabled (low/no-budget model
         or max_tokens guard), temperature comes through normally."""
         # haiku has supports_extended_thinking=false in the registry
+        captured = self._capture_call_for_model(
+            "haiku", temperature=0.5, thinking_mode="medium"
+        )
+        self.assertNotIn("thinking", captured)
+        self.assertEqual(captured.get("temperature"), 0.5)
+
+    def _capture_call_for_model(self, model_name: str, **gen_kwargs) -> dict:
         provider = self._provider()
         captured: dict = {}
 
-        def fake_create(**kw):
+        def fake_stream(**kw):
             captured.update(kw)
-            return self._fake_response()
+            ctx = MagicMock()
+            ctx.__enter__ = MagicMock(return_value=ctx)
+            ctx.__exit__ = MagicMock(return_value=False)
+            ctx.text_stream = iter(["ok"])
+            ctx.get_final_message = MagicMock(return_value=self._fake_response())
+            return ctx
 
         with patch.object(provider, "_client", None), patch(
             "providers.anthropic.anthropic.Anthropic"
         ) as mock_ctor:
             mock_client = MagicMock()
-            mock_client.messages.create.side_effect = fake_create
+            mock_client.messages.stream.side_effect = fake_stream
             mock_ctor.return_value = mock_client
-            provider.generate_content(
-                prompt="hi", model_name="haiku", temperature=0.5, thinking_mode="medium"
-            )
-        self.assertNotIn("thinking", captured)
-        self.assertEqual(captured.get("temperature"), 0.5)
+            provider.generate_content(prompt="hi", model_name=model_name, **gen_kwargs)
+        return captured
 
-    def test_max_tokens_capped_when_thinking_enabled(self):
-        """Audit-flagged blocker: registry max_output_tokens (32k/65k)
-        exceeds Anthropic's non-streaming threshold when thinking is on.
-        We cap at 21,000 to stay within bounds."""
+    def test_max_tokens_passes_through_with_streaming(self):
+        """The registry advertises 65k for opus / 32k for sonnet. Previously
+        non-streaming + thinking forced a 21k cap, silently truncating large
+        codegen output. With messages.stream() the cap is gone — verify the
+        registry's full max_output_tokens reaches the SDK unchanged."""
         kwargs = self._capture_call(thinking_mode="medium")
-        self.assertLessEqual(
+        # opus registry max_output_tokens is 65536
+        self.assertGreater(
             kwargs["max_tokens"],
             21000,
-            "max_tokens must be capped below the streaming threshold when thinking is enabled",
+            "with streaming the 21k non-streaming cap should be lifted",
         )
 
     def test_thinking_disabled_when_max_tokens_too_small(self):

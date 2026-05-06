@@ -5,7 +5,7 @@
     "--permission-mode",
     "acceptEdits",
     "--model",
-    "opus"
+    "sonnet"
   ],
   "env": {},
   "roles": {
