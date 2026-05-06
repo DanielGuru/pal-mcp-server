@@ -9,10 +9,50 @@ common functionality for request validation, error handling, model management,
 conversation handling, file processing, and response formatting.
 """
 
+import contextvars
 import logging
 import os
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any, Optional
+
+
+# Tracks how deep we are in nested execute_tool dispatches.
+#   0 → no execute_tool active (e.g. test code calling tool.execute directly)
+#   1 → first dispatch (the MCP boundary call from handle_call_tool)
+#   2+ → internal nested dispatch (panel → chat, multiaudit → start_task → panel → chat, etc.)
+#
+# check_prompt_size only fires at depth ≤ 1: the MCP transport check makes
+# sense for prompts arriving from outside, but PAL-generated prompts (the
+# multiaudit diff package, the panel debate prompt with peer responses, the
+# clink OAuth fallback inlining files into prompt_text) are internal data
+# flow that has no transport concern. Counting nesting depth via a contextvar
+# is cleaner than a per-args flag because it propagates correctly through
+# asyncio.gather (panel fan-out) and through TaskManager-spawned background
+# tasks (start_task → run_in_background → execute_tool).
+_DISPATCH_DEPTH: contextvars.ContextVar[int] = contextvars.ContextVar(
+    "pal_dispatch_depth", default=0
+)
+
+
+def _enter_dispatch() -> contextvars.Token:
+    """Increment dispatch depth. Pair with _exit_dispatch in try/finally.
+    Called by server.execute_tool around every tool dispatch."""
+    return _DISPATCH_DEPTH.set(_DISPATCH_DEPTH.get() + 1)
+
+
+def _exit_dispatch(token: contextvars.Token) -> None:
+    """Restore the prior dispatch depth."""
+    try:
+        _DISPATCH_DEPTH.reset(token)
+    except (ValueError, LookupError):
+        pass
+
+
+def is_internal_dispatch() -> bool:
+    """True when the current call is nested inside another execute_tool —
+    i.e. PAL generated this prompt internally and the MCP transport size
+    check should be skipped."""
+    return _DISPATCH_DEPTH.get() > 1
 
 from mcp.types import TextContent
 
@@ -980,6 +1020,14 @@ class BaseTool(ABC):
         Returns:
             Optional[Dict[str, Any]]: Response asking for file handling if too large, None otherwise
         """
+        # Skip the transport check when we're nested inside another
+        # execute_tool dispatch — the prompt was generated internally
+        # (multiaudit's diff package, panel's debate prompt, clink's
+        # file-inlined fallback) and never crossed the MCP boundary as
+        # raw user input. Without this skip, internal pipelines that
+        # legitimately need long prompts would all get rejected.
+        if is_internal_dispatch():
+            return None
         if text and len(text) > MCP_PROMPT_SIZE_LIMIT:
             return {
                 "status": "resend_prompt",

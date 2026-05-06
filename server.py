@@ -953,8 +953,15 @@ async def execute_tool(name: str, arguments: dict[str, Any]) -> list[TextContent
     # from the contextvar so nested execute_tool calls (panel→clink→fallback)
     # form a tree without explicit threading. Best-effort: graph failures are
     # swallowed inside run_context, never break the actual tool call.
+    from tools.shared.base_tool import _enter_dispatch, _exit_dispatch
     from utils.execution_graph import get_graph, run_context
     from utils.host_session import capture_from_request_ctx, reset_host_session, set_host_session
+
+    # Track nesting depth so check_prompt_size can skip its MCP-transport
+    # check on internally-generated prompts (multiaudit's diff package,
+    # panel's debate-round prompts, clink's OAuth-fallback inlining files).
+    # Depth=1 is the MCP boundary call; >1 is internal nesting.
+    _dispatch_token = _enter_dispatch()
 
     # Make the MCP host session reachable to nested tools (e.g. panel's
     # 'host' agent that samples Claude Code via mcp/createMessage). This is
@@ -1024,6 +1031,7 @@ async def execute_tool(name: str, arguments: dict[str, Any]) -> list[TextContent
     finally:
         if _host_token is not None:
             reset_host_session(_host_token)
+        _exit_dispatch(_dispatch_token)
 
 
 def parse_model_option(model_string: str) -> tuple[str, Optional[str]]:

@@ -276,6 +276,61 @@ def test_oauth_failure_detected_for_codex_auth_lapse():
     assert CLinkTool._looks_like_oauth_failure(exc)
 
 
+def test_internal_dispatch_skips_prompt_size_check():
+    """Multiaudit + panel generate prompts way larger than MCP_PROMPT_SIZE_LIMIT
+    (a 60K diff package is normal for non-trivial PRs). The transport-boundary
+    check must NOT fire on those because they never crossed the MCP transport
+    as raw user input — they were assembled internally by PAL.
+
+    Regression: pre-fix, every panelist failed with 'resend_prompt' when
+    multiaudit shipped a real-world diff."""
+    from tools.shared.base_tool import (
+        _enter_dispatch, _exit_dispatch, is_internal_dispatch,
+    )
+
+    # At MCP boundary: depth = 1 → not internal → check fires
+    t1 = _enter_dispatch()
+    try:
+        assert is_internal_dispatch() is False
+        # Nested dispatch: depth = 2 → internal → check skipped
+        t2 = _enter_dispatch()
+        try:
+            assert is_internal_dispatch() is True
+            t3 = _enter_dispatch()
+            try:
+                assert is_internal_dispatch() is True  # still internal at deeper levels
+            finally:
+                _exit_dispatch(t3)
+            assert is_internal_dispatch() is True  # back to depth 2, still internal
+        finally:
+            _exit_dispatch(t2)
+        assert is_internal_dispatch() is False  # back to depth 1
+    finally:
+        _exit_dispatch(t1)
+    assert is_internal_dispatch() is False  # back to depth 0
+
+
+def test_check_prompt_size_skips_when_internal_dispatch():
+    """check_prompt_size returns None for oversized prompts when nested."""
+    from tools.shared.base_tool import _enter_dispatch, _exit_dispatch
+    from server import make_tool
+
+    huge = "X" * 200_000
+    chat = make_tool("chat")
+    # At depth=1 (boundary), check fires
+    t1 = _enter_dispatch()
+    try:
+        assert chat.check_prompt_size(huge) is not None  # rejected
+        # At depth=2 (internal), check skipped
+        t2 = _enter_dispatch()
+        try:
+            assert chat.check_prompt_size(huge) is None  # bypassed
+        finally:
+            _exit_dispatch(t2)
+    finally:
+        _exit_dispatch(t1)
+
+
 def test_timeout_does_not_trigger_fallback_by_default():
     """A 'timed out' clink failure must NOT auto-fallback unless the operator
     opts in via PAL_FALLBACK_ON_TIMEOUT — timeout could mean a legitimately
