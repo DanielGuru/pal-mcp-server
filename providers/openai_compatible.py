@@ -19,6 +19,24 @@ from .shared import (
 )
 
 
+def _safe_emit_progress(message: str, *, event_type: str = "text_chunk") -> None:
+    """Best-effort graph event so streaming chunks land in the live viewer.
+
+    The provider runs inside a worker thread; emit_progress is async and
+    not callable from here. We write directly to the execution graph
+    against the current run_id — the viewer reads from the graph anyway.
+    Outside an active run_context there's no consumer and we don't want a
+    streaming hot-path to fail because of telemetry."""
+    try:
+        from utils.execution_graph import current_run_id, get_graph
+        run_id = current_run_id()
+        graph = get_graph()
+        if run_id is not None and graph is not None:
+            graph.add_event(run_id, event_type=event_type, message=message, progress=0.0)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 class OpenAICompatibleProvider(ModelProvider):
     """Shared implementation for OpenAI API lookalikes.
 
@@ -593,12 +611,23 @@ class OpenAICompatibleProvider(ModelProvider):
         # providers/base.py docstring on _PROVIDER_EXECUTOR for the rationale.
         from providers.base import get_default_api_timeout
 
+        # Streaming v2: opt-in via PAL_OPENAI_STREAM=1. When enabled, per-chunk
+        # deltas flow into the live viewer via emit_progress and large
+        # responses don't stall on a single .create() round-trip. Default OFF
+        # because the integration cassettes lock the request body hash to
+        # the non-streaming shape — flip the env var on in your ~/.claude.json
+        # to use it; cassettes can be re-recorded separately.
+        _stream_enabled = (get_env("PAL_OPENAI_STREAM", "") or "").strip().lower() in (
+            "1", "true", "yes", "on",
+        )
         completion_params = {
             "model": resolved_model,
             "messages": messages,
-            "stream": False,
+            "stream": _stream_enabled,
             "timeout": get_default_api_timeout(),
         }
+        if _stream_enabled:
+            completion_params["stream_options"] = {"include_usage": True}
 
         # Use the effective temperature we calculated earlier
         supports_sampling = effective_temperature is not None
@@ -618,6 +647,13 @@ class OpenAICompatibleProvider(ModelProvider):
                 # Reasoning models (those that don't support temperature) also don't support these parameters
                 if not supports_sampling and key in ["top_p", "frequency_penalty", "presence_penalty", "stream"]:
                     continue  # Skip unsupported parameters for reasoning models
+                # Honour an explicit caller-supplied stream=False (e.g. tests
+                # that mock create() rather than the streaming iterator) so
+                # downstream consumers can opt out of streaming v2 if needed.
+                if key == "stream" and value is False:
+                    completion_params["stream"] = False
+                    completion_params.pop("stream_options", None)
+                    continue
                 completion_params[key] = value
 
         # Check if this model needs the Responses API endpoint
@@ -651,9 +687,64 @@ class OpenAICompatibleProvider(ModelProvider):
             attempt_counter["value"] += 1
             response = self.client.chat.completions.create(**completion_params)
 
+            # Branch: streaming (the new default) returns an iterator of
+            # ChatCompletionChunk; non-streaming (caller passed stream=False)
+            # returns a single ChatCompletion. Tests still mock the
+            # non-streaming path, so we keep the legacy branch live.
+            if completion_params.get("stream"):
+                content_parts: list[str] = []
+                finish_reason = None
+                response_id = ""
+                response_model = resolved_model
+                created = 0
+                usage_chunk = None
+                chunk_count = 0
+                for chunk in response:
+                    chunk_count += 1
+                    if not getattr(chunk, "id", None) and not response_id:
+                        pass  # some providers fill id only on first chunk
+                    response_id = response_id or getattr(chunk, "id", "") or ""
+                    response_model = getattr(chunk, "model", None) or response_model
+                    created = getattr(chunk, "created", 0) or created
+                    choices = getattr(chunk, "choices", None) or []
+                    if choices:
+                        delta = getattr(choices[0], "delta", None)
+                        if delta is not None:
+                            piece = getattr(delta, "content", None)
+                            if piece:
+                                content_parts.append(piece)
+                                if chunk_count % 16 == 0:
+                                    _safe_emit_progress(
+                                        f"{self.FRIENDLY_NAME.lower()}/{resolved_model}: "
+                                        f"streaming… ({chunk_count} chunks)",
+                                        event_type="text_chunk",
+                                    )
+                        fr = getattr(choices[0], "finish_reason", None)
+                        if fr:
+                            finish_reason = fr
+                    # Final usage chunk (stream_options.include_usage=True)
+                    if getattr(chunk, "usage", None) is not None:
+                        usage_chunk = chunk
+                content = "".join(content_parts)
+                usage = self._extract_usage(usage_chunk) if usage_chunk is not None else None
+                return ModelResponse(
+                    content=content,
+                    usage=usage,
+                    model_name=resolved_model,
+                    friendly_name=self.FRIENDLY_NAME,
+                    provider=self.get_provider_type(),
+                    metadata={
+                        "finish_reason": finish_reason,
+                        "model": response_model,
+                        "id": response_id,
+                        "created": created,
+                        "streamed": True,
+                    },
+                )
+
+            # Legacy non-streaming branch (kept for tests + explicit opt-out).
             content = response.choices[0].message.content
             usage = self._extract_usage(response)
-
             return ModelResponse(
                 content=content,
                 usage=usage,

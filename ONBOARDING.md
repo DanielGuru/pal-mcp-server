@@ -91,6 +91,7 @@ will be skipped at startup.
 | `DISABLED_TOOLS` | _unset_ | Comma-separated tool names to disable (e.g. `consensus,thinkdeep`). |
 | `PAL_TASK_WAIT_CAP_S` | `30` | Hard cap on `task_result(wait_seconds=…)`. Don't raise unless you know why — it keeps the conversation channel responsive. |
 | `PAL_CLAUDE_OAUTH_FALLBACK_MODEL` | `claude-sonnet-4-6` | When the `claude` OAuth CLI 401s / quotas out, the API fallback uses this model. Set to `claude-opus-4-7` if you'd rather pay for opus. |
+| `PAL_OPENAI_STREAM` | _unset_ | Opt-in `stream=True` for direct OpenAI / xAI calls (gpt-5.x, grok-4.3). Per-chunk deltas land in the live viewer instead of one silent round-trip. Default off because the integration cassette tests are recorded against the non-streaming shape. Anthropic streams unconditionally. |
 | `PAL_GRAPH_DB` | `<cwd>/.pal/execution_graph.db` | Per-repo SQLite store. Set to an absolute path to share across repos; `""` to disable. |
 | `PAL_WEB_PORT` | `8765` | Viewer port. Walks +20 if taken. |
 | `PAL_WEB_HOST` | `127.0.0.1` | Local-only by default. `0.0.0.0` exposes the viewer (no auth — opt in deliberately). |

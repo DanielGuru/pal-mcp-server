@@ -634,6 +634,62 @@ def test_provider_executor_shutdown_resets_global(monkeypatch):
     assert base._PROVIDER_EXECUTOR is None
 
 
+def test_openai_streaming_v2_opt_in_via_env(monkeypatch):
+    """PAL_OPENAI_STREAM=1 must flip the openai-compatible provider into
+    streaming mode (stream=True + stream_options.include_usage). Default
+    OFF keeps the request body hash-stable for cassette-replay tests."""
+    from unittest.mock import MagicMock, patch
+
+    from providers.openai import OpenAIModelProvider
+
+    captured: dict = {}
+
+    def fake_create(**kwargs):
+        captured.clear()
+        captured.update(kwargs)
+        if kwargs.get("stream"):
+            # Streaming branch: return an iterable of chunks. The provider
+            # walks .choices[0].delta.content and the trailing usage block.
+            chunk = MagicMock()
+            chunk.id = "id"
+            chunk.model = "gpt-5"
+            chunk.created = 0
+            choice = MagicMock()
+            choice.delta = MagicMock(content="ok")
+            choice.finish_reason = "stop"
+            chunk.choices = [choice]
+            chunk.usage = None
+            usage_chunk = MagicMock()
+            usage_chunk.id = "id"
+            usage_chunk.model = "gpt-5"
+            usage_chunk.created = 0
+            usage_chunk.choices = []
+            usage_chunk.usage = MagicMock(prompt_tokens=1, completion_tokens=1, total_tokens=2)
+            return iter([chunk, usage_chunk])
+        # Non-streaming branch (legacy / cassette-replay shape).
+        resp = MagicMock()
+        resp.choices = [MagicMock(message=MagicMock(content="ok"), finish_reason="stop")]
+        resp.id = "id"
+        resp.model = "gpt-5"
+        resp.created = 0
+        resp.usage = MagicMock(prompt_tokens=1, completion_tokens=1, total_tokens=2)
+        return resp
+
+    monkeypatch.setenv("PAL_OPENAI_STREAM", "1")
+    provider = OpenAIModelProvider("test-key")
+    with patch.object(type(provider), "client", new_callable=lambda: property(lambda _: MagicMock(chat=MagicMock(completions=MagicMock(create=fake_create))))):
+        provider.generate_content(prompt="hi", model_name="gpt-5")
+    assert captured.get("stream") is True
+    assert captured.get("stream_options") == {"include_usage": True}
+
+    captured.clear()
+    monkeypatch.setenv("PAL_OPENAI_STREAM", "0")
+    with patch.object(type(provider), "client", new_callable=lambda: property(lambda _: MagicMock(chat=MagicMock(completions=MagicMock(create=fake_create))))):
+        provider.generate_content(prompt="hi", model_name="gpt-5")
+    assert captured.get("stream") is False
+    assert "stream_options" not in captured
+
+
 def test_agenerate_content_is_an_awaitable_method():
     """Locking the API: every provider must expose async agenerate_content."""
     from providers.openai import OpenAIModelProvider
