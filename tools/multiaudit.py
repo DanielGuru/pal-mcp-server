@@ -46,24 +46,22 @@ from tools.shared.base_tool import BaseTool
 logger = logging.getLogger(__name__)
 
 
-# Default 5-way debate covering the four current frontier model families
+# Default 4-way debate covering the four current frontier model families
 # at zero / minimal cost:
-#   - host    : MCP-sampling back to the connected client (Claude Code).
-#               Currently a no-op because Claude Code does not advertise
-#               the sampling capability (it gracefully fails); kept in
-#               the list so it lights up automatically once the host gains
-#               sampling support.
 #   - codex   : OpenAI flagship via clink OAuth (free).
 #   - gemini  : Google flagship via clink OAuth (free, falls back to paid
 #               on quota).
 #   - claude  : Anthropic Opus via clink OAuth (free with the user's
-#               Claude subscription). This is the in-family voice in the
-#               panel — gets us a Claude model arguing alongside the
-#               others without going through MCP sampling. Even if `host`
-#               is unavailable, `claude` ensures the debate has Anthropic
-#               representation.
+#               Claude subscription).
 #   - grok-4.3: xAI flagship via paid API (no OAuth path on xAI).
-DEFAULT_PANELISTS = ["host", "codex", "gemini", "claude", "grok-4.3"]
+#
+# 'host' is intentionally NOT in the defaults: Claude Code (the typical
+# host) does not advertise the MCP sampling capability today, so 'host'
+# always fails immediately. Including it in the defaults polluted every
+# multiaudit with a "host failed" row. Operators who run PAL under a
+# host that DOES support sampling (or want to invite the host explicitly)
+# can pass panelists=["host", "codex", ...] manually.
+DEFAULT_PANELISTS = ["codex", "gemini", "claude", "grok-4.3"]
 DEFAULT_JUDGE = "codex"
 DEFAULT_DEBATE_ROUNDS = 1
 DEFAULT_PANELIST_TIMEOUT_S = 300

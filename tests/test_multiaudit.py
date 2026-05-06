@@ -272,7 +272,12 @@ def test_default_panelist_set_includes_host(tmp_path, monkeypatch):
 
     asyncio.run(go())
     panelists = captured["arguments"]["arguments"]["panelists"]
-    assert "host" in panelists, f"expected 'host' as default panelist; got {panelists}"
+    # 'host' is no longer a default panelist — it always fails on Claude
+    # Code (no sampling) and polluted every audit with a "host failed" row.
+    # Operators can opt back in by passing panelists=[...] explicitly.
+    assert "host" not in panelists, (
+        f"'host' should NOT be in default panelists (always-fails on Claude Code); got {panelists}"
+    )
     # Panel must include all four current frontier families by default —
     # codex (OpenAI), gemini (Google), claude (Anthropic), grok-4.3 (xAI).
     # Anything missing means the audit only hears from a subset of vendors.

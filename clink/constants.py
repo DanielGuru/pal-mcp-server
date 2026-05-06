@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -54,6 +55,13 @@ INTERNAL_DEFAULTS: dict[str, CLIInternalDefaults] = {
         runner="claude",
         # When the user's Claude CLI subscription hits its quota, fall
         # back to the paid Anthropic API. Requires ANTHROPIC_API_KEY.
-        oauth_fallback_model="claude-opus-4-7",
+        # Defaults to Sonnet (not Opus) so an unattended quota crossover
+        # doesn't silently start spending at flagship rates — the panel
+        # explicitly flagged Opus-as-default as a financial-DoS path. Set
+        # PAL_CLAUDE_OAUTH_FALLBACK_MODEL to override (e.g. "opus" if the
+        # operator has explicitly opted into paid-Opus fallback).
+        oauth_fallback_model=os.environ.get(
+            "PAL_CLAUDE_OAUTH_FALLBACK_MODEL", "claude-sonnet-4-6"
+        ),
     ),
 }

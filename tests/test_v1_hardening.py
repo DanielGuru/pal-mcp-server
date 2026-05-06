@@ -416,7 +416,10 @@ def test_oauth_fallback_models_wired_for_each_cli():
     expected = {
         "gemini": "gemini-3.1-pro-preview",
         "codex": "gpt-5.5",
-        "claude": "claude-opus-4-7",  # Anthropic provider wired (this fork)
+        # Sonnet, not Opus — flagship-as-default OAuth fallback was a
+        # financial-DoS path. Operators can override with
+        # PAL_CLAUDE_OAUTH_FALLBACK_MODEL=opus.
+        "claude": "claude-sonnet-4-6",
     }
     for cli_name, want in expected.items():
         if cli_name in r.list_clients():

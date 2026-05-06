@@ -1688,13 +1688,17 @@ async def main():
 
     # Prepare dynamic instructions for the MCP client based on model mode
     cost_routing = (
-        " Cost routing: when the user asks for codex, gemini, or claude (without naming a specific paid "
-        "model), prefer the `clink` tool — it spawns the local CLI which uses OAuth (free via "
+        " Cost routing: when the user asks for codex, gemini, or claude WITHOUT naming a specific paid "
+        "model, prefer the `clink` tool — it spawns the local CLI which uses OAuth (free via "
         "ChatGPT / Google / Claude subscription). The `chat`/`consensus`/`codereview`/`debug`/`thinkdeep` "
-        "tools call provider APIs directly (paid per token). For grok or when the user names a specific "
-        "paid model string (gpt-5.5, gemini-3.1-pro-preview, grok-4.3, etc.), `chat`/`consensus` is the "
-        "only path. Note: there is no Anthropic provider in the chat path — Claude consultation always "
-        "routes through `clink` (subprocess to the user's logged-in Claude CLI)."
+        "tools call provider APIs directly (paid per token). When the user names a specific paid model "
+        "string (gpt-5.5, gemini-3.1-pro-preview, grok-4.3, claude-opus-4-7, claude-sonnet-4-6, etc.), or "
+        "asks for grok in any form, `chat`/`consensus` is the path. Anthropic is now a first-party "
+        "provider — `chat(model='claude-opus-4-7')` and friends work directly via the Anthropic API "
+        "when ANTHROPIC_API_KEY is set, identical in shape to OpenAI/Gemini/xAI. Cost-aware default: "
+        "for free Claude consultation prefer `clink claude` (subscription); for direct API access on a "
+        "specific Claude SKU use `chat`. The clink claude agent transparently falls back to the "
+        "Anthropic API on quota."
     )
     async_routing = (
         " Async routing: any tool call that is likely to take >15s (whole-repo audits, multi-model "

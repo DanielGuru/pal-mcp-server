@@ -89,6 +89,9 @@ _INDEX_HTML = r"""<!doctype html>
   header .dot.live { color: var(--accent); animation: pulse 1.6s ease-in-out infinite; }
   @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }
   header .conn { color: var(--muted); font-size: 11px; }
+  header .port { color: var(--muted); font-size: 11px; padding: 2px 8px;
+                 background: #1f2027; border-radius: 3px; font-family: ui-monospace, monospace; }
+  header .port.orphan { color: var(--bad); background: #2a1a1f; }
   header .controls { margin-left: auto; display: flex; gap: 8px; align-items: center; }
   header select { background: #14151a; border: 1px solid var(--border); color: var(--fg);
                   padding: 5px 8px; border-radius: 4px; font-size: 12px; min-width: 280px; }
@@ -157,6 +160,7 @@ _INDEX_HTML = r"""<!doctype html>
   <h1>PAL · panel transcript</h1>
   <span class="dot" id="dot">●</span>
   <span class="conn" id="conn">connecting…</span>
+  <span class="port" id="port" title="Viewer port. Each PAL process owns its own; orphan instances may listen on prior ports.">port —</span>
   <div class="controls">
     <select id="run-picker"><option>loading runs…</option></select>
     <button id="raw-toggle" title="Toggle raw tree view">raw</button>
@@ -187,6 +191,30 @@ async function fetchRuns() {
   return body.runs || [];
 }
 
+// Show the port we're actually serving on. Each PAL process picks its own
+// (PAL_WEB_PORT walks +20 if taken), so users with multiple PAL sessions
+// may have several viewers running on different ports. When THIS viewer's
+// graph shows no recent activity, flag the port red so the user notices
+// they're probably on a stale tab from an older PAL session.
+function updatePortIndicator(runs) {
+  const portEl = $('#port');
+  if (!portEl) return;
+  const port = window.location.port || '?';
+  const recent = runs.find(r => {
+    const ts = r.completed_at || r.started_at || 0;
+    return ts && (Date.now() / 1000 - ts) < 600; // run in the last 10min
+  });
+  if (!recent) {
+    portEl.classList.add('orphan');
+    portEl.textContent = `port ${port} · stale?`;
+    portEl.title = `No runs in the last 10 minutes on this viewer. Check the PAL boot log for the active port — orphan viewers from previous sessions may still be listening on this one.`;
+  } else {
+    portEl.classList.remove('orphan');
+    portEl.textContent = `port ${port}`;
+    portEl.title = `Viewer port ${port} (PAL_WEB_PORT walks +20 if taken).`;
+  }
+}
+
 function statusBadge(status) {
   // Class names limited to a safe alphabet so a malicious status can't
   // escape the class attribute or inject a new one. Display text escaped
@@ -213,18 +241,43 @@ function fmtElapsed(start, end) {
 }
 
 // -- run picker -----------------------------------------------------------
+
+// Observation tools — these are introspection calls, not actual work, and
+// should never appear in the picker. The picker is for runs with substance:
+// panels, audits, debates, code reviews. A user polling task_status 30 times
+// should not produce 30 picker entries that drown out the actual debate.
+const OBSERVATION_TOOLS = new Set([
+  'task_status',
+  'task_result',
+  'cancel_task',
+  'list_runs',
+  'get_run',
+  'run_tree',
+  'web_url',
+  'version',
+  'listmodels',
+  'apilookup',
+]);
+
+function isInterestingRoot(r) {
+  // A "root" with no parent that's worth showing in the picker. Filters
+  // out fast observation tools and 0ms no-op completions that drown out
+  // real panel/audit runs.
+  if (r.parent_run_id) return false;
+  if (OBSERVATION_TOOLS.has(r.tool_name)) return false;
+  return true;
+}
+
 async function renderRunPicker() {
   try {
     const runs = await fetchRuns();
-    // Only ROOT runs (panel / multiaudit / start_task) — the children are
-    // panelist sub-runs which only matter inside the parent's transcript.
-    const roots = runs.filter(r => !r.parent_run_id);
+    const roots = runs.filter(isInterestingRoot);
     const hash = JSON.stringify(roots.map(r => [r.run_id, r.status, r.completed_at]));
     if (hash !== LAST_RUNS_HASH) {
       LAST_RUNS_HASH = hash;
       const picker = $('#run-picker');
       if (!roots.length) {
-        picker.innerHTML = '<option>no runs yet</option>';
+        picker.innerHTML = '<option>no panel runs yet — fire multiaudit or panel</option>';
       } else {
         picker.innerHTML = roots.map(r => {
           const live = r.status === 'running' ? ' · live' : '';
@@ -233,21 +286,29 @@ async function renderRunPicker() {
           return `<option value="${escapeAttr(r.run_id)}">${escapeHtml(label)} · ${escapeHtml(elapsed)}${live}</option>`;
         }).join('');
       }
-      // Auto-select most recent live run, else most recent run.
+      // Auto-select most recent live run, else most recent root. Crucially
+      // this only runs the FIRST time a root appears — once SELECTED is
+      // set we don't yank the user away from what they were reading.
       if (!SELECTED && roots.length) {
         const live = roots.find(r => r.status === 'running');
         SELECTED = (live || roots[0]).run_id;
         picker.value = SELECTED;
         renderConversation();
       } else if (SELECTED) {
-        picker.value = SELECTED;
+        // Keep the picker's selected option in sync. If the user's
+        // SELECTED run scrolled off the head of the list (limit=100),
+        // gracefully stop forcing it.
+        if (roots.find(r => r.run_id === SELECTED)) {
+          picker.value = SELECTED;
+        }
       }
     }
     const liveCount = runs.filter(r => r.status === 'running').length;
     $('#dot').classList.toggle('live', liveCount > 0);
     $('#conn').textContent = liveCount
       ? `${liveCount} live · ${new Date().toLocaleTimeString()}`
-      : `${runs.length} run${runs.length === 1 ? '' : 's'} · ${new Date().toLocaleTimeString()}`;
+      : `${roots.length} run${roots.length === 1 ? '' : 's'} · ${new Date().toLocaleTimeString()}`;
+    updatePortIndicator(runs);
   } catch (e) {
     $('#dot').classList.remove('live');
     $('#dot').style.color = '#f7768e';

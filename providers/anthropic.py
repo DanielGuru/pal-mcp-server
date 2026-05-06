@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import base64
 import logging
+import threading
 from typing import TYPE_CHECKING, Any, ClassVar, Optional
 
 if TYPE_CHECKING:
@@ -70,6 +71,11 @@ class AnthropicModelProvider(RegistryBackedProviderMixin, ModelProvider):
         self._ensure_registry()
         super().__init__(api_key, **kwargs)
         self._client: Optional[anthropic.Anthropic] = None
+        # Lock the lazy `client` init so concurrent panel fan-out doesn't
+        # construct duplicate Anthropic SDK clients (each opens its own
+        # HTTP connection pool). Same anti-pattern providers/base.py
+        # already fixes for the executor; audit-flagged here.
+        self._client_lock = threading.Lock()
         self._timeout_override = self._resolve_http_timeout()
         self._invalidate_capability_cache()
 
@@ -110,11 +116,16 @@ class AnthropicModelProvider(RegistryBackedProviderMixin, ModelProvider):
 
     @property
     def client(self) -> anthropic.Anthropic:
+        # Double-checked lock: the unlocked first read short-circuits the
+        # common (already-initialised) case; the lock guards the actual
+        # construction so concurrent first calls don't build duplicates.
         if self._client is None:
-            kwargs: dict[str, Any] = {"api_key": self.api_key}
-            if self._timeout_override is not None:
-                kwargs["timeout"] = self._timeout_override
-            self._client = anthropic.Anthropic(**kwargs)
+            with self._client_lock:
+                if self._client is None:
+                    kwargs: dict[str, Any] = {"api_key": self.api_key}
+                    if self._timeout_override is not None:
+                        kwargs["timeout"] = self._timeout_override
+                    self._client = anthropic.Anthropic(**kwargs)
         return self._client
 
     # ------------------------------------------------------------------
@@ -169,6 +180,28 @@ class AnthropicModelProvider(RegistryBackedProviderMixin, ModelProvider):
             or self.DEFAULT_MAX_TOKENS
         )
 
+        # Anthropic refuses non-streaming `messages.create()` when extended
+        # thinking is enabled with max_tokens above ~21,333 (the SDK
+        # explicitly errors `stream=True is required`). We don't yet have
+        # streaming support here, so cap below the threshold whenever
+        # thinking will be enabled. Audit-flagged blocker: registry max
+        # was 65k for opus / 32k for sonnet, both above the threshold.
+        ANTHROPIC_NONSTREAMING_THINKING_LIMIT = 21000
+        will_enable_thinking = (
+            capabilities.supports_extended_thinking
+            and thinking_mode in self.THINKING_BUDGETS
+            and model_cfg is not None
+            and model_cfg.max_thinking_tokens > 0
+        )
+        if will_enable_thinking and max_tokens > ANTHROPIC_NONSTREAMING_THINKING_LIMIT:
+            logger.debug(
+                "Capping max_tokens %d → %d for %s (non-streaming + thinking)",
+                max_tokens,
+                ANTHROPIC_NONSTREAMING_THINKING_LIMIT,
+                resolved,
+            )
+            max_tokens = ANTHROPIC_NONSTREAMING_THINKING_LIMIT
+
         request_kwargs: dict[str, Any] = {
             "model": resolved,
             "max_tokens": int(max_tokens),
@@ -176,25 +209,38 @@ class AnthropicModelProvider(RegistryBackedProviderMixin, ModelProvider):
         }
         if system_prompt:
             request_kwargs["system"] = system_prompt
-        # The API accepts temperature 0–1; we don't pass when the model
-        # forbids it (none currently in the trimmed Anthropic registry, but
-        # keep symmetric with other providers).
-        if capabilities.supports_temperature:
-            request_kwargs["temperature"] = temperature
 
-        # Thinking budget: only attach when the model supports extended
-        # thinking and the caller asked for a non-trivial mode.
-        effective_thinking = thinking_mode if capabilities.supports_extended_thinking else None
-        if (
+        # Decide whether to enable thinking BEFORE adding temperature. The
+        # Anthropic API rejects requests that combine `thinking` with a
+        # non-default `temperature`, so we attach exactly one of them.
+        # Audit-flagged: the previous code attached both unconditionally
+        # and every thinking-eligible call returned 400.
+        # Anthropic also requires `budget_tokens < max_tokens`, with
+        # min budget = 1024. If max_tokens <= 1024 the constraint is
+        # mathematically unsatisfiable, so we disable thinking instead
+        # of forcing an invalid clamp.
+        ANTHROPIC_MIN_THINKING_BUDGET = 1024
+        thinking_enabled = (
             capabilities.supports_extended_thinking
             and thinking_mode in self.THINKING_BUDGETS
             and model_cfg is not None
             and model_cfg.max_thinking_tokens > 0
-        ):
-            budget = int(model_cfg.max_thinking_tokens * self.THINKING_BUDGETS[thinking_mode])
-            # Anthropic requires the budget below max_tokens; clamp.
-            budget = max(1024, min(budget, request_kwargs["max_tokens"] - 1))
+            and request_kwargs["max_tokens"] > ANTHROPIC_MIN_THINKING_BUDGET
+        )
+        effective_thinking = thinking_mode if thinking_enabled else None
+
+        if thinking_enabled:
+            raw_budget = int(model_cfg.max_thinking_tokens * self.THINKING_BUDGETS[thinking_mode])
+            # Order matters: floor at MIN, then ceiling at max_tokens-1.
+            # Previous code used max(MIN, min(budget, max_tokens-1)) which
+            # silently violates `budget < max_tokens` when max_tokens<=MIN
+            # — fixed by gating thinking_enabled on max_tokens above.
+            budget = min(max(ANTHROPIC_MIN_THINKING_BUDGET, raw_budget), request_kwargs["max_tokens"] - 1)
             request_kwargs["thinking"] = {"type": "enabled", "budget_tokens": budget}
+        elif capabilities.supports_temperature:
+            # Only pass temperature when thinking is OFF — Anthropic
+            # forbids the combination.
+            request_kwargs["temperature"] = temperature
 
         attempt_counter = {"value": 0}
 
@@ -297,17 +343,15 @@ class AnthropicModelProvider(RegistryBackedProviderMixin, ModelProvider):
     def _image_block(image_path: str) -> Optional[dict[str, Any]]:
         """Encode an image into Anthropic's content block shape.
 
-        Anthropic uses base64 data with an explicit media_type. Both file
-        paths and data: URLs are accepted; bad images are skipped with a
-        warning so a single bad image doesn't blow up the whole call.
+        Anthropic uses base64 data with an explicit media_type. We always
+        re-encode the validated bytes from `validate_image()` rather than
+        passing through the caller's data: URL — audit-flagged: the
+        previous code used a raw `split(",", 1)` on the data URL which
+        bypassed validation (size cap, mime sniffing, payload integrity).
         """
         try:
             image_bytes, mime_type = validate_image(image_path)
-            if image_path.startswith("data:"):
-                _, data = image_path.split(",", 1)
-                b64 = data
-            else:
-                b64 = base64.b64encode(image_bytes).decode("ascii")
+            b64 = base64.b64encode(image_bytes).decode("ascii")
             return {
                 "type": "image",
                 "source": {"type": "base64", "media_type": mime_type, "data": b64},

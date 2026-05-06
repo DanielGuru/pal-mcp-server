@@ -159,14 +159,16 @@ class OpenAIModelProvider(RegistryBackedProviderMixin, OpenAICompatibleProvider)
             return allowed_models[0]
 
         else:  # BALANCED or default
-            # All entries below must be canonical names in
-            # conf/openai_models.json. gpt-5.4-mini / gpt-5-mini were
-            # upstream leftovers; the trimmed registry doesn't ship them.
+            # gpt-5.4 leads, NOT gpt-5.5. The flagship is the most expensive
+            # SKU; BALANCED should optimise cost-per-quality, not raw
+            # capability. Audit-flagged: previous order led with gpt-5.5
+            # which the file's own FAST_RESPONSE comment identifies as
+            # "the slowest and most expensive SKU".
             preferred = find_first(
                 [
-                    "gpt-5.5",
                     "gpt-5.4",
                     "gpt-5.1-codex",
+                    "gpt-5.5",
                     "gpt-5",
                     "gpt-5-codex",
                 ]
