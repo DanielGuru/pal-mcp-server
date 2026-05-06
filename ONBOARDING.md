@@ -92,6 +92,7 @@ will be skipped at startup.
 | `PAL_TASK_WAIT_CAP_S` | `30` | Hard cap on `task_result(wait_seconds=…)`. Don't raise unless you know why — it keeps the conversation channel responsive. |
 | `PAL_CLAUDE_OAUTH_FALLBACK_MODEL` | `claude-sonnet-4-6` | When the `claude` OAuth CLI 401s / quotas out, the API fallback uses this model. Set to `claude-opus-4-7` if you'd rather pay for opus. |
 | `PAL_OPENAI_STREAM` | `1` | Stream OpenAI / xAI responses (gpt-5.x, grok-4.3) so per-chunk deltas land in the live viewer as they're written. Set to `0` to opt out (only useful for the cassette-replay integration tests). Anthropic streams unconditionally. |
+| `PAL_GEMINI_STREAM` | `1` | Stream Gemini responses (gemini-3.x) the same way. Set to `0` to opt out. |
 | `PAL_GRAPH_DB` | `<cwd>/.pal/execution_graph.db` | Per-repo SQLite store. Set to an absolute path to share across repos; `""` to disable. |
 | `PAL_WEB_PORT` | `8765` | Viewer port. Walks +20 if taken. |
 | `PAL_WEB_HOST` | `127.0.0.1` | Local-only by default. `0.0.0.0` exposes the viewer (no auth — opt in deliberately). |

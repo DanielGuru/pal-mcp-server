@@ -49,6 +49,9 @@ def dummy_azure_client(monkeypatch):
             return _DummyResponse()
 
     monkeypatch.delenv("AZURE_OPENAI_ALLOWED_MODELS", raising=False)
+    # The dummy client returns a non-iterable response; opt out of streaming
+    # v2 so the legacy .create() shape is used.
+    monkeypatch.setenv("PAL_OPENAI_STREAM", "0")
     monkeypatch.setattr("providers.azure_openai.AzureOpenAI", _DummyAzureClient)
     return captured
 

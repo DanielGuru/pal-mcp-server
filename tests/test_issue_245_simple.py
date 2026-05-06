@@ -9,8 +9,12 @@ from unittest.mock import Mock, patch
 from providers.openai import OpenAIModelProvider
 
 
-def test_issue_245_custom_openai_temperature_ignored():
+def test_issue_245_custom_openai_temperature_ignored(monkeypatch):
     """Test that reproduces and validates the fix for issue #245."""
+
+    # The mock returns a single non-iterable response; opt out of streaming
+    # v2 so the legacy .create() shape is used.
+    monkeypatch.setenv("PAL_OPENAI_STREAM", "0")
 
     with patch("utils.model_restrictions.get_restriction_service") as mock_restriction:
         with patch("providers.openai_compatible.OpenAI") as mock_openai:

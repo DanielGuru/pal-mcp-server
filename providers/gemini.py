@@ -21,6 +21,24 @@ from .shared import ModelCapabilities, ModelResponse, ProviderType
 logger = logging.getLogger(__name__)
 
 
+def _safe_emit_progress(message: str, *, event_type: str = "text_chunk") -> None:
+    """Best-effort graph event so streaming chunks land in the live viewer.
+
+    The provider runs inside a worker thread; emit_progress is async and
+    not callable from here. We write directly to the execution graph
+    against the current run_id — the viewer reads from the graph anyway.
+    Outside an active run_context there's no consumer and we don't want a
+    streaming hot-path to fail because of telemetry."""
+    try:
+        from utils.execution_graph import current_run_id, get_graph
+        run_id = current_run_id()
+        graph = get_graph()
+        if run_id is not None and graph is not None:
+            graph.add_event(run_id, event_type=event_type, message=message, progress=0.0)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 class GeminiModelProvider(RegistryBackedProviderMixin, ModelProvider):
     """First-party Gemini integration built on the official Google SDK.
 
@@ -206,13 +224,46 @@ class GeminiModelProvider(RegistryBackedProviderMixin, ModelProvider):
         retry_delays = [1, 3, 5, 8]  # Progressive delays: 1s, 3s, 5s, 8s
         attempt_counter = {"value": 0}
 
+        # Streaming v2: ON by default so per-chunk text lands in the live
+        # viewer. Opt out with PAL_GEMINI_STREAM=0. The google-genai SDK
+        # exposes generate_content_stream() returning an iterable of
+        # partial responses; the LAST partial carries the final usage,
+        # candidates, prompt_feedback. Earlier partials carry incremental
+        # .text deltas (already concatenated for us by the SDK).
+        _stream_enabled = (get_env("PAL_GEMINI_STREAM", "1") or "1").strip().lower() not in (
+            "0", "false", "no", "off",
+        )
+
         def _attempt() -> ModelResponse:
             attempt_counter["value"] += 1
-            response = self.client.models.generate_content(
-                model=resolved_model_name,
-                contents=contents,
-                config=generation_config,
-            )
+            if _stream_enabled:
+                content_parts: list[str] = []
+                response = None
+                chunk_count = 0
+                for partial in self.client.models.generate_content_stream(
+                    model=resolved_model_name,
+                    contents=contents,
+                    config=generation_config,
+                ):
+                    chunk_count += 1
+                    response = partial  # last one wins for finish_reason / usage
+                    piece = getattr(partial, "text", None)
+                    if piece:
+                        content_parts.append(piece)
+                        if chunk_count % 16 == 0:
+                            _safe_emit_progress(
+                                f"gemini/{resolved_model_name}: streaming… "
+                                f"({chunk_count} chunks)",
+                                event_type="text_chunk",
+                            )
+                streamed_text = "".join(content_parts)
+            else:
+                response = self.client.models.generate_content(
+                    model=resolved_model_name,
+                    contents=contents,
+                    config=generation_config,
+                )
+                streamed_text = None  # use response.text below
 
             usage = self._extract_usage(response)
 
@@ -282,7 +333,7 @@ class GeminiModelProvider(RegistryBackedProviderMixin, ModelProvider):
                     pass
 
             return ModelResponse(
-                content=response.text,
+                content=streamed_text if streamed_text is not None else response.text,
                 usage=usage,
                 model_name=resolved_model_name,
                 friendly_name="Gemini",
@@ -292,6 +343,7 @@ class GeminiModelProvider(RegistryBackedProviderMixin, ModelProvider):
                     "finish_reason": finish_reason_str,
                     "is_blocked_by_safety": is_blocked_by_safety,
                     "safety_feedback": safety_feedback_details,
+                    "streamed": _stream_enabled,
                 },
             )
 
