@@ -591,11 +591,33 @@ class BaseTool(ABC):
         return "Policy allows only → " + "; ".join(notes)
 
     def _build_model_unavailable_message(self, model_name: str) -> str:
-        """Compose a consistent error message for unavailable model scenarios."""
+        """Compose a consistent error message for unavailable model scenarios.
+
+        When NO providers are configured (the soft-landing case where the
+        server started with zero keys), the message also points the user
+        at the OAuth-CLI path so a fresh install can recover without
+        having to read the README.
+        """
 
         tool_category = self.get_model_category()
         suggested_model = ModelProviderRegistry.get_preferred_fallback_model(tool_category)
         available_models_text = self._format_available_models_list()
+
+        # If the registry is empty, the user is in the soft-landing state.
+        # Point them at the recovery paths they have left.
+        from providers.registry import ModelProviderRegistry as _Reg
+
+        instance = _Reg()
+        if not getattr(instance, "_providers", {}):
+            return (
+                f"Model '{model_name}' is not available — no API providers are configured. "
+                f"To unlock this tool, set one of: ANTHROPIC_API_KEY, OPENAI_API_KEY, "
+                f"GEMINI_API_KEY, XAI_API_KEY, OPENROUTER_API_KEY, or CUSTOM_API_URL "
+                f"(local Ollama/vLLM). For free OAuth instead, install + login to one of "
+                f"the clink CLIs (codex / gemini / claude) and use the `clink` or `panel` "
+                f"tool. See ONBOARDING.md for the full setup. After updating env vars or "
+                f"installing CLIs, restart your MCP client."
+            )
 
         return (
             f"Model '{model_name}' is not available with current API keys. "

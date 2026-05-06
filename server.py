@@ -432,6 +432,40 @@ PROMPT_TEMPLATES = {
 }
 
 
+# Canonical install locations for the OAuth CLIs (codex / gemini / claude).
+# Probed in addition to ``shutil.which`` because GUI MCP clients (Claude Code,
+# Cursor, the Codex CLI MCP launcher) often spawn the server with a
+# sanitised PATH that excludes ``~/.local/bin``, ``/opt/homebrew/bin``,
+# or ``/usr/local/bin`` — exactly where these CLIs typically install via
+# brew / npm / pipx. So ``shutil.which("codex")`` returns None even though
+# codex is right there. ``_cli_present`` falls back to direct-existence
+# checks at these locations (mirrors what ``run-server.sh`` does for ``uvx``).
+# Module-level so tests can monkeypatch.
+_CLI_FALLBACK_PATHS: tuple[str, ...] = (
+    os.path.expanduser("~/.local/bin"),
+    "/opt/homebrew/bin",
+    "/usr/local/bin",
+)
+
+
+def _cli_present(cli_name: str) -> bool:
+    """Return True if the named OAuth CLI is callable from this server.
+
+    Probes ``shutil.which`` first; falls back to direct-existence checks
+    at ``_CLI_FALLBACK_PATHS`` so MCP launch contexts with sanitised PATH
+    don't produce false negatives.
+    """
+
+    import shutil
+
+    if shutil.which(cli_name) is not None:
+        return True
+    for prefix in _CLI_FALLBACK_PATHS:
+        if os.path.exists(os.path.join(prefix, cli_name)):
+            return True
+    return False
+
+
 def configure_providers():
     """
     Configure and validate AI providers based on available API keys.
@@ -609,14 +643,11 @@ def configure_providers():
     if registered_providers:
         logger.info(f"Registered providers: {', '.join(registered_providers)}")
 
-    # Detect OAuth CLIs on PATH. Their presence means clink/panel/multiaudit
-    # work even with zero API keys (the user has subscription auth elsewhere).
-    # Does not probe auth state — the user might have the binary but not be
-    # logged in. clink itself surfaces a clear error in that case.
-    import shutil as _shutil
+    # Detect OAuth CLIs. Their presence means clink/panel/multiaudit work
+    # even with zero API keys (the user has subscription auth elsewhere).
+    # ``_cli_present`` is module-level so tests can monkeypatch it.
     oauth_clis_available = [
-        cli for cli in ("codex", "gemini", "claude")
-        if _shutil.which(cli) is not None
+        cli for cli in ("codex", "gemini", "claude") if _cli_present(cli)
     ]
 
     # Soft-landing: if no API keys AND no OAuth CLIs on PATH, the server
@@ -629,15 +660,21 @@ def configure_providers():
         logger.warning(
             "No API providers and no OAuth CLIs detected. "
             "The server will start with limited functionality:\n"
-            "  · always available: listmodels, version, web_url, list_runs/get_run/run_tree\n"
-            "  · need at least one OAuth CLI (codex / gemini / claude): clink, panel, multiaudit\n"
-            "  · need at least one API provider: chat, consensus, codereview, debug, thinkdeep, ...\n"
+            "  · always available: listmodels, version, web_url, "
+            "list_runs/get_run/run_tree (when PANEL_GRAPH_DB is not disabled)\n"
+            "  · need at least one provider (API key OR OAuth CLI): "
+            "clink, panel\n"
+            "  · need an API key for the default Grok-4.3 panelist: "
+            "multiaudit (or override via panelists=[...])\n"
+            "  · need an API provider for direct calls: chat, consensus, "
+            "codereview, debug, thinkdeep, ...\n"
             "To unlock more, set one of these and restart your MCP client:\n"
             "  · ANTHROPIC_API_KEY  (paid; https://console.anthropic.com/settings/keys)\n"
             "  · OPENAI_API_KEY     (paid; https://platform.openai.com/api-keys)\n"
             "  · GEMINI_API_KEY     (paid; https://aistudio.google.com/app/apikey)\n"
             "  · XAI_API_KEY        (paid; https://console.x.ai/)\n"
             "  · OPENROUTER_API_KEY (paid; https://openrouter.ai/)\n"
+            "  · DIAL_API_KEY       (paid; https://dialx.ai/)\n"
             "  · CUSTOM_API_URL     (free; e.g. http://localhost:11434/v1 for Ollama)\n"
             "Or install + login to one of the OAuth CLIs (free):\n"
             "  · `codex login`        (uses ChatGPT subscription)\n"
@@ -648,8 +685,10 @@ def configure_providers():
     elif not valid_providers and oauth_clis_available:
         logger.info(
             "No API providers configured, but OAuth CLIs are available: %s. "
-            "clink / panel / multiaudit will work via OAuth (free); chat / "
-            "consensus / codereview / debug / etc. need an API provider — set "
+            "clink and panel work via OAuth for any of these CLIs; default "
+            "multiaudit panelists include grok-4.3 which needs an API key "
+            "(override via panelists=[...] for an OAuth-only audit). chat / "
+            "consensus / codereview / etc. need an API provider — set "
             "ANTHROPIC_API_KEY (or OPENAI/GEMINI/XAI) and restart to unlock them.",
             ", ".join(oauth_clis_available),
         )

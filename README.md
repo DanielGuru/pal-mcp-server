@@ -418,11 +418,11 @@ These variables are not shown by default but control important behaviour:
 | `PANEL_CLINK_RAW_OUTPUT_CAP` | *(internal)* | Max chars of raw CLI output returned to MCP client |
 | `PANEL_DEBUG_CLI_OUTPUT` | unset | **⚠️ Disables all secret redaction in clink output. Never set in shared environments.** |
 | `PANEL_OAUTH_FIRST` | `1` | Try free OAuth (codex/gemini/claude CLI) before paid API for every direct-provider tool, when the model has a CLI route. Set `0` to disable and bill every call against the paid API. |
-
-> **Soft landing on zero providers.** If you start the server with no API keys AND no OAuth CLIs installed, it no longer crashes — it starts with limited functionality (`listmodels`, `version`, `web_url`, graph queries always work) and logs a friendly summary telling you what to set to unlock more. Set any one of `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `GEMINI_API_KEY` / `XAI_API_KEY` / `OPENROUTER_API_KEY` / `CUSTOM_API_URL`, or install + login to one of the OAuth CLIs (`codex login` / `gemini` first run / `claude /login`), then restart your MCP client.
 | `PANEL_MCP_FORCE_ENV_OVERRIDE` | unset | When `true`, **`.env` file values override process env vars** (useful when an MCP client passes stale/cached keys). Default behavior — process env wins. |
 | `CONVERSATION_TIMEOUT_HOURS` | `3` | Hours before a conversation thread expires |
 | `MAX_CONVERSATION_TURNS` | `50` | Max turns per thread (50 turns = 25 exchanges) |
+
+**Soft landing on zero providers.** If you start the server with no API keys AND no OAuth CLIs installed, it no longer crashes — it starts with limited functionality (`listmodels`, `version`, `web_url`, and graph queries when `PANEL_GRAPH_DB` is not disabled) and logs a friendly summary telling you what to set to unlock more. Set any one of `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `GEMINI_API_KEY` / `XAI_API_KEY` / `OPENROUTER_API_KEY` / `DIAL_API_KEY` / `CUSTOM_API_URL`, or install + login to one of the OAuth CLIs (`codex login` / `gemini` first run / `claude /login`), then restart your MCP client.
 
 </details>
 

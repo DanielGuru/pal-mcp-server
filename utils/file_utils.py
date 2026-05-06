@@ -835,19 +835,38 @@ def check_total_file_size(files: list[str], model_name: str) -> Optional[dict]:
 
     from utils.model_context import ModelContext
 
-    model_context = ModelContext(model_name)
-    token_allocation = model_context.calculate_token_allocation()
-
-    # Dynamic threshold based on model capacity
-    context_window = token_allocation.total_tokens
-    if context_window >= 1_000_000:  # Gemini-class models
-        threshold_percent = 0.8  # Can be more generous
-    elif context_window >= 500_000:  # Mid-range models
-        threshold_percent = 0.7  # Moderate
-    else:  # OpenAI-class models (200K)
-        threshold_percent = 0.6  # Conservative
-
-    max_file_tokens = int(token_allocation.file_tokens * threshold_percent)
+    # Soft-landing path: with zero API providers configured, ``ModelContext``
+    # can't resolve a real provider and raises. We still want clink/panel
+    # workflows that pass ``absolute_file_paths`` to work via OAuth — the
+    # CLI does its own context-window enforcement downstream. Fall back to
+    # a conservative static cap so the size gate still rejects truly huge
+    # bundles, just without per-model precision.
+    try:
+        model_context = ModelContext(model_name)
+        token_allocation = model_context.calculate_token_allocation()
+        context_window = token_allocation.total_tokens
+        if context_window >= 1_000_000:  # Gemini-class models
+            threshold_percent = 0.8  # Can be more generous
+        elif context_window >= 500_000:  # Mid-range models
+            threshold_percent = 0.7  # Moderate
+        else:  # OpenAI-class models (200K)
+            threshold_percent = 0.6  # Conservative
+        max_file_tokens = int(token_allocation.file_tokens * threshold_percent)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "check_total_file_size: no provider for model '%s' (%s); "
+            "using conservative static cap. Set an API key for "
+            "accurate per-model file sizing.",
+            model_name,
+            exc,
+        )
+        # Conservative cap: ~150K tokens (≈ 600KB of source code at
+        # 4 chars/token). Comfortably below an OpenAI-class context
+        # window with room for system prompt + response. Keeps the
+        # gate honest while letting OAuth-only installs work.
+        context_window = 200_000
+        threshold_percent = 0.6
+        max_file_tokens = 120_000
 
     # Use centralized file size checking (threshold already applied to max_file_tokens)
     within_limit, total_estimated_tokens, file_count = check_files_size_limit(files, max_file_tokens)
