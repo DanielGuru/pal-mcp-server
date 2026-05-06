@@ -15,12 +15,16 @@ This is a customized fork of `BeehiveInnovations/pal-mcp-server`. Upstream is st
 
 ## Project structure (one line)
 
-`server.py` (entry, TOOLS factory dict, `make_tool()`, **`execute_tool()` is the only dispatch path**) → `tools/` (23 MCP tools incl. tasks/panel) → `clink/` (subprocess CLI agents + parsers + OAuth-to-API fallback + redacted metadata) → `providers/` (direct API providers + async wrapper bounded by semaphore + ThreadPoolExecutor + per-call SDK timeout) → `conf/` (model + CLI configs).
+`server.py` (entry, TOOLS factory dict, `make_tool()`, **`execute_tool()` is the only dispatch path**) → `tools/` (28 MCP tools incl. tasks/panel/multiaudit/web_url/graph queries) → `clink/` (subprocess CLI agents + parsers + OAuth-to-API fallback + redacted metadata) → `providers/` (direct API providers + async wrapper bounded by semaphore + ThreadPoolExecutor + per-call SDK timeout) → `utils/` (execution_graph + web_viewer + host_session) → `conf/` (model + CLI configs).
 
 ## Style
 
-Python 3.9+, line length ~120, type hints required for new code, `from __future__ import annotations`, conventional commits, no comments restating the code.
+Python 3.10+, line length ~120, type hints required for new code, `from __future__ import annotations`, conventional commits, no comments restating the code.
+
+## Magic-phrase recognition
+
+When the user says "multiaudit" / "audit this" / "audit this PR" / "panel this branch" / "review with all" / similar — call the `multiaudit` MCP tool immediately. It reads the diff, fires a 4-way panel ([host, codex, gemini, grok-4.3]), and returns a task_id + the live web viewer URL. Hand the URL to the user, then poll for findings. See CLAUDE.md "Magic-phrase recognition" for the full list.
 
 ## What's open
 
-Durable task storage (SQLite-backed; `TaskManager._tasks` is currently in-memory), per-call cost meter, true streaming async path for direct-API providers (today they thread sync `.create()` calls), unit tests for the new surfaces (tasks/panel/describe_event/streaming/OAuth fallback). See `CLAUDE.md` for full rationale.
+Multi-step panel workflow (Claude can intervene between debate rounds), TaskManager → execution-graph migration (restart-safe in-flight tasks), conversation memory persistence (continuation_id survives restart), SSE for the web viewer (currently 2s polling), true `stream=True` async path for direct-API providers, per-CLI custom OAuth patterns, cancel-aware semaphore release, dynamic-flow tests. See `CLAUDE.md` for full rationale.

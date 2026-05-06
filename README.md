@@ -259,18 +259,59 @@ PAL activates any provider that has credentials in your `.env`. Copy `.env.examp
 
 Each panelist gets the same prompt, responds independently, and (in debate mode) sees the other responses before giving a revised stance. The judge synthesises the final answer. Results are written to the SQLite execution graph so you can query them later with `get_run` / `run_tree`.
 
+**Special panelist `host`:** PAL routes the agent name `host` through the MCP `sampling/createMessage` primitive, asking the connected MCP client (Claude Code, etc.) to invoke its own LLM as a peer panelist. Means Claude Code can be a true participant in a debate of its own PR, not just the dispatcher. No paid API call — the host's tokens are the host's problem. Cost tier reports as `host_sampling`.
+
+---
+
+## 🚦 multiaudit — magic-phrase PR review
+
+Say one of these to Claude Code (or whatever MCP client you're driving) and PAL fires a 4-way audit panel against the current branch's diff:
+
+> "OK multiaudit it now"
+> "audit this PR"
+> "panel this branch"
+> "review with all models before I push"
+
+The `multiaudit` tool reads `git diff` (vs `main`, falling back to uncommitted/staged), packages it with recent commit messages for intent context, and dispatches a `start_task('panel', ...)` with `[host, codex, gemini, grok-4.3]`, 1 debate round, codex as judge. Returns the task_id + the live web viewer URL so the user can watch the debate unfold while Claude Code stays available to follow up.
+
+Default audit rubric (built into the prompt): **VERDICT / BUGS / DESIGN CONCERNS / SECURITY / MISSING TESTS / WHAT YOU'D ATTACK.** Diff truncated at 60KB with a clear marker so panelists know they're reasoning about a subset.
+
+```
+multiaudit                                  # default panelists, 1 debate round
+multiaudit extra_context="focus on the    # narrow the audit
+            new auth flow specifically"
+multiaudit panelists=["host","gpt-5.5"]   # override panelist set
+multiaudit base_branch="HEAD"             # audit only uncommitted changes
+multiaudit debate_rounds=2                # deeper pressure-testing
+```
+
 ---
 
 ## 🗄️ SQLite Execution Graph
 
-Every tool dispatch — including nested panel fanouts, clink subagents, and async tasks — is recorded in `~/.pal/execution_graph.db`. This gives you:
+Every tool dispatch — including nested panel fanouts, clink subagents, async tasks, and OAuth-to-API fallbacks — is recorded in `~/.pal/execution_graph.db`. This gives you:
 
 - **Restart-safe panels** — if PAL restarts mid-panel, prior results are still readable
-- **Cost attribution** — see exactly which sub-call drove token spend
+- **Cost attribution** — `run_tree` returns a cost-tier rollup (`oauth_free` / `api_paid` / `oauth_fallback_paid` / `host_sampling`) so you can see exactly which sub-call drove spend
 - **Audit trail** — replay prior runs, compare model behaviour over time
-- **Run lineage** — `run_tree` shows the full parent→child call graph
+- **Run lineage** — `run_tree` shows the full parent→child call graph including `fallback` edges
 
 Configure the DB path with `PAL_GRAPH_DB` (default: `~/.pal/execution_graph.db`). Set to empty string to disable.
+
+---
+
+## 🪟 Live Web Viewer
+
+PAL boots a tiny local HTTP server alongside the MCP stdio loop (default `http://127.0.0.1:8765/`) and pops a browser tab automatically. Single page renders the execution graph live: every panel run, every panelist sub-call, OAuth fallbacks shown as `fallback` edges, judge synthesis, per-leaf cost tier, full event timeline. Polls every 2s for the run list and 1.5s for the selected run-tree. No setup required — it just works on PAL launch.
+
+| Env var | Default | Effect |
+|---|---|---|
+| `PAL_WEB_PORT` | `8765` | Port to bind. Walks forward up to +20 if taken. |
+| `PAL_WEB_HOST` | `127.0.0.1` | Local-only by default. Set `0.0.0.0` to expose (you opt in). |
+| `PAL_WEB_AUTO_OPEN` | `1` | Auto-open browser tab on PAL boot. Set `0` to disable. |
+| `PAL_WEB_DISABLE` | unset | Set to skip the web server entirely. |
+
+The MCP tool `web_url` returns the live URL on demand so Claude Code can hand it to the user mid-conversation.
 
 ---
 
@@ -283,12 +324,14 @@ To optimize context window usage, only essential tools are enabled by default:
 
 **Enabled by default:**
 - `chat`, `thinkdeep`, `planner`, `consensus`, `panel` - Core collaboration tools
+- `multiaudit` - Magic-phrase PR audit (reads git diff, fans out to panel)
 - `codereview`, `precommit`, `debug` - Essential code quality tools
 - `apilookup` - Rapid API/SDK information lookup
 - `challenge` - Critical thinking utility
-- `clink` - CLI-to-CLI bridge
+- `clink` - CLI-to-CLI bridge with automatic OAuth-to-API fallback
 - `start_task`, `task_status`, `task_result`, `cancel_task` - Async task system
 - `list_runs`, `get_run`, `run_tree` - Execution graph queries
+- `web_url` - Return the live web viewer URL
 - `listmodels`, `version` - Always enabled, cannot be disabled
 
 **Disabled by default:**
