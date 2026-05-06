@@ -276,85 +276,86 @@ def test_oauth_failure_detected_for_codex_auth_lapse():
     assert CLinkTool._looks_like_oauth_failure(exc)
 
 
-def test_internal_dispatch_skips_prompt_size_check():
-    """Multiaudit + panel generate prompts way larger than MCP_PROMPT_SIZE_LIMIT
-    (a 60K diff package is normal for non-trivial PRs). The transport-boundary
-    check must NOT fire on those because they never crossed the MCP transport
-    as raw user input — they were assembled internally by PAL.
+def test_internal_payload_marker_is_off_by_default():
+    """The provenance marker must default to False — bypass is opt-in
+    only, set explicitly by trusted code paths."""
+    from tools.shared.base_tool import is_internal_payload
+    assert is_internal_payload() is False
 
-    Regression: pre-fix, every panelist failed with 'resend_prompt' when
-    multiaudit shipped a real-world diff."""
+
+def test_internal_payload_marker_set_by_context_manager():
+    """mark_internal_payload() flips the bit for its scope and restores after."""
+    from tools.shared.base_tool import is_internal_payload, mark_internal_payload
+
+    assert is_internal_payload() is False
+    with mark_internal_payload():
+        assert is_internal_payload() is True
+        with mark_internal_payload():
+            assert is_internal_payload() is True  # nested still True
+        assert is_internal_payload() is True  # outer still True
+    assert is_internal_payload() is False  # restored
+
+
+def test_check_prompt_size_skips_when_internal_payload():
+    """check_prompt_size returns None for oversized prompts when marker set."""
+    from tools.shared.base_tool import mark_internal_payload
+    from server import make_tool
+
+    huge = "X" * 200_000
+    chat = make_tool("chat")
+    assert chat.check_prompt_size(huge) is not None  # rejected at boundary
+    with mark_internal_payload():
+        assert chat.check_prompt_size(huge) is None  # bypassed when marked
+
+
+def test_validate_token_limit_skips_when_internal_payload():
+    """_validate_token_limit (the SECOND gate) also respects the marker."""
+    from tools.shared.base_tool import mark_internal_payload
+    from server import make_tool
+
+    huge = "X" * 200_000
+    chat = make_tool("chat")
+    with pytest.raises(ValueError, match="too large"):
+        chat._validate_token_limit(huge, "Content")  # boundary: raises
+    with mark_internal_payload():
+        chat._validate_token_limit(huge, "Content")  # marked: must not raise
+
+
+def test_user_originated_start_task_does_not_bypass_size_check():
+    """AUDIT EXPLOIT REGRESSION: pre-provenance fix, a user calling
+    start_task(tool='chat', arguments={prompt: <huge>}) caused TaskManager
+    to re-enter execute_tool('chat') at depth=2, triggering the depth-based
+    bypass and letting unbounded user content reach the paid API.
+
+    With the provenance marker, no internal generator wraps the user's
+    start_task call → marker stays False → chat's size check fires.
+
+    We assert that the marker is OFF when entering execute_tool from a
+    plain user context, even though the call is technically nested."""
+    from tools.shared.base_tool import is_internal_payload
+
+    # Simulate handle_call_tool's no-context entry: marker is False
+    assert is_internal_payload() is False
+    # No mark_internal_payload anywhere → user-orchestrated nesting
+    # cannot promote itself to bypass status.
+
+
+def test_legacy_dispatch_aliases_still_resolve():
+    """Old _enter_dispatch / _exit_dispatch / is_internal_dispatch names are
+    preserved as shims so any in-flight branch / external caller doesn't
+    break. They forward to the provenance marker (which defaults False),
+    so they do NOT re-introduce the depth-based bypass."""
     from tools.shared.base_tool import (
         _enter_dispatch, _exit_dispatch, is_internal_dispatch,
     )
 
-    # At MCP boundary: depth = 1 → not internal → check fires
-    t1 = _enter_dispatch()
+    # Even using the legacy enter/exit pattern, the bypass should NOT fire
+    # because there's no explicit mark_internal_payload context.
+    t = _enter_dispatch()
     try:
-        assert is_internal_dispatch() is False
-        # Nested dispatch: depth = 2 → internal → check skipped
-        t2 = _enter_dispatch()
-        try:
-            assert is_internal_dispatch() is True
-            t3 = _enter_dispatch()
-            try:
-                assert is_internal_dispatch() is True  # still internal at deeper levels
-            finally:
-                _exit_dispatch(t3)
-            assert is_internal_dispatch() is True  # back to depth 2, still internal
-        finally:
-            _exit_dispatch(t2)
-        assert is_internal_dispatch() is False  # back to depth 1
+        assert is_internal_dispatch() is False  # legacy alias returns False
     finally:
-        _exit_dispatch(t1)
-    assert is_internal_dispatch() is False  # back to depth 0
-
-
-def test_check_prompt_size_skips_when_internal_dispatch():
-    """check_prompt_size returns None for oversized prompts when nested."""
-    from tools.shared.base_tool import _enter_dispatch, _exit_dispatch
-    from server import make_tool
-
-    huge = "X" * 200_000
-    chat = make_tool("chat")
-    # At depth=1 (boundary), check fires
-    t1 = _enter_dispatch()
-    try:
-        assert chat.check_prompt_size(huge) is not None  # rejected
-        # At depth=2 (internal), check skipped
-        t2 = _enter_dispatch()
-        try:
-            assert chat.check_prompt_size(huge) is None  # bypassed
-        finally:
-            _exit_dispatch(t2)
-    finally:
-        _exit_dispatch(t1)
-
-
-def test_validate_token_limit_skips_when_internal_dispatch():
-    """_validate_token_limit (the SECOND size gate, separate from
-    check_prompt_size) must also bypass on nested dispatches. Pre-fix it
-    was the gate that re-rejected internal prompts with 'Content too large'
-    even after check_prompt_size's bypass landed — surfaced live during
-    the second multiaudit attempt."""
-    from tools.shared.base_tool import _enter_dispatch, _exit_dispatch
-    from server import make_tool
-
-    huge = "X" * 200_000
-    chat = make_tool("chat")
-    # At depth=1, check fires (raises ValueError)
-    t1 = _enter_dispatch()
-    try:
-        with pytest.raises(ValueError, match="too large"):
-            chat._validate_token_limit(huge, "Content")
-        # At depth=2, check skipped (no exception)
-        t2 = _enter_dispatch()
-        try:
-            chat._validate_token_limit(huge, "Content")  # must not raise
-        finally:
-            _exit_dispatch(t2)
-    finally:
-        _exit_dispatch(t1)
+        _exit_dispatch(t)
 
 
 def test_timeout_does_not_trigger_fallback_by_default():

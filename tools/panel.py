@@ -525,13 +525,18 @@ async def _run_debate_round(
             peers=peers,
         )
         await emit_progress(f"panel/round-{round_num}: dispatching {label}", progress=0.0)
-        return await _run_panelist(
-            panelist,
-            prompt=debate_prompt,
-            files=files,
-            images=images,
-            timeout=timeout,
-        )
+        # Mark internal: panel just BUILT this debate prompt from peer
+        # responses, so size-check gates should bypass on the inner
+        # chat/clink dispatch.
+        from tools.shared.base_tool import mark_internal_payload
+        with mark_internal_payload():
+            return await _run_panelist(
+                panelist,
+                prompt=debate_prompt,
+                files=files,
+                images=images,
+                timeout=timeout,
+            )
 
     tasks = [asyncio.create_task(_one(p), name=f"debate-r{round_num}:{p.get('label')}") for p in panelists]
     results: list[dict[str, Any]] = []
@@ -687,6 +692,21 @@ class PanelTool(BaseTool):
         prompt = arguments.get("prompt")
         if not isinstance(prompt, str) or not prompt.strip():
             return _err("'prompt' must be a non-empty string")
+
+        # Boundary size check on the user's prompt — bypassed when an
+        # internal generator (multiaudit) marked the context, fired
+        # otherwise. Audit panel finding: direct `panel(prompt=<huge>)`
+        # used to fan out to N panelists with no boundary check at all.
+        from tools.shared.base_tool import is_internal_payload
+        if not is_internal_payload():
+            from config import MCP_PROMPT_SIZE_LIMIT
+            if len(prompt) > MCP_PROMPT_SIZE_LIMIT:
+                return _err(
+                    f"panel 'prompt' too large: {len(prompt):,} characters "
+                    f"(limit {MCP_PROMPT_SIZE_LIMIT:,}). Save the long content to "
+                    "a file and pass via absolute_file_paths, or invoke panel "
+                    "from an internal tool that marks its payload as PAL-generated."
+                )
 
         raw_panelists = arguments.get("panelists")
         if not isinstance(raw_panelists, list) or not raw_panelists:
@@ -844,13 +864,17 @@ class PanelTool(BaseTool):
                     progress=float(len(panelists)),
                     total=float(len(panelists) + 1),
                 )
-                judge_outcome = await _run_panelist(
-                    judge_panelist,
-                    prompt=judge_prompt,
-                    files=[],  # judge sees the panelist outputs, not the original files
-                    images=[],
-                    timeout=timeout,
-                )
+                # Judge prompt is panel-built (synthesised from panelist
+                # outputs) — mark internal so size-check gates bypass.
+                from tools.shared.base_tool import mark_internal_payload
+                with mark_internal_payload():
+                    judge_outcome = await _run_panelist(
+                        judge_panelist,
+                        prompt=judge_prompt,
+                        files=[],  # judge sees the panelist outputs, not the original files
+                        images=[],
+                        timeout=timeout,
+                    )
                 judge_outcome["duration_s"] = round(time.monotonic() - judge_started, 2)
                 # Extract the leading <HEADLINE> the judge was asked to write.
                 if judge_outcome.get("ok"):

@@ -16,43 +16,94 @@ from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any, Optional
 
 
-# Tracks how deep we are in nested execute_tool dispatches.
-#   0 → no execute_tool active (e.g. test code calling tool.execute directly)
-#   1 → first dispatch (the MCP boundary call from handle_call_tool)
-#   2+ → internal nested dispatch (panel → chat, multiaudit → start_task → panel → chat, etc.)
+# PROVENANCE-BASED size-check bypass.
 #
-# check_prompt_size only fires at depth ≤ 1: the MCP transport check makes
-# sense for prompts arriving from outside, but PAL-generated prompts (the
-# multiaudit diff package, the panel debate prompt with peer responses, the
-# clink OAuth fallback inlining files into prompt_text) are internal data
-# flow that has no transport concern. Counting nesting depth via a contextvar
-# is cleaner than a per-args flag because it propagates correctly through
-# asyncio.gather (panel fan-out) and through TaskManager-spawned background
-# tasks (start_task → run_in_background → execute_tool).
-_DISPATCH_DEPTH: contextvars.ContextVar[int] = contextvars.ContextVar(
-    "pal_dispatch_depth", default=0
+# Original (broken) approach: count execute_tool nesting depth. Skip size
+# check at depth ≥ 2. This was exploitable: a user calling
+# `start_task(tool='chat', arguments={prompt: <huge>})` made
+# execute_tool('start_task') depth=1, then TaskManager._run re-entered
+# execute_tool('chat') at depth=2 → bypass kicked in → size check skipped
+# on user content. Audit panel found this as the v1.1 blocker.
+#
+# Correct approach: bypass requires PROVENANCE, not nesting. Only code paths
+# that build internal payloads from PAL-controlled sources (multiaudit's diff
+# package, panel's debate-round / judge prompts, clink's OAuth-fallback
+# prompt with files inlined) wrap their dispatch in mark_internal_payload().
+# The marker propagates via Python ContextVar inheritance:
+#   - across asyncio.gather (panel parallel fan-out)
+#   - across asyncio.create_task (TaskManager background spawning) because
+#     ContextVars are copied at task-creation time
+#
+# User-supplied args going through start_task / panel / chat see marker=False
+# (default) and the size check fires normally. There's no args-based path
+# to set the marker; it's a Python-side context manager, untouchable from
+# MCP input.
+_INTERNAL_PAYLOAD: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "pal_internal_payload", default=False
 )
 
 
+class mark_internal_payload:  # noqa: N801 (intentional lowercase — it's used as a context manager)
+    """Mark the current async context as carrying a PAL-generated payload.
+
+    Usage:
+        with mark_internal_payload():
+            await execute_tool("chat", {"prompt": pal_built_prompt, ...})
+
+    The mark survives async.gather, async.create_task spawning (TaskManager
+    propagation), and nested execute_tool calls — because Python ContextVars
+    are copied by value into each new task's context.
+    """
+
+    def __init__(self) -> None:
+        self._token: Optional[contextvars.Token] = None
+
+    def __enter__(self) -> "mark_internal_payload":
+        self._token = _INTERNAL_PAYLOAD.set(True)
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        if self._token is not None:
+            try:
+                _INTERNAL_PAYLOAD.reset(self._token)
+            except (ValueError, LookupError):
+                # Reset called from a different context (e.g. exception
+                # unwound across asyncio task boundary). The mark only
+                # affects in-flight nested dispatches anyway; outer context
+                # cleanup will drop it.
+                pass
+            self._token = None
+
+
+def is_internal_payload() -> bool:
+    """True when the current context was explicitly marked by trusted code
+    as carrying a PAL-generated payload (multiaudit, panel debate/judge,
+    clink OAuth fallback). Used by size-check gates to bypass the MCP
+    transport limit."""
+    return _INTERNAL_PAYLOAD.get()
+
+
+# ----- LEGACY SHIMS -----------------------------------------------------
+# Keep the old depth-based names as no-op-safe aliases so any in-flight
+# branch / merge / external caller doesn't break. Marked deprecated; new
+# code uses mark_internal_payload + is_internal_payload.
 def _enter_dispatch() -> contextvars.Token:
-    """Increment dispatch depth. Pair with _exit_dispatch in try/finally.
-    Called by server.execute_tool around every tool dispatch."""
-    return _DISPATCH_DEPTH.set(_DISPATCH_DEPTH.get() + 1)
+    """DEPRECATED: kept for backward compat. Use mark_internal_payload()."""
+    # Returns a sentinel token that _exit_dispatch knows to ignore.
+    return _INTERNAL_PAYLOAD.set(_INTERNAL_PAYLOAD.get())
 
 
 def _exit_dispatch(token: contextvars.Token) -> None:
-    """Restore the prior dispatch depth."""
+    """DEPRECATED: kept for backward compat. Use mark_internal_payload()."""
     try:
-        _DISPATCH_DEPTH.reset(token)
+        _INTERNAL_PAYLOAD.reset(token)
     except (ValueError, LookupError):
         pass
 
 
 def is_internal_dispatch() -> bool:
-    """True when the current call is nested inside another execute_tool —
-    i.e. PAL generated this prompt internally and the MCP transport size
-    check should be skipped."""
-    return _DISPATCH_DEPTH.get() > 1
+    """DEPRECATED: kept for backward compat. Use is_internal_payload()."""
+    return is_internal_payload()
 
 from mcp.types import TextContent
 

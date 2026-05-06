@@ -228,6 +228,7 @@ class MultiauditTool(BaseTool):
 
         # ------ dispatch the panel via start_task ------
         from server import execute_tool
+        from tools.shared.base_tool import mark_internal_payload
 
         panel_args = {
             "tool": "panel",
@@ -241,7 +242,13 @@ class MultiauditTool(BaseTool):
             },
         }
         try:
-            start_result = await execute_tool("start_task", panel_args)
+            # mark_internal_payload signals to size-check gates that this
+            # prompt is PAL-generated (the diff package + audit rubric we
+            # just built), not raw user input. ContextVar inheritance
+            # propagates the marker through start_task → TaskManager._run →
+            # panel → panelists, so all nested size checks bypass cleanly.
+            with mark_internal_payload():
+                start_result = await execute_tool("start_task", panel_args)
         except Exception as exc:  # noqa: BLE001
             return _err(f"start_task dispatch failed: {type(exc).__name__}: {exc}")
 

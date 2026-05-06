@@ -735,7 +735,13 @@ class CLinkTool(SimpleTool):
             "_graph_label": f"oauth-fallback:{client_config.name}",
         }
         try:
-            result = await execute_tool("chat", chat_args)
+            # The fallback prompt_text already has the user's files inlined
+            # (clink builds it that way). Mark internal so the chat tool's
+            # MCP-transport size check bypasses — the content is PAL-built,
+            # not raw user input crossing the boundary.
+            from tools.shared.base_tool import mark_internal_payload
+            with mark_internal_payload():
+                result = await execute_tool("chat", chat_args)
         except Exception as fallback_exc:  # noqa: BLE001
             logger.exception(
                 "clink %s OAuth fallback to %s also failed",
