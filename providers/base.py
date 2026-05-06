@@ -8,6 +8,7 @@ import os
 import threading
 import time
 from abc import ABC, abstractmethod
+import concurrent.futures
 from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, Any, Callable, Optional
 
@@ -343,10 +344,49 @@ class ModelProvider(ABC):
                 **kwargs,
             )
 
-        async with sem:
-            # Use the bounded executor instead of asyncio's default unbounded
-            # one, so a stuck thread can't grow the pool without limit.
-            return await loop.run_in_executor(executor, _call_in_context)
+        # Cancel-aware semaphore release. The naive `async with sem:` form
+        # releases the slot when the asyncio task is cancelled, but Python
+        # cannot cancel a running thread — the worker is still in the
+        # SDK's blocking .create()/.stream() call until PAL_API_TIMEOUT_S
+        # forces the SDK to bail. Result: 16 simultaneous cancellations
+        # would free 16 semaphore slots while leaving 16 threads occupied
+        # (default pool 32). New agenerate_content calls would acquire a
+        # slot and then BLOCK at executor.submit waiting for a thread —
+        # for up to 10 minutes — with no error visible to the caller.
+        #
+        # Fix: hold the semaphore until the WORKER THREAD finishes
+        # (success / exception / SDK-timeout), not until the asyncio
+        # task is cancelled. The semaphore now reflects real provider
+        # concurrency, never a phantom-released slot for a stuck thread.
+        await sem.acquire()
+        try:
+            cf_future = executor.submit(_call_in_context)
+        except BaseException:
+            sem.release()
+            raise
+
+        # Schedule the release for when the underlying concurrent.future
+        # actually resolves. ``call_soon_threadsafe`` is required because
+        # this callback fires on the worker thread, not the event loop.
+        def _release_when_thread_done(_cf: "concurrent.futures.Future") -> None:
+            loop.call_soon_threadsafe(sem.release)
+
+        cf_future.add_done_callback(_release_when_thread_done)
+
+        # Wrap so we can `await` and propagate cancellation cleanly. If
+        # the asyncio task is cancelled, the awaitable raises
+        # CancelledError, but the underlying thread keeps running until
+        # SDK timeout — the done-callback above releases the semaphore
+        # then, not now.
+        try:
+            return await asyncio.wrap_future(cf_future, loop=loop)
+        except asyncio.CancelledError:
+            logger.debug(
+                "agenerate_content cancelled mid-flight for %s/%s; semaphore "
+                "release deferred until worker thread finishes",
+                self.get_provider_type(), model_name,
+            )
+            raise
 
     def count_tokens(self, text: str, model_name: str) -> int:
         """Estimate token usage for a piece of text."""

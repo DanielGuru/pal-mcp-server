@@ -916,6 +916,88 @@ def test_multiaudit_panelists_configurable_via_env(monkeypatch):
     assert m.DEFAULT_PANELISTS == ["claude", "grok-4.3", "gemini"]
 
 
+def test_agenerate_content_holds_semaphore_until_thread_completes_on_cancel(monkeypatch):
+    """Cancel-aware semaphore release. The asyncio task may be cancelled
+    mid-flight, but the worker thread keeps running its blocking SDK
+    call until PAL_API_TIMEOUT_S. The semaphore must NOT be released the
+    instant cancellation happens — it has to wait for the thread to
+    actually finish, otherwise a flurry of cancellations exhausts the
+    thread pool while the semaphore reports plenty of capacity, blocking
+    new calls at executor.submit for up to 10 minutes with no error.
+
+    Round-3 panel-flagged top open-queue item; this test locks the fix in."""
+    import asyncio
+    import threading
+    import time
+
+    from providers.base import ModelProvider, _get_api_semaphore
+    import providers.base as base
+
+    # Use a 1-slot semaphore so we can prove with a single cancel that
+    # the slot is held until the thread completes. Reset the lazy
+    # singleton + force the cap via the env var the loader reads.
+    monkeypatch.setenv("PAL_MAX_CONCURRENT_API", "1")
+    monkeypatch.setattr(base, "_API_SEMAPHORE", None)
+
+    thread_done = threading.Event()
+    started = threading.Event()
+
+    class _SlowProvider(ModelProvider):
+        def get_provider_type(self): pass
+        def validate_model_name(self, *a, **kw): return True
+        def supports_thinking_mode(self, *a, **kw): return False
+        def list_models(self, *a, **kw): return []
+        def list_known_models(self, *a, **kw): return []
+        def get_capabilities(self, *a, **kw): return None
+        def get_preferred_model(self, *a, **kw): return None
+        def count_tokens(self, *a, **kw): return 1
+
+        def generate_content(self, *args, **kwargs):
+            started.set()
+            # Simulate a blocking SDK call that ignores asyncio cancel.
+            time.sleep(0.5)
+            thread_done.set()
+            from providers.shared import ModelResponse, ProviderType
+            return ModelResponse(
+                content="x", usage=None, model_name="m",
+                friendly_name="m", provider=ProviderType.OPENAI, metadata={},
+            )
+
+    async def go() -> tuple[bool, bool]:
+        provider = _SlowProvider("k")
+        task = asyncio.create_task(provider.agenerate_content("hi", "m"))
+        # Wait for the worker thread to actually start, then cancel.
+        for _ in range(50):
+            if started.is_set():
+                break
+            await asyncio.sleep(0.01)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+        sem = _get_api_semaphore()
+        # Immediately after cancellation, the slot must STILL be held
+        # because the thread is still running.
+        held_after_cancel = sem.locked()
+
+        # Wait for the worker thread to finish. The done-callback should
+        # then release the slot.
+        for _ in range(200):
+            if thread_done.is_set():
+                break
+            await asyncio.sleep(0.01)
+        # Give the call_soon_threadsafe release a chance to run.
+        await asyncio.sleep(0.05)
+        released_after_thread = not sem.locked()
+        return held_after_cancel, released_after_thread
+
+    held, released = asyncio.run(go())
+    assert held, "semaphore was released before worker thread finished — phantom slot bug"
+    assert released, "semaphore never released after worker thread finished"
+
+
 def test_agenerate_content_is_an_awaitable_method():
     """Locking the API: every provider must expose async agenerate_content."""
     from providers.openai import OpenAIModelProvider
