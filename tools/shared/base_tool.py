@@ -756,6 +756,16 @@ class BaseTool(ABC):
             logger.debug(f"{self.name} tool {content_type.lower()} validation skipped (no content)")
             return
 
+        # Skip when nested inside another execute_tool — the content was
+        # generated internally (multiaudit's diff package, panel's debate
+        # prompt with peer responses, clink's OAuth-fallback prompt with
+        # files inlined) and never crossed the MCP transport as raw user
+        # input. Same rationale as check_prompt_size; pre-fix this method
+        # was the second gate that still rejected internal prompts even
+        # after check_prompt_size was bypassed.
+        if is_internal_dispatch():
+            return
+
         char_count = len(content)
         if char_count > MCP_PROMPT_SIZE_LIMIT:
             token_estimate = estimate_tokens(content)

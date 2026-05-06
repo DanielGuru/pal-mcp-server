@@ -621,9 +621,19 @@ class BaseWorkflowMixin(ABC):
             request = self.get_workflow_request_model()(**arguments)
 
             # Validate step field size (basic validation for workflow instructions)
-            # If step is too large, user should use shorter instructions and put details in files
+            # If step is too large, user should use shorter instructions and put details in files.
+            # Skip on internal dispatches (panel debate-round prompts, multiaudit
+            # diff packages, etc.) — those are PAL-generated and never crossed
+            # the MCP transport as raw user input. Same rationale as
+            # check_prompt_size / _validate_token_limit in base_tool.py.
+            from tools.shared.base_tool import is_internal_dispatch
+
             step_content = request.step
-            if step_content and len(step_content) > MCP_PROMPT_SIZE_LIMIT:
+            if (
+                step_content
+                and len(step_content) > MCP_PROMPT_SIZE_LIMIT
+                and not is_internal_dispatch()
+            ):
                 from tools.models import ToolOutput
 
                 error_output = ToolOutput(

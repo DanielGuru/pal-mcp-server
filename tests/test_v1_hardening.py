@@ -331,6 +331,32 @@ def test_check_prompt_size_skips_when_internal_dispatch():
         _exit_dispatch(t1)
 
 
+def test_validate_token_limit_skips_when_internal_dispatch():
+    """_validate_token_limit (the SECOND size gate, separate from
+    check_prompt_size) must also bypass on nested dispatches. Pre-fix it
+    was the gate that re-rejected internal prompts with 'Content too large'
+    even after check_prompt_size's bypass landed — surfaced live during
+    the second multiaudit attempt."""
+    from tools.shared.base_tool import _enter_dispatch, _exit_dispatch
+    from server import make_tool
+
+    huge = "X" * 200_000
+    chat = make_tool("chat")
+    # At depth=1, check fires (raises ValueError)
+    t1 = _enter_dispatch()
+    try:
+        with pytest.raises(ValueError, match="too large"):
+            chat._validate_token_limit(huge, "Content")
+        # At depth=2, check skipped (no exception)
+        t2 = _enter_dispatch()
+        try:
+            chat._validate_token_limit(huge, "Content")  # must not raise
+        finally:
+            _exit_dispatch(t2)
+    finally:
+        _exit_dispatch(t1)
+
+
 def test_timeout_does_not_trigger_fallback_by_default():
     """A 'timed out' clink failure must NOT auto-fallback unless the operator
     opts in via PAL_FALLBACK_ON_TIMEOUT — timeout could mean a legitimately
