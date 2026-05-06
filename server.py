@@ -283,6 +283,7 @@ from tools.graph_query import (  # noqa: E402
     ListRunsTool,
     RunTreeTool,
 )
+from tools.web_url import WebUrlTool  # noqa: E402
 
 TOOLS: dict[str, type] = {
     "chat": ChatTool,
@@ -311,6 +312,7 @@ TOOLS: dict[str, type] = {
     "list_runs": ListRunsTool,
     "get_run": GetRunTool,
     "run_tree": RunTreeTool,
+    "web_url": WebUrlTool,
 }
 
 TOOLS = filter_disabled_tools(TOOLS)
@@ -1589,6 +1591,22 @@ async def main():
     """
     # Validate and configure providers based on available API keys
     configure_providers()
+
+    # Spin up the read-only web viewer in a daemon thread. Lets the operator
+    # watch panel runs unfold in a browser instead of polling task_status by
+    # hand. Best-effort — failures log and continue.
+    try:
+        from utils.web_viewer import start_web_viewer
+
+        web_url = start_web_viewer()
+        if web_url:
+            logger.info("Web viewer ready at %s", web_url)
+            try:
+                logging.getLogger("mcp_activity").info(f"WEB_VIEWER_URL: {web_url}")
+            except Exception:  # noqa: BLE001
+                pass
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Web viewer startup raised (%s); continuing without UI", exc)
 
     # Log startup message
     logger.info("PAL MCP Server starting up...")
