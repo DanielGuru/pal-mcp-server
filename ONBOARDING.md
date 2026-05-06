@@ -97,7 +97,8 @@ will be skipped at startup.
 | `PAL_MULTIAUDIT_PANELISTS` | `codex,gemini,claude,grok-4.3` | Comma-separated default panelist list. Per-call `panelists=` arg always wins. |
 | `PAL_GRAPH_DB` | `<cwd>/.pal/execution_graph.db` | Per-repo SQLite store. Set to an absolute path to share across repos; `""` to disable. |
 | `PAL_WEB_PORT` | `8765` | Viewer port. Walks +20 if taken. |
-| `PAL_WEB_HOST` | `127.0.0.1` | Local-only by default. `0.0.0.0` exposes the viewer (no auth — opt in deliberately). |
+| `PAL_WEB_HOST` | `127.0.0.1` | Local-only by default. The viewer has no auth, so non-localhost binds also require `PAL_WEB_ALLOW_REMOTE=1` to start. |
+| `PAL_WEB_ALLOW_REMOTE` | _unset_ | Opt-in gate — set to `1` to allow `PAL_WEB_HOST=0.0.0.0` (or any non-localhost bind) to start. Without it the viewer refuses to expose the unauthenticated execution graph. |
 | `PAL_WEB_AUTO_OPEN` | `1` | Auto-open the viewer in your browser on first PAL tool call. `0` disables. |
 | `PAL_WEB_DISABLE` | _unset_ | Skip the viewer entirely. |
 | `PAL_MAX_CONCURRENT_API` | `16` | Global cap on concurrent paid API calls. |

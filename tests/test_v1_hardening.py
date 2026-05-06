@@ -933,11 +933,13 @@ def test_agenerate_content_holds_semaphore_until_thread_completes_on_cancel(monk
     from providers.base import ModelProvider, _get_api_semaphore
     import providers.base as base
 
-    # Use a 1-slot semaphore so we can prove with a single cancel that
-    # the slot is held until the thread completes. Reset the lazy
-    # singleton + force the cap via the env var the loader reads.
+    # Use a 1-slot BoundedSemaphore so we can prove with a single cancel
+    # that the slot is held until the thread completes — AND so a
+    # double-release would raise ValueError (plain asyncio.Semaphore
+    # silently over-releases, hiding double-fire bugs in the done
+    # callback). Reset the lazy singleton + inject our test sem.
     monkeypatch.setenv("PAL_MAX_CONCURRENT_API", "1")
-    monkeypatch.setattr(base, "_API_SEMAPHORE", None)
+    monkeypatch.setattr(base, "_API_SEMAPHORE", asyncio.BoundedSemaphore(1))
 
     thread_done = threading.Event()
     started = threading.Event()
@@ -982,20 +984,98 @@ def test_agenerate_content_holds_semaphore_until_thread_completes_on_cancel(monk
         # because the thread is still running.
         held_after_cancel = sem.locked()
 
-        # Wait for the worker thread to finish. The done-callback should
-        # then release the slot.
+        # Wait for the worker thread to finish. The done-callback then
+        # schedules sem.release via call_soon_threadsafe; poll until the
+        # event loop drains that callback rather than relying on a fixed
+        # sleep — fixed sleeps flake under CI load (panel-flagged).
         for _ in range(200):
             if thread_done.is_set():
                 break
             await asyncio.sleep(0.01)
-        # Give the call_soon_threadsafe release a chance to run.
-        await asyncio.sleep(0.05)
+        for _ in range(200):  # 2s budget for the cross-thread release
+            if not sem.locked():
+                break
+            await asyncio.sleep(0.01)
         released_after_thread = not sem.locked()
         return held_after_cancel, released_after_thread
 
     held, released = asyncio.run(go())
     assert held, "semaphore was released before worker thread finished — phantom slot bug"
     assert released, "semaphore never released after worker thread finished"
+
+
+def test_agenerate_content_releases_semaphore_on_submit_failure(monkeypatch):
+    """If executor.submit raises (e.g. executor shutting down), the
+    semaphore must be released before the exception propagates.
+    Otherwise the slot leaks permanently. Panel-flagged gap."""
+    import asyncio
+
+    from providers.base import ModelProvider, _get_api_semaphore
+    import providers.base as base
+
+    monkeypatch.setenv("PAL_MAX_CONCURRENT_API", "1")
+    monkeypatch.setattr(base, "_API_SEMAPHORE", asyncio.BoundedSemaphore(1))
+
+    class _DummyExecutor:
+        def submit(self, fn, *a, **kw):
+            raise RuntimeError("executor shutdown")
+
+    monkeypatch.setattr(base, "_get_provider_executor", lambda: _DummyExecutor())
+
+    class _NoOpProvider(ModelProvider):
+        def get_provider_type(self): pass
+        def validate_model_name(self, *a, **kw): return True
+        def supports_thinking_mode(self, *a, **kw): return False
+        def list_models(self, *a, **kw): return []
+        def list_known_models(self, *a, **kw): return []
+        def get_capabilities(self, *a, **kw): return None
+        def get_preferred_model(self, *a, **kw): return None
+        def count_tokens(self, *a, **kw): return 1
+        def generate_content(self, *a, **kw):
+            raise AssertionError("must not be called when submit fails")
+
+    async def go() -> bool:
+        provider = _NoOpProvider("k")
+        try:
+            await provider.agenerate_content("hi", "m")
+        except RuntimeError as exc:
+            assert "executor shutdown" in str(exc)
+        else:
+            raise AssertionError("submit failure should propagate")
+        return not _get_api_semaphore().locked()
+
+    assert asyncio.run(go()), "semaphore leaked after submit-failure path"
+
+
+def test_web_viewer_refuses_non_localhost_bind_without_opt_in(monkeypatch):
+    """Non-localhost binds expose the unauthenticated execution graph
+    to anyone on the network. Refuse to start unless the operator has
+    consciously opted in via PAL_WEB_ALLOW_REMOTE=1."""
+    import importlib
+    import utils.web_viewer as wv
+
+    monkeypatch.setenv("PAL_WEB_HOST", "0.0.0.0")
+    monkeypatch.delenv("PAL_WEB_ALLOW_REMOTE", raising=False)
+    importlib.reload(wv)
+    assert wv.start_web_viewer() is None, (
+        "viewer must refuse 0.0.0.0 binds without PAL_WEB_ALLOW_REMOTE=1"
+    )
+
+
+def test_web_viewer_localhost_bind_starts_normally(monkeypatch):
+    """The default 127.0.0.1 bind has no opt-in needed — local-only is safe."""
+    import importlib
+    import utils.web_viewer as wv
+
+    monkeypatch.setenv("PAL_WEB_HOST", "127.0.0.1")
+    monkeypatch.setenv("PAL_WEB_AUTO_OPEN", "0")  # no browser pop in tests
+    monkeypatch.delenv("PAL_WEB_DISABLE", raising=False)
+    importlib.reload(wv)
+    url = wv.start_web_viewer()
+    try:
+        assert url is not None and url.startswith("http://127.0.0.1:")
+    finally:
+        wv.stop_web_viewer()
 
 
 def test_agenerate_content_is_an_awaitable_method():

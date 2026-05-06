@@ -40,6 +40,21 @@ logger = logging.getLogger(__name__)
 _DEFAULT_PORT = int(os.environ.get("PAL_WEB_PORT", "8765"))
 _BIND_HOST = os.environ.get("PAL_WEB_HOST", "127.0.0.1")  # local-only by default
 _DISABLED = bool(os.environ.get("PAL_WEB_DISABLE"))
+
+# Opt-in gate for non-localhost binds. The viewer has no auth — anyone
+# on the network with access to the bound interface can read every
+# prompt, response, diff, and file snippet from the execution graph.
+# That's safe by default (127.0.0.1 → only the local user) but the
+# operator MUST consciously opt in before exposing it. Anything that
+# isn't localhost requires PAL_WEB_ALLOW_REMOTE=1, otherwise we refuse
+# to start. This blocks accidental exposure (e.g. someone setting
+# PAL_WEB_HOST=0.0.0.0 because they're tunnelling and forgetting that
+# anyone on the LAN can hit it). Full token auth is on the open queue
+# for when someone actually needs remote.
+_LOCALHOST_BINDS = {"127.0.0.1", "::1", "localhost"}
+_ALLOW_REMOTE = (os.environ.get("PAL_WEB_ALLOW_REMOTE", "") or "").strip().lower() in (
+    "1", "true", "yes", "on",
+)
 # Default ON so the operator gets zero-effort visibility on every PAL launch.
 # Set PAL_WEB_AUTO_OPEN=0 (or any falsy value) if you don't want the browser
 # tab popped each time Claude Code restarts the MCP server.
@@ -542,15 +557,13 @@ function effectiveToolName(tree) {
 }
 
 let LAST_EVENT_COUNT = 0;
-let USER_SCROLLED_UP = false;
-window.addEventListener('scroll', () => {
-  // If the user scrolls more than 600px above the bottom, treat it as
-  // "they want to read history, don't yank them" and pause auto-scroll.
-  // Once they scroll back to within 200px of the bottom, resume.
-  const distFromBottom = document.body.scrollHeight - (window.innerHeight + window.scrollY);
-  if (distFromBottom > 600) USER_SCROLLED_UP = true;
-  else if (distFromBottom < 200) USER_SCROLLED_UP = false;
-});
+// "Sticky bottom" auto-scroll. We don't try to remember intent across
+// renders — we just check, AT RENDER TIME, whether the user is near the
+// bottom of the page. If yes, follow new content. If they've scrolled up
+// even a little, leave them alone — they're reading history. The
+// previous 600px/200px hysteresis flag fought the user when they
+// scrolled mid-stream.
+const STICKY_BOTTOM_PX = 100;
 
 async function renderConversation() {
   if (!SELECTED) {
@@ -594,18 +607,29 @@ async function renderConversation() {
       middle = `<div class="empty">no transcript events for this run<div class="hint">this run didn't go through panel — try multiaudit or panel directly</div></div>`;
     }
 
+    // Sample scroll position BEFORE replacing innerHTML — that's our
+    // signal for whether to follow new content. Replacing innerHTML can
+    // shift the document height, so we decide based on pre-render state.
+    const preDistFromBottom = (
+      document.body.scrollHeight - (window.innerHeight + window.scrollY)
+    );
+    const wasAtBottom = preDistFromBottom <= STICKY_BOTTOM_PX;
+    const preScrollY = window.scrollY;
+
     $('#content').innerHTML = summary + middle + renderRawTree(tree);
 
-    // Auto-scroll to keep the latest message in view as the conversation
-    // streams. We only suppress scrolling if the user has actively scrolled
-    // up (>600px from bottom). New events pull us back to the latest line.
     const newEventCount = events.length;
-    const hasNewContent = newEventCount > LAST_EVENT_COUNT;
     LAST_EVENT_COUNT = newEventCount;
-    if (!USER_SCROLLED_UP && (hasNewContent || effStatus === 'running')) {
-      // Use 'auto' (instant) for streaming feel — smooth scroll has too
-      // much lag when answers land back-to-back.
-      window.scrollTo({ top: document.body.scrollHeight, behavior: hasNewContent ? 'smooth' : 'auto' });
+    if (wasAtBottom) {
+      // User was at/near the bottom — follow the latest line.
+      window.scrollTo({ top: document.body.scrollHeight, behavior: 'auto' });
+    } else {
+      // User scrolled up to read history. Pin them in place. Browsers
+      // mostly preserve scrollY across innerHTML replacement when the
+      // upstream layout doesn't change drastically, but explicitly
+      // restoring guarantees no snap-back when streaming text grows the
+      // page below them.
+      window.scrollTo({ top: preScrollY, behavior: 'auto' });
     }
   } catch (e) {
     $('#content').innerHTML = '<div class="empty">error: ' + escapeHtml(e.message) + '</div>';
@@ -630,7 +654,6 @@ $('#run-picker').addEventListener('change', (e) => {
   SELECTED = e.target.value;
   MANUAL_PICK = true;
   LAST_EVENT_COUNT = 0;
-  USER_SCROLLED_UP = false;
   window.scrollTo({ top: 0 });
   renderConversation();
 });
@@ -814,6 +837,18 @@ def start_web_viewer() -> Optional[str]:
 
     if _DISABLED:
         logger.info("web viewer disabled (PAL_WEB_DISABLE)")
+        return None
+
+    # Opt-in gate for non-localhost binds. See _ALLOW_REMOTE comment up
+    # top: the viewer is unauthenticated, so we refuse to expose it
+    # beyond localhost without an explicit env opt-in.
+    if _BIND_HOST not in _LOCALHOST_BINDS and not _ALLOW_REMOTE:
+        logger.warning(
+            "Refusing to start web viewer on %s — non-localhost binds expose "
+            "the full execution graph (prompts, responses, diffs) without "
+            "auth. Set PAL_WEB_ALLOW_REMOTE=1 to override.",
+            _BIND_HOST,
+        )
         return None
 
     with _BOOT_LOCK:
