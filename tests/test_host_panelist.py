@@ -103,6 +103,49 @@ def test_host_panelist_rejects_empty_content(monkeypatch):
     assert "empty content" in out["error"]
 
 
+def test_host_panelist_handles_mixed_content_blocks(monkeypatch):
+    """MCP allows the host to return multiple content blocks (text + image
+    + audio). Pre-fix the panel handler stringified the list and produced
+    garbage. Now: extract .text from every text-shaped block, ignore the
+    rest, return the concatenated text."""
+    import utils.host_session as hs
+
+    class _TextBlock:
+        def __init__(self, t):
+            self.text = t
+            self.type = "text"
+
+    class _ImageBlock:
+        def __init__(self):
+            self.type = "image"
+            self.data = "base64..."  # no .text
+
+    class _Result:
+        def __init__(self):
+            self.content = [
+                _TextBlock("First the analysis."),
+                _ImageBlock(),  # ignored, not stringified into the response
+                _TextBlock("Then the conclusion."),
+            ]
+            self.model = "claude-stub"
+
+    class _Session:
+        async def create_message(self, **kwargs):
+            return _Result()
+
+        def check_client_capability(self, cap):
+            return True
+
+    monkeypatch.setattr(hs, "get_host_session", lambda: _Session())
+    out = _run("host")
+    assert out["ok"] is True
+    assert "First the analysis." in out["response"]
+    assert "Then the conclusion." in out["response"]
+    # The image block did not leak its repr into the response
+    assert "ImageBlock" not in out["response"]
+    assert "base64" not in out["response"]
+
+
 def test_panel_routing_recognises_host_name():
     """is_host_agent / is_clink_agent must classify 'host' correctly."""
     from tools.panel import _is_clink_agent, _is_host_agent

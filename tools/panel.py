@@ -238,9 +238,20 @@ async def _run_host_panelist(
     # content is a single block; if it's text, take .text — otherwise stringify.
     # We check whether `.text` exists (could be empty string) before falling
     # back to str(); empty .text means the host genuinely returned nothing.
+    # MCP allows the host to return either a single content block OR a list
+    # of mixed content blocks (text + image + audio). We handle both:
+    # extract text from every text-shaped block, concatenate, ignore the rest.
     content = getattr(result, "content", None)
     if content is None:
         response_text = ""
+    elif isinstance(content, list):
+        # Mixed-content response: pull .text from each text block.
+        text_chunks: list[str] = []
+        for block in content:
+            block_text = getattr(block, "text", None)
+            if block_text:
+                text_chunks.append(block_text)
+        response_text = "\n".join(text_chunks)
     elif hasattr(content, "text"):
         response_text = content.text or ""
     else:

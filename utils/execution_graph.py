@@ -204,6 +204,11 @@ class ExecutionGraph:
         )
         self._conn.execute("PRAGMA journal_mode = WAL")
         self._conn.execute("PRAGMA synchronous = NORMAL")
+        # busy_timeout: when two PAL instances launched from the same repo
+        # contend on a write, wait up to 5s for the lock instead of failing
+        # immediately and dropping the best-effort graph write. Audit panel
+        # finding (Codex narrowed Gemini's 'no WAL' to this real risk).
+        self._conn.execute("PRAGMA busy_timeout = 5000")
         self._conn.executescript(SCHEMA_SQL)
         logger.info("ExecutionGraph opened at %s", self.db_path)
 

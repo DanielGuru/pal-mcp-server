@@ -178,6 +178,27 @@ class MultiauditTool(BaseTool):
             )
 
         base_branch = arguments.get("base_branch") or "main"
+        # Reject refs that would be parsed as git options. shell=False blocks
+        # true shell-injection (we use ["git", *argv]) but git itself treats
+        # any argv element starting with `-` as an option flag — `--upload-pack`,
+        # `--exec`, etc. — so a malicious base_branch like '--upload-pack=evil'
+        # would still execute via the git command itself.
+        if not isinstance(base_branch, str) or not base_branch:
+            return _err("'base_branch' must be a non-empty string")
+        if base_branch.startswith("-"):
+            return _err(
+                f"invalid base_branch {base_branch!r}: refs starting with '-' "
+                "are interpreted as git options. Use a real branch / tag / SHA."
+            )
+        # Lightweight character whitelist — matches what git itself accepts
+        # in a ref name plus a few path-style characters for SHAs and
+        # remote-tracking refs (e.g. 'origin/main', 'v1.2.3', 'a1b2c3d').
+        if not all(c.isalnum() or c in "/._-" for c in base_branch):
+            return _err(
+                f"invalid base_branch {base_branch!r}: must contain only "
+                "alphanumerics and the characters '/', '.', '_', '-'."
+            )
+
         extra_context = arguments.get("extra_context") or ""
         panelists = arguments.get("panelists") or DEFAULT_PANELISTS
         judge = arguments.get("judge") or DEFAULT_JUDGE

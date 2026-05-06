@@ -214,6 +214,40 @@ def test_handles_web_viewer_disabled(tmp_path, monkeypatch):
     assert "web_viewer_note" in body
 
 
+def test_rejects_base_branch_starting_with_dash(tmp_path):
+    """Audit panel finding: a ref like '--upload-pack=evil' is parsed by
+    git itself as an option flag (shell=False doesn't help). Reject at the
+    multiaudit boundary."""
+    repo = _git_repo(tmp_path)
+    from tools.multiaudit import MultiauditTool
+
+    async def go():
+        return await MultiauditTool().execute({
+            "working_directory_absolute_path": str(repo),
+            "base_branch": "--upload-pack=/tmp/evil",
+        })
+
+    body = json.loads(asyncio.run(go())[0].text)
+    assert body["status"] == "error"
+    assert "starts with '-'" in body["error"] or "starting with '-'" in body["error"]
+
+
+def test_rejects_base_branch_with_invalid_chars(tmp_path):
+    """Lightweight whitelist: refs must be alnum + /._- only."""
+    repo = _git_repo(tmp_path)
+    from tools.multiaudit import MultiauditTool
+
+    async def go():
+        return await MultiauditTool().execute({
+            "working_directory_absolute_path": str(repo),
+            "base_branch": "main; rm -rf /",
+        })
+
+    body = json.loads(asyncio.run(go())[0].text)
+    assert body["status"] == "error"
+    assert "must contain only" in body["error"]
+
+
 def test_default_panelist_set_includes_host(tmp_path, monkeypatch):
     """multiaudit pulls Claude Code into the debate by default via the
     'host' MCP-sampling agent — not just dispatching to other models."""
