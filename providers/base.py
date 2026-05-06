@@ -70,14 +70,21 @@ def _get_provider_executor() -> ThreadPoolExecutor:
 
 def _get_api_semaphore() -> asyncio.Semaphore:
     global _API_SEMAPHORE
+    # DO NOT REMOVE THE LOCK. Concurrent first-burst callers will otherwise
+    # both pass the `if X is None` check and create duplicate semaphores;
+    # whichever assigns last wins, the other is orphaned, briefly defeating
+    # the global API cap. threading.Lock here is correct: it's held for
+    # microseconds (constructor + assignment), only contended on the very
+    # first call, and the fast-path is a single read so warm calls never
+    # touch it. asyncio.Lock is wrong because this getter is called from
+    # both async and sync paths (worker threads in the bounded executor).
+    # See commit 015e462 for the audit-panel finding this prevents.
     if _API_SEMAPHORE is None:
-        # asyncio.Semaphore must be created inside the running event loop.
-        # Use asyncio.Lock (not threading.Lock) for the guard so we don't
-        # block the event loop while waiting.
-        loop = asyncio.get_event_loop()
-        cap = int(os.environ.get("PAL_MAX_CONCURRENT_API", "16"))
-        _API_SEMAPHORE = asyncio.Semaphore(cap)
-        logger.info("Provider API semaphore initialised: cap=%s", cap)
+        with _API_SEMAPHORE_LOCK:
+            if _API_SEMAPHORE is None:
+                cap = int(os.environ.get("PAL_MAX_CONCURRENT_API", "16"))
+                _API_SEMAPHORE = asyncio.Semaphore(cap)
+                logger.info("Provider API semaphore initialised: cap=%s", cap)
     return _API_SEMAPHORE
 
 
