@@ -425,9 +425,19 @@ def _git_safe(cwd: str, argv: list[str]) -> str:
 
 def _read_log_tail(cwd: Path, char_cap: int) -> str:
     """Return the last N chars of the most recent error/traceback context
-    from the log file. Filters to ERROR / Traceback / Failed lines and a
-    handful of trailing lines for stack-trace continuation. Empty string
-    if no logs are present."""
+    from the log file. Filters to ERROR / Traceback / Failed / Exception
+    lines and a handful of trailing lines for stack-trace continuation.
+    Empty string if no logs are present.
+
+    **Output is redacted via** :func:`utils.redaction.redact_secrets`
+    before return because the caller inlines this verbatim into a
+    panel prompt that ships to OpenAI / Anthropic / Gemini / xAI. An
+    ERROR line that echoed an API key, Bearer header, or JWT would
+    otherwise leak to all 4 providers' request logs. Codex audit-flagged.
+    """
+
+    from utils.redaction import redact_secrets
+
     for candidate in _LOG_FILE_CANDIDATES:
         path = cwd / candidate
         if path.exists() and path.is_file():
@@ -456,14 +466,26 @@ def _read_log_tail(cwd: Path, char_cap: int) -> str:
             if len(kept) > char_cap:
                 kept = kept[-char_cap:]
                 kept = "[...older error lines truncated...]\n" + kept
-            return kept
+            # Redact AFTER truncation/filtering — strips API keys / JWTs /
+            # Bearer headers / HOME paths from the final string before it
+            # leaves this process for a multi-provider panel prompt.
+            return redact_secrets(kept)
 
     return ""
 
 
 def _read_file_capped(path: str, char_cap: int) -> tuple[str | None, bool]:
     """Read a file, return (content, truncated) or (None, False) on
-    failure. Skips binary / unreadable files cleanly."""
+    failure. Skips binary / unreadable files cleanly.
+
+    Content is redacted via :func:`utils.redaction.redact_secrets` before
+    return — the schema warns users that ``attached_files`` contents
+    are sent verbatim to panelist APIs, but a defence-in-depth
+    redaction pass strips obvious API keys / JWTs / Bearer tokens
+    in case the user accidentally attached a file containing them.
+    """
+    from utils.redaction import redact_secrets
+
     try:
         p = Path(path)
         if not p.exists() or not p.is_file():
@@ -472,9 +494,10 @@ def _read_file_capped(path: str, char_cap: int) -> tuple[str | None, bool]:
         if p.stat().st_size > 5 * 1024 * 1024:
             return f"[file {path} too large to attach: {p.stat().st_size} bytes]", True
         text = p.read_text(encoding="utf-8", errors="ignore")
-        if len(text) > char_cap:
-            return text[:char_cap] + f"\n\n[…truncated {len(text) - char_cap} chars]", True
-        return text, False
+        truncated = len(text) > char_cap
+        if truncated:
+            text = text[:char_cap] + f"\n\n[…truncated {len(text) - char_cap} chars]"
+        return redact_secrets(text), truncated
     except OSError:
         return None, False
 
@@ -566,32 +589,9 @@ did they convince you, what's your revised position?
 """
 
 
-# NOTE: ``_extract_start_status`` previously lived here; moved to
-# ``tools/shared/task_dispatch.py:extract_start_status`` so multiaudit
-# and bugfind don't cross-couple on a private helper. Tests import the
-# shared symbol directly.
-
-
-def _extract_task_id(start_result: list[TextContent]) -> str | None:
-    """start_task returns a JSON-encoded ToolOutput with task_id inside."""
-    if not start_result:
-        return None
-    text = getattr(start_result[0], "text", None)
-    if not text:
-        return None
-    try:
-        body = json.loads(text)
-    except (json.JSONDecodeError, ValueError):
-        return None
-    if isinstance(body, dict):
-        if isinstance(body.get("task_id"), str):
-            return body["task_id"]
-        content = body.get("content")
-        if isinstance(content, str):
-            try:
-                inner = json.loads(content)
-                if isinstance(inner, dict) and isinstance(inner.get("task_id"), str):
-                    return inner["task_id"]
-            except (json.JSONDecodeError, ValueError):
-                pass
-    return None
+# Both ``_extract_start_status`` and ``_extract_task_id`` previously
+# lived here; moved to ``tools/shared/task_dispatch.py`` so multiaudit
+# and bugfind don't cross-couple on private helpers. Audit-flagged
+# (the previous extraction was incomplete — left _extract_task_id
+# duplicated in both tools).
+from tools.shared.task_dispatch import extract_task_id as _extract_task_id  # noqa: E402

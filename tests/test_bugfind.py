@@ -583,6 +583,101 @@ def test_default_panelists_immutable_against_env_at_import(tmp_path, monkeypatch
     assert body["panelists"] == ["codex", "gemini", "claude", "grok-4.3"]
 
 
+def test_log_tail_redacts_secret_shapes_before_dispatch(tmp_path, monkeypatch):
+    """The auto-attached log tail goes verbatim into a panel prompt that
+    fans out to OpenAI / Anthropic / Gemini / xAI. Lines containing
+    API-key shapes / Bearer headers / JWTs MUST be redacted before
+    dispatch, otherwise a single unhandled exception that echoed a
+    secret would broadcast it to all four provider request logs.
+    Audit-flagged blocker (codex). Regression test."""
+    repo = _make_git_repo(tmp_path)
+
+    # Synthetic logs with every shape redact_secrets handles.
+    log_dir = repo / "logs"
+    log_dir.mkdir()
+    (log_dir / "mcp_server.log").write_text(
+        "ERROR: provider rejected key=sk-ant-realistic-test-key-1234567890abcdefghij\n"
+        "Traceback (most recent call last):\n"
+        "  File 'foo.py', line 42, in bar\n"
+        "    raise AuthError('xai-realistic-test-key-1234567890abcdef')\n"
+        "ERROR: Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.payload.signature\n"
+        "ERROR: oauth check failed for AIzaSyAaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
+        "ERROR: home path was /Users/realname/.secrets/.env\n"
+    )
+
+    captured: dict = {}
+    import server
+
+    monkeypatch.setattr(server, "execute_tool", _fake_dispatch(captured))
+
+    from tools.bugfind import BugfindTool
+
+    async def go():
+        return await BugfindTool().execute(
+            {
+                "bug_description": "secrets in log shouldn't leave this process",
+                "working_directory_absolute_path": str(repo),
+                # skip_log_tail defaults False — we WANT the log path here
+            }
+        )
+
+    asyncio.run(go())
+    prompt = captured["arguments"]["arguments"]["prompt"]
+
+    # Original secret strings must NOT appear in the dispatched prompt
+    assert "sk-ant-realistic-test-key-1234567890abcdefghij" not in prompt
+    assert "xai-realistic-test-key-1234567890abcdef" not in prompt
+    assert "AIzaSyAaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" not in prompt
+    assert "eyJhbGciOiJIUzI1NiJ9.payload.signature" not in prompt
+    assert "/Users/realname" not in prompt
+
+    # Redaction markers ARE present (proves redaction fired, not that
+    # log attachment was silently disabled)
+    assert "[REDACTED_API_KEY]" in prompt or "[REDACTED" in prompt
+    # The surrounding error context survives so panelists can still
+    # diagnose — only the secret shapes were stripped.
+    assert "provider rejected key=" in prompt
+    assert "Traceback" in prompt
+
+
+def test_attached_files_redact_secrets(tmp_path, monkeypatch):
+    """Defence-in-depth: even though the schema warns users that
+    ``attached_files`` go verbatim to panelist APIs, accidentally
+    attaching a file containing API-key shapes shouldn't broadcast
+    them. Apply the same redaction pass."""
+    repo = _make_git_repo(tmp_path)
+    secret_file = repo / "config_with_secret.py"
+    secret_file.write_text(
+        "API_KEY = 'sk-realistic-test-key-1234567890abcdefghijklmnopqrst'\n"
+        "BEARER = 'Bearer eyJhbGciOiJIUzI1NiJ9.payload.signature'\n"
+    )
+
+    captured: dict = {}
+    import server
+
+    monkeypatch.setattr(server, "execute_tool", _fake_dispatch(captured))
+
+    from tools.bugfind import BugfindTool
+
+    async def go():
+        return await BugfindTool().execute(
+            {
+                "bug_description": "attached file has secrets in it",
+                "working_directory_absolute_path": str(repo),
+                "attached_files": [str(secret_file)],
+                "skip_log_tail": True,
+            }
+        )
+
+    asyncio.run(go())
+    prompt = captured["arguments"]["arguments"]["prompt"]
+
+    assert "sk-realistic-test-key-1234567890abcdefghijklmnopqrst" not in prompt
+    assert "eyJhbGciOiJIUzI1NiJ9.payload.signature" not in prompt
+    # The redaction marker proves the file was attached AND scrubbed
+    assert "[REDACTED_API_KEY]" in prompt or "[REDACTED]" in prompt
+
+
 def test_bugfind_registered_in_server_tools():
     import server
 

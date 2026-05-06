@@ -54,55 +54,11 @@ _CLI_RAW_OUTPUT_CAP = int(os.environ.get("PANEL_CLINK_RAW_OUTPUT_CAP", "8192"))
 #                              The user's actual home is detected at module load
 #                              and rewritten to <HOME>; the more general patterns
 #                              catch other users' paths the CLI might surface.
-_HOME = os.path.expanduser("~")
-
-
-def _build_redaction_patterns() -> tuple[tuple[re.Pattern[str], str], ...]:
-    patterns: list[tuple[re.Pattern[str], str]] = [
-        (re.compile(r"sk-(?:ant-)?[A-Za-z0-9_\-]{20,}"), "[REDACTED_API_KEY]"),
-        (re.compile(r"AIza[0-9A-Za-z_\-]{30,}"), "[REDACTED_API_KEY]"),
-        (re.compile(r"xai-[A-Za-z0-9_\-]{20,}"), "[REDACTED_API_KEY]"),
-        (re.compile(r"eyJ[A-Za-z0-9_\-]{20,}\.[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+"), "[REDACTED_JWT]"),
-        (re.compile(r"(?i)Bearer\s+[A-Za-z0-9_\-\.=]{16,}"), "Bearer [REDACTED]"),
-    ]
-    # The literal home for this process, redacted to the marker. Done first
-    # so it takes precedence over the more general /Users/... pattern below.
-    if _HOME and _HOME not in ("/", ""):
-        patterns.append((re.compile(re.escape(_HOME)), "<HOME>"))
-    # Generic user-home patterns for paths from other identities (less common
-    # but real: a CLI run as a different user, or referencing peers' files).
-    patterns.append((re.compile(r"/Users/[^/\s'\"]+"), "/Users/<USER>"))
-    patterns.append((re.compile(r"/home/[^/\s'\"]+"), "/home/<USER>"))
-    patterns.append((re.compile(r"C:\\Users\\[^\\\s'\"]+", re.IGNORECASE), r"C:\\Users\\<USER>"))
-    return tuple(patterns)
-
-
-_REDACTION_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = _build_redaction_patterns()
-
-
-def _redact_only(text: str) -> str:
-    """Strip secret/path patterns without truncating. Use on CLI content where
-    we want the full answer but still don't want credentials leaking through."""
-    if not text or os.environ.get("PANEL_DEBUG_CLI_OUTPUT"):
-        return text
-    redacted = text
-    for pattern, replacement in _REDACTION_PATTERNS:
-        redacted = pattern.sub(replacement, redacted)
-    return redacted
-
-
-def _redact_and_cap(text: str, *, cap: int) -> str:
-    """Bound + redact a CLI output string for safe inclusion in MCP metadata."""
-    if not text:
-        return text
-    if os.environ.get("PANEL_DEBUG_CLI_OUTPUT"):
-        # Opt-in escape hatch for local debugging. Keeps full text and skips
-        # secret redaction. Never leak this in logs of real user calls.
-        return text
-    redacted = _redact_only(text)
-    if len(redacted) > cap:
-        return redacted[:cap] + f"\n[…truncated {len(redacted) - cap} chars by clink metadata cap]"
-    return redacted
+# Redaction helpers moved to utils/redaction.py so bugfind/multiaudit can
+# reuse them on locally-collected content (log tails, attached files)
+# before sending to multi-provider panel prompts. Codex audit-flagged.
+from utils.redaction import redact_secrets as _redact_only  # noqa: E402
+from utils.redaction import redact_and_cap as _redact_and_cap  # noqa: E402
 
 
 # Metadata field names a CLI parser must NEVER override on its own — these are

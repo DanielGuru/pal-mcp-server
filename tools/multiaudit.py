@@ -518,31 +518,10 @@ you, what's your revised position?
 """
 
 
-def _extract_task_id(start_result: list[TextContent]) -> str | None:
-    """start_task returns a JSON-encoded ToolOutput with task_id inside."""
-    if not start_result:
-        return None
-    text = getattr(start_result[0], "text", None)
-    if not text:
-        return None
-    try:
-        body = json.loads(text)
-    except (json.JSONDecodeError, ValueError):
-        return None
-    if isinstance(body, dict):
-        # Direct shape (start_task returns this verbatim).
-        if isinstance(body.get("task_id"), str):
-            return body["task_id"]
-        # Wrapped-ToolOutput shape — content field holds the JSON we want.
-        content = body.get("content")
-        if isinstance(content, str):
-            try:
-                inner = json.loads(content)
-                if isinstance(inner, dict) and isinstance(inner.get("task_id"), str):
-                    return inner["task_id"]
-            except (json.JSONDecodeError, ValueError):
-                pass
-    return None
+# ``_extract_task_id`` lives in ``tools/shared/task_dispatch.py`` (alongside
+# ``extract_start_status``) so multiaudit and bugfind don't keep duplicate
+# private helpers. Audit-flagged: the previous extraction was incomplete.
+from tools.shared.task_dispatch import extract_task_id as _extract_task_id  # noqa: E402
 
 
 def _err(message: str) -> list[TextContent]:
