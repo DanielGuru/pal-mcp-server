@@ -315,6 +315,44 @@ def test_get_default_api_timeout_default():
         assert get_default_api_timeout() == 600.0
 
 
+def test_provider_executor_no_duplicate_under_concurrent_first_burst(monkeypatch):
+    """Lazy init must be thread-safe: 32 threads racing the first call should
+    end up sharing one executor, not creating duplicates that leak threads."""
+    import threading as _t
+
+    import providers.base as base
+
+    monkeypatch.setattr(base, "_PROVIDER_EXECUTOR", None)
+    seen: set[int] = set()
+    barrier = _t.Barrier(32)
+
+    def race():
+        barrier.wait()  # release all 32 simultaneously
+        ex = base._get_provider_executor()
+        seen.add(id(ex))
+
+    threads = [_t.Thread(target=race) for _ in range(32)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert len(seen) == 1, f"lazy-init race: {len(seen)} executors created instead of 1"
+    monkeypatch.setattr(base, "_PROVIDER_EXECUTOR", None)
+
+
+def test_provider_executor_shutdown_resets_global(monkeypatch):
+    """The atexit handler must null out the global so it can be recreated
+    cleanly if PAL is reloaded inside a long-lived host process."""
+    import providers.base as base
+
+    monkeypatch.setattr(base, "_PROVIDER_EXECUTOR", None)
+    base._get_provider_executor()
+    assert base._PROVIDER_EXECUTOR is not None
+    base._shutdown_provider_executor()
+    assert base._PROVIDER_EXECUTOR is None
+
+
 def test_agenerate_content_is_an_awaitable_method():
     """Locking the API: every provider must expose async agenerate_content."""
     from providers.openai import OpenAIModelProvider

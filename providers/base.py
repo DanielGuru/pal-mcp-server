@@ -1,8 +1,10 @@
 """Base interfaces and common behaviour for model providers."""
 
 import asyncio
+import atexit
 import logging
 import os
+import threading
 import time
 from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor
@@ -40,32 +42,62 @@ logger = logging.getLogger(__name__)
 
 _PROVIDER_EXECUTOR: Optional[ThreadPoolExecutor] = None
 _API_SEMAPHORE: Optional[asyncio.Semaphore] = None
+# Locks guard the lazy-init double-check below. Without them, two concurrent
+# first-burst callers race the `if X is None` check and both construct fresh
+# executors / semaphores. Duplicate executors leak threads past
+# PAL_MAX_PROVIDER_THREADS; duplicate semaphores temporarily defeat the
+# global API cap. Audit panel finding (Grok flagged, judge endorsed as the
+# top first-burst production bug from commit 4979cf7).
+_PROVIDER_EXECUTOR_LOCK = threading.Lock()
+_API_SEMAPHORE_LOCK = threading.Lock()
 
 
 def _get_provider_executor() -> ThreadPoolExecutor:
     global _PROVIDER_EXECUTOR
+    # Double-checked locking: the fast-path is a single read for warm calls;
+    # only the cold path takes the lock and re-checks under it.
     if _PROVIDER_EXECUTOR is None:
-        max_workers = int(os.environ.get("PAL_MAX_PROVIDER_THREADS", "32"))
-        _PROVIDER_EXECUTOR = ThreadPoolExecutor(
-            max_workers=max_workers,
-            thread_name_prefix="pal-provider",
-        )
-        logger.info("Provider thread pool initialised: max_workers=%s", max_workers)
+        with _PROVIDER_EXECUTOR_LOCK:
+            if _PROVIDER_EXECUTOR is None:
+                max_workers = int(os.environ.get("PAL_MAX_PROVIDER_THREADS", "32"))
+                _PROVIDER_EXECUTOR = ThreadPoolExecutor(
+                    max_workers=max_workers,
+                    thread_name_prefix="pal-provider",
+                )
+                logger.info("Provider thread pool initialised: max_workers=%s", max_workers)
     return _PROVIDER_EXECUTOR
 
 
 def _get_api_semaphore() -> asyncio.Semaphore:
     global _API_SEMAPHORE
     if _API_SEMAPHORE is None:
-        cap = int(os.environ.get("PAL_MAX_CONCURRENT_API", "16"))
-        _API_SEMAPHORE = asyncio.Semaphore(cap)
-        logger.info("Provider API semaphore initialised: cap=%s", cap)
+        with _API_SEMAPHORE_LOCK:
+            if _API_SEMAPHORE is None:
+                cap = int(os.environ.get("PAL_MAX_CONCURRENT_API", "16"))
+                _API_SEMAPHORE = asyncio.Semaphore(cap)
+                logger.info("Provider API semaphore initialised: cap=%s", cap)
     return _API_SEMAPHORE
 
 
 def get_default_api_timeout() -> float:
     """Per-call SDK timeout, in seconds. Bounds the worker-thread lifetime."""
     return float(os.environ.get("PAL_API_TIMEOUT_S", "600"))
+
+
+def _shutdown_provider_executor() -> None:
+    """Tear down the worker pool at process exit so daemon threads don't leak
+    across MCP load/unload cycles. atexit-registered."""
+    global _PROVIDER_EXECUTOR
+    with _PROVIDER_EXECUTOR_LOCK:
+        if _PROVIDER_EXECUTOR is not None:
+            try:
+                _PROVIDER_EXECUTOR.shutdown(wait=False, cancel_futures=True)
+            except Exception:  # noqa: BLE001 — atexit must not raise
+                pass
+            _PROVIDER_EXECUTOR = None
+
+
+atexit.register(_shutdown_provider_executor)
 
 
 class ModelProvider(ABC):
