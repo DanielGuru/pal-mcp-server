@@ -158,6 +158,10 @@ async def _run_panelist(
                 "role": role,
                 "absolute_file_paths": files,
                 "images": images,
+                # Hint the graph layer that this dispatch is initially
+                # OAuth-free; if clink falls back, it'll override.
+                "_graph_cost_tier": "oauth_free",
+                "_graph_label": f"panelist:{label}",
             }
             initial_tier = "oauth_free"
         else:
@@ -168,6 +172,8 @@ async def _run_panelist(
                 "absolute_file_paths": files,
                 "images": images,
                 "working_directory_absolute_path": panelist.get("working_directory_absolute_path") or "/tmp",
+                "_graph_cost_tier": "api_paid",
+                "_graph_label": f"panelist:{label}",
             }
             initial_tier = "api_paid"
 

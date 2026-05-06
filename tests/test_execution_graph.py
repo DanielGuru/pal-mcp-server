@@ -268,6 +268,66 @@ def test_run_context_marks_failure_on_exception(tmp_path, monkeypatch):
     assert "simulated failure" in run["error"]
 
 
+def test_execute_tool_records_run_in_graph(tmp_path, monkeypatch):
+    """End-to-end: server.execute_tool must open a graph run, capture
+    success/cost_tier/model_used. No real provider call — we use 'version'
+    which is internal-only."""
+    import utils.execution_graph as eg
+
+    monkeypatch.setattr(eg, "_GRAPH", eg.ExecutionGraph(tmp_path / "g.db"))
+    monkeypatch.setattr(eg, "_GRAPH_DISABLED", False)
+
+    import server
+
+    async def go():
+        await server.execute_tool("version", {})
+
+    asyncio.run(go())
+    runs = eg.get_graph().list_runs(tool_name="version")
+    assert len(runs) == 1
+    assert runs[0]["status"] == "completed"
+
+
+def test_execute_tool_strips_graph_hints_before_passing_to_tool(tmp_path, monkeypatch):
+    """_graph_edge_kind / _graph_cost_tier / _graph_label are graph-only
+    metadata. They must be popped from args before tool.execute() sees them
+    (otherwise pydantic strict-mode tools would reject them)."""
+    import utils.execution_graph as eg
+
+    monkeypatch.setattr(eg, "_GRAPH", eg.ExecutionGraph(tmp_path / "g.db"))
+    monkeypatch.setattr(eg, "_GRAPH_DISABLED", False)
+
+    import server
+
+    captured: dict = {}
+
+    real_make_tool = server.make_tool
+
+    def make_tool_spy(name):
+        tool = real_make_tool(name)
+        original_execute = tool.execute
+
+        async def spy(args):
+            captured.update(args)
+            return await original_execute(args)
+
+        tool.execute = spy
+        return tool
+
+    monkeypatch.setattr(server, "make_tool", make_tool_spy)
+
+    async def go():
+        await server.execute_tool(
+            "version",
+            {"_graph_edge_kind": "fallback", "_graph_cost_tier": "oauth_fallback_paid", "_graph_label": "spy"},
+        )
+
+    asyncio.run(go())
+    assert "_graph_edge_kind" not in captured
+    assert "_graph_cost_tier" not in captured
+    assert "_graph_label" not in captured
+
+
 def test_run_context_marks_completed_on_clean_exit(tmp_path, monkeypatch):
     """If the caller doesn't explicitly complete_run, run_context marks
     completed on clean exit so dangling 'running' rows don't accumulate."""

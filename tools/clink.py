@@ -705,6 +705,11 @@ class CLinkTool(SimpleTool):
             "absolute_file_paths": [],
             "images": images,
             "working_directory_absolute_path": str(client_config.working_dir or Path.cwd() or "/tmp"),
+            # Tell the graph layer this is a fallback edge (not normal spawn)
+            # and pre-tag the cost_tier as paid even before the call returns.
+            "_graph_edge_kind": "fallback",
+            "_graph_cost_tier": "oauth_fallback_paid",
+            "_graph_label": f"oauth-fallback:{client_config.name}",
         }
         try:
             result = await execute_tool("chat", chat_args)
