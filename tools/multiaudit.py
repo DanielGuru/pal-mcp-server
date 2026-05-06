@@ -288,9 +288,19 @@ class MultiauditTool(BaseTool):
         task_id = _extract_task_id(start_result)
 
         # ------ get the web viewer URL if available ------
+        # Deep-link to this multiaudit's own run so the operator's auto-opened
+        # tab lands on the run that was just dispatched, not whatever the
+        # picker happened to auto-pick. current_run_id() returns the
+        # multiaudit run we're inside (set by execute_tool via run_context).
         try:
             from utils.web_viewer import get_server_url
+            from utils.execution_graph import current_run_id
             web_url = get_server_url()
+            if web_url:
+                rid = current_run_id()
+                if rid:
+                    sep = "&" if "?" in web_url else "?"
+                    web_url = f"{web_url}{sep}run={rid}"
         except Exception:  # noqa: BLE001
             web_url = None
 

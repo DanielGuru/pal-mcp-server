@@ -180,9 +180,28 @@ _INDEX_HTML = r"""<!doctype html>
 // =============================================================================
 
 let SELECTED = null;
+// MANUAL_PICK locks SELECTED once the user explicitly chooses a run from the
+// picker (or a deep-link via ?run=<id> sets one). While false, every refresh
+// of the picker re-evaluates and switches to the newest running root — so a
+// freshly-fired multiaudit overtakes a stale run from the previous PAL session
+// without the user having to click. Without this, SELECTED was set the FIRST
+// time the picker rendered (often before the new run was registered) and then
+// stuck on the older row forever.
+let MANUAL_PICK = false;
 let LAST_RUNS_HASH = "";
 let RAW_MODE = false;
 const $ = (q) => document.querySelector(q);
+
+// Deep-link: /?run=<id> pins a specific run (used by multiaudit / web_url to
+// hand back a URL that lands on the run that was just dispatched, instead of
+// whatever the viewer happens to auto-pick).
+(function applyDeepLink() {
+  try {
+    const params = new URLSearchParams(window.location.search);
+    const id = params.get('run');
+    if (id) { SELECTED = id; MANUAL_PICK = true; }
+  } catch (_) {}
+})();
 
 async function fetchRuns() {
   const r = await fetch('/runs?limit=100');
@@ -286,14 +305,20 @@ async function renderRunPicker() {
           return `<option value="${escapeAttr(r.run_id)}">${escapeHtml(label)} · ${escapeHtml(elapsed)}${live}</option>`;
         }).join('');
       }
-      // Auto-select most recent live run, else most recent root. Crucially
-      // this only runs the FIRST time a root appears — once SELECTED is
-      // set we don't yank the user away from what they were reading.
-      if (!SELECTED && roots.length) {
+      // Auto-select the newest running root (or newest root) and keep
+      // following the head of the list until the user picks something
+      // manually. MANUAL_PICK locks the choice so we never yank the user
+      // away from what they were reading mid-debate.
+      if (!MANUAL_PICK && roots.length) {
         const live = roots.find(r => r.status === 'running');
-        SELECTED = (live || roots[0]).run_id;
-        picker.value = SELECTED;
-        renderConversation();
+        const target = (live || roots[0]).run_id;
+        if (target !== SELECTED) {
+          SELECTED = target;
+          picker.value = SELECTED;
+          renderConversation();
+        } else {
+          picker.value = SELECTED;
+        }
       } else if (SELECTED) {
         // Keep the picker's selected option in sync. If the user's
         // SELECTED run scrolled off the head of the list (limit=100),
@@ -509,6 +534,7 @@ function safeClass(s) {
 // -- wiring ---------------------------------------------------------------
 $('#run-picker').addEventListener('change', (e) => {
   SELECTED = e.target.value;
+  MANUAL_PICK = true;
   LAST_EVENT_COUNT = 0;
   USER_SCROLLED_UP = false;
   window.scrollTo({ top: 0 });

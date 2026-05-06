@@ -191,6 +191,37 @@ def test_includes_web_viewer_url_when_available(tmp_path, monkeypatch):
     assert body["web_viewer_url"] == "http://127.0.0.1:18999/"
 
 
+def test_web_viewer_url_deep_links_to_current_run(tmp_path, monkeypatch):
+    """When run_context wraps the multiaudit dispatch with a known run_id,
+    the returned URL should land on that run via ?run=<id>. This is what
+    keeps the auto-opened browser tab from getting stuck on a stale run
+    from a previous PAL session."""
+    repo = _git_repo(tmp_path)
+
+    async def fake_execute(name, arguments):
+        from mcp.types import TextContent
+        return [TextContent(type="text", text=json.dumps({"status": "started", "task_id": "t"}))]
+
+    import server
+    import utils.web_viewer as wv
+    import utils.execution_graph as eg
+
+    monkeypatch.setattr(server, "execute_tool", fake_execute)
+    monkeypatch.setattr(wv, "_SERVER_PORT", 18999)
+    monkeypatch.setattr(wv, "_BIND_HOST", "127.0.0.1")
+    # Pretend we're inside a run with a known id — multiaudit reads this
+    # via current_run_id() to deep-link the viewer URL at its own run.
+    monkeypatch.setattr(eg, "current_run_id", lambda: "deadbeefcafe")
+
+    from tools.multiaudit import MultiauditTool
+
+    async def go():
+        return await MultiauditTool().execute({"working_directory_absolute_path": str(repo)})
+
+    body = json.loads(asyncio.run(go())[0].text)
+    assert body["web_viewer_url"] == "http://127.0.0.1:18999/?run=deadbeefcafe"
+
+
 def test_handles_web_viewer_disabled(tmp_path, monkeypatch):
     repo = _git_repo(tmp_path)
 
