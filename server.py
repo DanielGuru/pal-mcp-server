@@ -613,8 +613,9 @@ def configure_providers():
     if not valid_providers:
         raise ValueError(
             "At least one API configuration is required. Please set either:\n"
-            "- GEMINI_API_KEY for Gemini models\n"
+            "- ANTHROPIC_API_KEY for Claude models\n"
             "- OPENAI_API_KEY for OpenAI models\n"
+            "- GEMINI_API_KEY for Gemini models\n"
             "- XAI_API_KEY for X.AI GROK models\n"
             "- DIAL_API_KEY for DIAL models\n"
             "- OPENROUTER_API_KEY for OpenRouter (multiple models)\n"

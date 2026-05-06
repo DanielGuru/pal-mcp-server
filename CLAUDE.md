@@ -14,7 +14,7 @@ A Model Context Protocol server that lets one AI agent (typically Claude Code) c
 2. **Clink** — `clink` runs an external CLI (Codex CLI, Gemini CLI, Claude CLI) as a subprocess. Uses each CLI's own auth, so **OAuth (free)** when the CLI is logged in via subscription. `tools/clink.py` + `clink/`. Includes automatic OAuth-to-API fallback (see below).
 3. **Async background tasks** — `start_task`, `task_status`, `task_result`, `cancel_task`. Wrap any other tool so the conversation isn't blocked. `tools/tasks.py`. Admission control, periodic GC, session ownership, push completion notifications.
 4. **Panel orchestration** — `panel` fans one prompt to N models in parallel, optional judge synthesis, optional adversarial `debate_rounds`. Reserved panelist name `host` routes through MCP sampling so Claude Code is a peer in the debate. `tools/panel.py`.
-5. **PR-shaped audit workflow** — `multiaudit` reads `git diff`, packages it with intent context, and fires `start_task('panel', ...)` with `[host, codex, gemini, grok-4.3]`. `tools/multiaudit.py`.
+5. **PR-shaped audit workflow** — `multiaudit` reads `git diff`, packages it with intent context, and fires `start_task('panel', ...)` with `[codex, gemini, claude, grok-4.3]`. `host` is intentionally excluded from defaults because Claude Code doesn't advertise MCP sampling capability today; pass `panelists=["host", ...]` explicitly when running under an MCP host that does. `tools/multiaudit.py`.
 6. **Execution graph + web viewer** — `list_runs`, `get_run`, `run_tree`, `web_url`. Read-only access to the SQLite-backed durable record of every dispatch + a live HTTP viewer page that auto-opens in the browser on Panel boot. Survives Panel restart. `tools/graph_query.py` + `utils/execution_graph.py` + `utils/web_viewer.py`.
 
 ---
@@ -31,7 +31,7 @@ When the user says any of these phrases, immediately call the `multiaudit` MCP t
 - "what do the models think" (about a code change)
 - "second opinion from everyone"
 
-`multiaudit` reads the current branch's `git diff`, builds a structured audit prompt with the standard rubric (verdict / bugs / design / security / missing tests / what you'd attack), fires a 4-way panel via `start_task` (host + codex + gemini + grok-4.3, 1 debate round, codex as judge), and returns a task_id + the live web viewer URL. Hand the user the URL immediately, then poll `task_status` / `run_tree` / `task_result` to surface progress and findings.
+`multiaudit` reads the current branch's `git diff`, builds a structured audit prompt with the standard rubric (verdict / bugs / design / security / missing tests / what you'd attack), fires a 4-way panel via `start_task` (codex + gemini + claude + grok-4.3, 1 debate round, codex as judge), and returns a task_id + the live web viewer URL. Hand the user the URL immediately, then poll `task_status` / `run_tree` / `task_result` to surface progress and findings.
 
 When the user adds context to the magic phrase ("multiaudit but focus on the auth changes"), pass it through as `extra_context`.
 
@@ -138,7 +138,9 @@ tools/
   web_url.py               web_url MCP tool — return the live viewer URL.
   multiaudit.py            Magic-phrase PR audit. Reads git diff, fires
                            start_task('panel', ...) with default panelists
-                           [host, codex, gemini, grok-4.3].
+                           [codex, gemini, claude, grok-4.3]. host is
+                           opt-in (Claude Code doesn't advertise sampling
+                           capability today).
 ```
 
 ---
@@ -192,7 +194,7 @@ python3 -c "import ast; ast.parse(open('PATH').read()); print('ok')"
 ~/.local/share/uv/tools/panel-mcp-server/bin/python3 -c "
 import sys; sys.path.insert(0, '/Users/$USER/Projects/panel-mcp-server')
 import server; print('tools:', sorted(server.TOOLS.keys()))
-"  # should report 23 tools
+"  # should report 28 tools
 
 # Regression suite (~80ms)
 ~/.local/share/uv/tools/panel-mcp-server/bin/python3 -m pytest tests/test_v1_hardening.py -v
@@ -213,17 +215,20 @@ import server; print('tools:', sorted(server.TOOLS.keys()))
 - Comments only for *why*, not *what*
 - Validate at boundaries (user input, provider responses); don't add defensive checks for things that can't happen
 - Never weaken security: don't re-add `--dangerously-bypass-approvals-and-sandbox` / `--yolo`; don't bypass redaction in committed code; don't introduce a second dispatch path
-- Don't commit secrets (API keys live in `~/.claude.json`, never in repo)
+- Don't commit secrets (API keys live in your MCP client config or `.env`, never in repo)
 
 ---
 
-## Authentication state expected on this machine
+## Auth & cost routing
 
-- **Codex CLI** logged in via ChatGPT (`~/.codex/auth.json` `auth_mode: chatgpt`) → free OAuth. Fallback: gpt-5.5 via `OPENAI_API_KEY`.
-- **Gemini CLI** logged in via Google (`~/.gemini/oauth_creds.json`) → free OAuth. `gemini-3-flash-preview` has a daily quota. Fallback: gemini-3.1-pro-preview via `GEMINI_API_KEY`.
+Each clink CLI uses its own subscription auth. If the user is logged in, those calls are free; if quota runs out, the configured `oauth_fallback_model` retries via paid API and the panel labels the run `oauth_fallback_paid` so cost is honest.
+
+- **Codex CLI** — `codex login` (ChatGPT subscription). API fallback: `gpt-5.5` via `OPENAI_API_KEY`.
+- **Gemini CLI** — first run prompts OAuth (Google account). API fallback: `gemini-3.1-pro-preview` via `GEMINI_API_KEY`.
+- **Claude CLI** — `claude /login` (Claude subscription). API fallback: configurable via `PANEL_CLAUDE_OAUTH_FALLBACK_MODEL` (default `claude-sonnet-4-6`) via `ANTHROPIC_API_KEY`.
 - **Grok** has no OAuth path — always paid via `XAI_API_KEY`.
 
-When the user names "codex" or "gemini" without a specific paid model, prefer `clink` (free, with automatic API fallback). When they name a specific paid string (`gpt-5.5`, `gemini-3.1-pro-preview`, `grok-4.3`) use `chat`/`consensus`. The MCP handshake instructions encode this routing.
+When the user names "codex" / "gemini" / "claude" without a specific paid model, prefer `clink` (free, with automatic API fallback). When they name a specific paid string (`gpt-5.5`, `gemini-3.1-pro-preview`, `grok-4.3`, `claude-opus-4-7`, etc.) use `chat`/`consensus`. The MCP handshake instructions encode this routing.
 
 ---
 
@@ -275,13 +280,3 @@ The infrastructure is solid: 28 tools, 97 tests passing on the new surfaces, thr
 - Don't introduce a new dispatch path. If you find yourself calling `tool.execute()` directly, route through `server.execute_tool()` instead.
 - Don't touch `providers/*` for routine work — they're inherited from upstream and stable. Only modify when explicitly justified.
 - If a refactor needs a hard architectural call (e.g. "schemas can't be cached safely because they depend on instance state"), stop and surface the choice — don't make it unilaterally.
-
----
-
-## Auto-memory (for Claude sessions)
-
-User's auto-memory will load two relevant entries:
-- `pal_fork.md` — full project context (location, customizations, auth state, roadmap)
-- `feedback_uvx_caching.md` — why NOT to use `uvx --from /local/path` for iterative dev
-
-Trust those memory entries; they're maintained alongside this doc.

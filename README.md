@@ -3,11 +3,7 @@
 <div align="center">
 
   <em>Convene a panel of AI models from inside your CLI — fan-out, debate, judge.</em><br />
-  <sub><a href="docs/name-change.md">Formerly Zen MCP, then Panel MCP</a></sub>
-
-  [Panel in action](https://github.com/user-attachments/assets/0d26061e-5f21-4ab1-b7d0-f883ddc2c3da)
-
-👉 **[Watch more examples](#-watch-tools-in-action)**
+  <sub><a href="docs/name-change.md">Zen MCP → PAL MCP → Panel MCP</a></sub>
 
 ### Your CLI + Multiple Models = Your AI Dev Team
 
@@ -38,7 +34,7 @@ clink with codex codereviewer to audit auth module for security issues
 # Subagent reviews in isolation, returns final report without cluttering your context
 
 # Consensus from different AI models → Implementation handoff with full context preservation
-Use consensus with gpt-5 and gemini-pro to decide: dark mode or offline support next
+Use consensus with gpt-5.5 and gemini-3.1-pro-preview to decide: dark mode or offline support next
 Continue with clink gemini - implement the recommended feature
 # Gemini receives full debate context and starts coding immediately
 ```
@@ -59,24 +55,24 @@ Panel supports **conversation threading** so your CLI can **discuss ideas with m
 
 Your CLI always stays in control but gets perspectives from the best AI for each subtask. Context carries forward seamlessly across tools and models, enabling complex workflows like: code reviews with multiple models → automated planning → implementation → pre-commit validation.
 
-> **You're in control.** Your CLI of choice orchestrates the AI team, but you decide the workflow. Craft powerful prompts that bring in Gemini Pro, GPT-5, Flash, or local offline models exactly when needed.
+> **You're in control.** Your CLI of choice orchestrates the AI team, but you decide the workflow. Craft powerful prompts that bring in Gemini 3.1 Pro, GPT-5.5, Claude Opus 4.7, Grok-4.3, or local offline models exactly when needed.
 
 <details>
 <summary><b>Reasons to Use Panel MCP</b></summary>
 
 A typical workflow with Claude Code as an example:
 
-1. **Multi-Model Orchestration** - Claude coordinates with Gemini 3.1 Pro, O3, GPT-5, and 50+ other models to get the best analysis for each task
+1. **Multi-Model Orchestration** - Claude coordinates with Gemini 3.1 Pro, GPT-5.5, Grok-4.3, and Claude Opus 4.7 to get the best analysis for each task
 
 2. **Context Revival Magic** - Even after Claude's context resets, continue conversations seamlessly by having other models "remind" Claude of the discussion
 
 3. **Guided Workflows** - Enforces systematic investigation phases that prevent rushed analysis and ensure thorough code examination
 
-4. **Extended Context Windows** - Break Claude's limits by delegating to Gemini (1M tokens) or O3 (200K tokens) for massive codebases
+4. **Extended Context Windows** - Break Claude's limits by delegating to Gemini 3.1 Pro (1M tokens) for massive codebases
 
-5. **True Conversation Continuity** - Full context flows across tools and models - Gemini remembers what O3 said 10 steps ago
+5. **True Conversation Continuity** - Full context flows across tools and models — Gemini remembers what GPT-5.5 said 10 steps ago
 
-6. **Model-Specific Strengths** - Extended thinking with Gemini Pro, blazing speed with Flash, strong reasoning with O3, privacy with local Ollama
+6. **Model-Specific Strengths** - Extended thinking with Gemini 3.1 Pro, strong reasoning with Claude Opus 4.7, adversarial pressure-testing with Grok-4.3, privacy with local Ollama
 
 7. **Professional Code Reviews** - Multi-pass analysis with severity levels, actionable feedback, and consensus from multiple AI experts
 
@@ -90,31 +86,31 @@ A typical workflow with Claude Code as an example:
 
 12. **Bypass MCP Token Limits** - Automatically works around MCP's 25K limit for large prompts and responses
 
-13. **SQLite Execution Graph** - Every tool dispatch is recorded in `~/.panel/execution_graph.db`. Resume panels after restart, audit cost attribution, replay prior runs — durable across process restarts.
+13. **SQLite Execution Graph** - Every tool dispatch is recorded in a per-repo `.panel/execution_graph.db`. Resume panels after restart, audit cost attribution, replay prior runs — durable across process restarts.
 
-**The Killer Feature:** When Claude's context resets, just ask to "continue with O3" - the other model's response magically revives Claude's understanding without re-ingesting documents!
+**The Killer Feature:** When Claude's context resets, just ask to "continue with gpt-5.5" (or gemini-3.1-pro-preview, grok-4.3, etc.) — the other model's response magically revives Claude's understanding without re-ingesting documents!
 
 #### Example: Multi-Model Code Review Workflow
 
-1. `Perform a codereview using gemini pro and o3 and use planner to generate a detailed plan, implement the fixes and do a final precommit check by continuing from the previous codereview`
+1. `Perform a codereview using gemini-3.1-pro-preview and gpt-5.5 and use planner to generate a detailed plan, implement the fixes and do a final precommit check by continuing from the previous codereview`
 2. This triggers a [`codereview`](docs/tools/codereview.md) workflow where Claude walks the code, looking for all kinds of issues
 3. After multiple passes, collects relevant code and makes note of issues along the way
 4. Maintains a `confidence` level between `exploring`, `low`, `medium`, `high` and `certain` to track how confidently it's been able to find and identify issues
 5. Generates a detailed list of critical -> low issues
 6. Shares the relevant files, findings, etc with **Gemini 3.1 Pro** to perform a deep dive for a second [`codereview`](docs/tools/codereview.md)
-7. Comes back with a response and next does the same with o3, adding to the prompt if a new discovery comes to light
+7. Comes back with a response and next does the same with GPT-5.5, adding to the prompt if a new discovery comes to light
 8. When done, Claude takes in all the feedback and combines a single list of all critical -> low issues, including good patterns in your code. The final list includes new findings or revisions in case Claude misunderstood or missed something crucial and one of the other models pointed this out
 9. It then uses the [`planner`](docs/tools/planner.md) workflow to break the work down into simpler steps if a major refactor is required
 10. Claude then performs the actual work of fixing highlighted issues
 11. When done, Claude returns to Gemini 3.1 Pro for a [`precommit`](docs/tools/precommit.md) review
 
-All within a single conversation thread! Gemini Pro in step 11 _knows_ what was recommended by O3 in step 7!
+All within a single conversation thread! Gemini Pro in step 11 _knows_ what was recommended by GPT-5.5 in step 7!
 
 **Think of it as Claude Code _for_ Claude Code.** This MCP isn't magic. It's just **super-glue**.
 
 > **Remember:** Claude stays in full control — but **YOU** call the shots.
 > Panel is designed to have Claude engage other models only when needed — and to follow through with meaningful back-and-forth.
-> **You're** the one who crafts the powerful prompt that makes Claude bring in Gemini, Flash, O3 — or fly solo.
+> **You're** the one who crafts the powerful prompt that makes Claude bring in Gemini, GPT-5.5, Grok-4.3 — or fly solo.
 > You're the guide. The prompter. The puppeteer.
 > #### You are the AI - **Actually Intelligent**.
 </details>
@@ -126,7 +122,7 @@ All within a single conversation thread! Gemini Pro in step 11 _knows_ what was 
 
 For best results when using [Claude Code](https://claude.ai/code):
 
-- **claude-sonnet-4-5** or **claude-opus-4-7** - All agentic work and orchestration
+- **claude-sonnet-4-6** or **claude-opus-4-7** - All agentic work and orchestration
 - **`gemini-3.1-pro-preview`** (`pro`) OR **`gpt-5.5`** - Deep thinking, additional code reviews, debugging and validations, pre-commit analysis
 </details>
 
@@ -144,11 +140,12 @@ For best results when using [Codex CLI](https://developers.openai.com/codex/cli)
 **Prerequisites:** Python 3.10+, Git, [uv installed](https://docs.astral.sh/uv/getting-started/installation/)
 
 **1. Get API Keys** (choose one or more):
+- **[Anthropic](https://console.anthropic.com/settings/keys)** - Claude Opus 4.7 / Sonnet 4.6
+- **[OpenAI](https://platform.openai.com/api-keys)** - GPT-5.5 / 5.4 / 5.1-codex
+- **[Gemini](https://aistudio.google.com/app/apikey)** - Gemini 3.1 Pro
+- **[X.AI](https://console.x.ai/)** - Grok-4.3 / 4.1-fast
 - **[OpenRouter](https://openrouter.ai/)** - Access multiple models with one API
-- **[Gemini](https://makersuite.google.com/app/apikey)** - Google's latest models
-- **[OpenAI](https://platform.openai.com/api-keys)** - O3, GPT-5 series
-- **[Azure OpenAI](https://learn.microsoft.com/azure/ai-services/openai/)** - Enterprise deployments
-- **[X.AI](https://console.x.ai/)** - Grok models
+- **[Azure OpenAI](https://learn.microsoft.com/azure/ai-services/openai/)** - Enterprise OpenAI deployments
 - **[DIAL](https://dialx.ai/)** - Vendor-agnostic model access
 - **[Ollama](https://ollama.ai/)** - Local models (free)
 
@@ -190,15 +187,14 @@ cp .env.example .env
 
 **3. Start Using!**
 ```
-"Use panel to analyze this code for security issues with gemini pro"
-"Debug this error with o3 and then get flash to suggest optimizations"
+"Use panel to analyze this code for security issues with gemini-3.1-pro-preview"
+"Debug this error with grok-4.3 and then get gpt-5.5 to suggest optimizations"
 "Plan the migration strategy with panel, get consensus from multiple models"
 "clink with cli_name=\"gemini\" role=\"planner\" to draft a phased rollout plan"
 ```
 
 👉 **[Complete Setup Guide](docs/getting-started.md)** with detailed installation, configuration for Gemini / Codex / Qwen, and troubleshooting  
-👉 **[Cursor & VS Code Setup](docs/getting-started.md#ide-clients)** for IDE integration instructions  
-📺 **[Watch tools in action](#-watch-tools-in-action)** to see real-world examples
+👉 **[Cursor & VS Code Setup](docs/getting-started.md#ide-clients)** for IDE integration instructions
 
 ## Provider Configuration
 
@@ -253,7 +249,7 @@ Panel activates any provider that has credentials in your `.env`. Copy `.env.exa
 `panel` fans out a single prompt to N models simultaneously, runs optional adversarial debate rounds between them, and synthesises a final verdict via a judge model — all in one tool call.
 
 ```
-"Use panel with gemini-pro, gpt-5, and o3 to evaluate three caching strategies, 
+"Use panel with gemini-3.1-pro-preview, gpt-5.5, and grok-4.3 to evaluate three caching strategies,
  then run a debate round and have gemini judge the outcome"
 ```
 
@@ -272,7 +268,9 @@ Say one of these to Claude Code (or whatever MCP client you're driving) and Pane
 > "panel this branch"
 > "review with all models before I push"
 
-The `multiaudit` tool reads `git diff` (vs `main`, falling back to uncommitted/staged), packages it with recent commit messages for intent context, and dispatches a `start_task('panel', ...)` with `[host, codex, gemini, grok-4.3]`, 1 debate round, codex as judge. Returns the task_id + the live web viewer URL so the user can watch the debate unfold while Claude Code stays available to follow up.
+The `multiaudit` tool reads `git diff` (vs `main`, falling back to uncommitted/staged), packages it with recent commit messages for intent context, and dispatches a `start_task('panel', ...)` with `[codex, gemini, claude, grok-4.3]`, 1 debate round, codex as judge. Returns the task_id + the live web viewer URL so the user can watch the debate unfold while Claude Code stays available to follow up.
+
+`host` (Claude Code as a peer panelist via MCP sampling) is **opt-in**, not default — pass `panelists=["host", "codex", ...]` explicitly. Most MCP hosts (including Claude Code today) don't advertise the sampling capability, so `host` would fail; the implementation excludes it from defaults to keep the magic-phrase path reliable.
 
 Default audit rubric (built into the prompt): **VERDICT / BUGS / DESIGN CONCERNS / SECURITY / MISSING TESTS / WHAT YOU'D ATTACK.** Diff truncated at 60KB with a clear marker so panelists know they're reasoning about a subset.
 
@@ -289,7 +287,7 @@ multiaudit debate_rounds=2                # deeper pressure-testing
 
 ## 🗄️ SQLite Execution Graph
 
-Every tool dispatch — including nested panel fanouts, clink subagents, async tasks, and OAuth-to-API fallbacks — is recorded in `~/.panel/execution_graph.db`. This gives you:
+Every tool dispatch — including nested panel fanouts, clink subagents, async tasks, and OAuth-to-API fallbacks — is recorded in a per-repo `.panel/execution_graph.db`. This gives you:
 
 - **Restart-safe panels** — if Panel restarts mid-panel, prior results are still readable
 - **Cost attribution** — `run_tree` returns a cost-tier rollup (`oauth_free` / `api_paid` / `oauth_fallback_paid` / `host_sampling`) so you can see exactly which sub-call drove spend
@@ -313,7 +311,7 @@ Single page renders the execution graph live:
 - Auto-selects the most recent active run on first load — you land on the live thing without clicking
 - HTML-escaped + class-name-sanitised; bad query params return 400 instead of crashing the daemon
 
-Polls every 2s for the run list and 1.5s for the selected run-tree. Direct-API panelists (grok / gpt-5.5) currently show only start/end events — per-token streaming is the next-session item.
+Updates over Server-Sent Events (`/events`) — the viewer subscribes via `EventSource` and only re-fetches when the execution graph version changes; falls back to 5s polling if the SSE connection drops. All four flagship providers (Anthropic / OpenAI / xAI / Gemini) stream by default — direct-API panelists' partial responses appear in the transcript pane as they're written, throttled to ~10 Hz so SQLite stays responsive. Opt out per-provider with `PANEL_OPENAI_STREAM=0` / `PANEL_GEMINI_STREAM=0`. Anthropic streams unconditionally.
 
 | Env var | Default | Effect |
 |---|---|---|
@@ -370,11 +368,12 @@ DISABLED_TOOLS=
     "panel": {
       "env": {
         "DISABLED_TOOLS": "refactor,testgen,secaudit,docgen,tracer",
-        "DEFAULT_MODEL": "pro",
+        "DEFAULT_MODEL": "auto",
         "DEFAULT_THINKING_MODE_THINKDEEP": "high",
-        "GEMINI_API_KEY": "your-gemini-key",
+        "ANTHROPIC_API_KEY": "your-anthropic-key",
         "OPENAI_API_KEY": "your-openai-key",
-        "OPENROUTER_API_KEY": "your-openrouter-key",
+        "GEMINI_API_KEY": "your-gemini-key",
+        "XAI_API_KEY": "your-xai-key",
         "LOG_LEVEL": "INFO",
         "CONVERSATION_TIMEOUT_HOURS": "3",
         "MAX_CONVERSATION_TURNS": "50"
@@ -414,74 +413,13 @@ These variables are not shown by default but control important behaviour:
 | `PANEL_MAX_CONCURRENT_API` | `16` | Max parallel API calls to model providers |
 | `PANEL_MAX_PROVIDER_THREADS` | `32` | Thread pool size for provider workers |
 | `PANEL_API_TIMEOUT_S` | `600` | Per-call SDK timeout in seconds |
-| `PANEL_GRAPH_DB` | `~/.panel/execution_graph.db` | SQLite execution graph path. Set to `""` to disable |
+| `PANEL_GRAPH_DB` | `<cwd>/.panel/execution_graph.db` | Per-repo SQLite execution graph path. Set to an absolute path for a shared/global view; `""` to disable |
 | `PANEL_CLINK_METADATA_CAP` | *(internal)* | Max chars of clink metadata injected into prompts |
 | `PANEL_CLINK_RAW_OUTPUT_CAP` | *(internal)* | Max chars of raw CLI output returned to MCP client |
 | `PANEL_DEBUG_CLI_OUTPUT` | unset | **⚠️ Disables all secret redaction in clink output. Never set in shared environments.** |
-| `PANEL_MCP_FORCE_ENV_OVERRIDE` | unset | Force env vars to override `.env` file values |
+| `PANEL_MCP_FORCE_ENV_OVERRIDE` | unset | When `true`, **`.env` file values override process env vars** (useful when an MCP client passes stale/cached keys). Default behavior — process env wins. |
 | `CONVERSATION_TIMEOUT_HOURS` | `3` | Hours before a conversation thread expires |
 | `MAX_CONVERSATION_TURNS` | `50` | Max turns per thread (50 turns = 25 exchanges) |
-
-</details>
-
-## 📺 Watch Tools In Action
-
-<details>
-<summary><b>Chat Tool</b> - Collaborative decision making and multi-turn conversations</summary>
-
-**Picking Redis vs Memcached:**
-
-[Chat Redis or Memcached_web.webm](https://github.com/user-attachments/assets/41076cfe-dd49-4dfc-82f5-d7461b34705d)
-
-**Multi-turn conversation with continuation:**
-
-[Chat With Gemini_web.webm](https://github.com/user-attachments/assets/37bd57ca-e8a6-42f7-b5fb-11de271e95db)
-
-</details>
-
-<details>
-<summary><b>Consensus Tool</b> - Multi-model debate and decision making</summary>
-
-**Multi-model consensus debate:**
-
-[Panel Consensus Debate](https://github.com/user-attachments/assets/76a23dd5-887a-4382-9cf0-642f5cf6219e)
-
-</details>
-
-<details>
-<summary><b>PreCommit Tool</b> - Comprehensive change validation</summary>
-
-**Pre-commit validation workflow:**
-
-<div align="center">
-  <img src="https://github.com/user-attachments/assets/584adfa6-d252-49b4-b5b0-0cd6e97fb2c6" width="950">
-</div>
-
-</details>
-
-<details>
-<summary><b>API Lookup Tool</b> - Current vs outdated API documentation</summary>
-
-**Without Panel - outdated APIs:**
-
-[API without Panel](https://github.com/user-attachments/assets/01a79dc9-ad16-4264-9ce1-76a56c3580ee)
-
-**With Panel - current APIs:**
-
-[API with Panel](https://github.com/user-attachments/assets/5c847326-4b66-41f7-8f30-f380453dce22)
-
-</details>
-
-<details>
-<summary><b>Challenge Tool</b> - Critical thinking vs reflexive agreement</summary>
-
-**Without Panel:**
-
-![without_pal@2x](https://github.com/user-attachments/assets/64f3c9fb-7ca9-4876-b687-25e847edfd87)
-
-**With Panel:**
-
-![with_pal@2x](https://github.com/user-attachments/assets/9d72f444-ba53-4ab1-83e5-250062c6ee70)
 
 </details>
 
@@ -496,8 +434,8 @@ These variables are not shown by default but control important behaviour:
 - **Async tasks** - Long-running calls run in background, poll for results
 
 **Model Support**
-- **Multiple providers** - Gemini, OpenAI, Azure, X.AI, OpenRouter, DIAL, Ollama
-- **Latest models** - GPT-5, GPT-5.5, `gemini-3.1-pro-preview`, O3, Grok-4, local Llama
+- **Multiple providers** - Anthropic, Gemini, OpenAI, Azure, X.AI, OpenRouter, DIAL, Ollama
+- **Latest models** - Claude Opus 4.7 / Sonnet 4.6, GPT-5.5 / 5.4 / 5.1-codex, Gemini 3.1 Pro, Grok-4.3 / 4.1-fast, local Llama
 - **[Thinking modes](docs/advanced-usage.md#thinking-modes)** - Control reasoning depth vs cost
 - **Vision support** - Analyze images, diagrams, screenshots
 
@@ -506,15 +444,15 @@ These variables are not shown by default but control important behaviour:
 - **Smart file handling** - Auto-expand directories, manage token limits
 - **Web search integration** - Access current documentation and best practices
 - **[Large prompt support](docs/advanced-usage.md#working-with-large-prompts)** - Bypass MCP's 25K token limit
-- **SQLite execution graph** - Durable audit trail at `~/.panel/execution_graph.db`
+- **SQLite execution graph** - Durable audit trail at `<cwd>/.panel/execution_graph.db` (per-repo)
 
 ## Example Workflows
 
 **Multi-model Code Review:**
 ```
-"Perform a codereview using gemini pro and o3, then use planner to create a fix strategy"
+"Perform a codereview using gemini-3.1-pro-preview and gpt-5.5, then use planner to create a fix strategy"
 ```
-→ Claude reviews code systematically → Consults Gemini 3.1 Pro → Gets O3's perspective → Creates unified action plan
+→ Claude reviews code systematically → Consults Gemini 3.1 Pro → Gets GPT-5.5's perspective → Creates unified action plan
 
 **Collaborative Debugging:**
 ```
@@ -524,19 +462,19 @@ These variables are not shown by default but control important behaviour:
 
 **Architecture Planning:**
 ```
-"Plan our microservices migration, get consensus from pro and o3 on the approach"
+"Plan our microservices migration, get consensus from gemini-3.1-pro-preview and claude-opus-4-7 on the approach"
 ```
 → Structured planning → Multiple expert opinions → Consensus building → Implementation roadmap
 
 **Panel Debate:**
 ```
-"Use panel with gemini-pro, gpt-5, and grok to debate: REST vs GraphQL for our API"
+"Use panel with gemini-3.1-pro-preview, gpt-5.5, and grok-4.3 to debate: REST vs GraphQL for our API"
 ```
 → 3 models respond independently → Debate round → Judge synthesises final recommendation
 
 **Async Long Task:**
 ```
-"start_task: run secaudit on the entire codebase with o3"
+"start_task: run secaudit on the entire codebase with claude-opus-4-7"
 # ... keep working ...
 "task_status <task_id>" → check progress
 "task_result <task_id>" → get full report when done
@@ -547,6 +485,7 @@ These variables are not shown by default but control important behaviour:
 ## Quick Links
 
 **📖 Documentation**
+- [Onboarding](ONBOARDING.md) - Get from `git clone` to a working `multiaudit` in 10 minutes
 - [Docs Overview](docs/index.md) - High-level map of major guides
 - [Getting Started](docs/getting-started.md) - Complete setup guide
 - [Tools Reference](docs/tools/) - All tools with examples
@@ -566,13 +505,15 @@ Apache 2.0 License - see [LICENSE](LICENSE) file for details.
 
 ## Acknowledgments
 
-Built with the power of **Multi-Model AI** collaboration 🤝
-- **A**ctual **I**ntelligence by real Humans
+Panel MCP is a substantially-rewritten fork of [`BeehiveInnovations/pal-mcp-server`](https://github.com/BeehiveInnovations/pal-mcp-server) (formerly [`zen-mcp-server`](https://github.com/BeehiveInnovations/zen-mcp-server)). The core tool framework, provider abstraction, and several workflow tools (chat, consensus, codereview, debug, thinkdeep, planner, precommit, etc.) were inherited from upstream. Substantial new orchestration surfaces (panel debate, multiaudit, async task system, OAuth-to-API fallback, durable execution graph, live web viewer, per-token streaming, central validated dispatch, bounded provider concurrency) were added in this fork.
+
+Also built on top of:
 - [MCP (Model Context Protocol)](https://modelcontextprotocol.com)
 - [Codex CLI](https://developers.openai.com/codex/cli)
 - [Claude Code](https://claude.ai/code)
 - [Gemini](https://ai.google.dev/)
 - [OpenAI](https://openai.com/)
+- [Anthropic](https://www.anthropic.com/)
 - [Azure OpenAI](https://learn.microsoft.com/azure/ai-services/openai/)
 
 ### Star History

@@ -1,8 +1,9 @@
 [project]
 name = "panel-mcp-server"
 version = "9.8.2"
-description = "AI-powered MCP server with multiple model providers"
+description = "MCP server that orchestrates multiple AI models — fan-out, debate, judge, with durable execution graph and live viewer"
 requires-python = ">=3.10"
+license = "Apache-2.0"
 dependencies = [
     "mcp>=1.0.0",
     "google-genai>=1.19.0",
@@ -11,6 +12,11 @@ dependencies = [
     "pydantic>=2.0.0",
     "python-dotenv>=1.0.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/DanielGuru/panel-mcp-server"
+Repository = "https://github.com/DanielGuru/panel-mcp-server"
+Issues = "https://github.com/DanielGuru/panel-mcp-server/issues"
 
 [tool.setuptools.packages.find]
 include = ["tools*", "providers*", "systemprompts*", "utils*", "conf*", "clink*"]

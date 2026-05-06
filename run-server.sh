@@ -1869,7 +1869,7 @@ PY
             echo ""
             echo "[mcp_servers.panel]"
             echo "command = \"bash\""
-            echo "args = [\"-c\", \"for p in \$(which uvx 2>/dev/null) \$HOME/.local/bin/uvx /opt/homebrew/bin/uvx /usr/local/bin/uvx uvx; do [ -x \\\"\$p\\\" ] && exec \\\"\$p\\\" --from git+https://github.com/BeehiveInnovations/panel-mcp-server.git panel-mcp-server; done; echo 'uvx not found' >&2; exit 1\"]"
+            echo "args = [\"-c\", \"for p in \$(which uvx 2>/dev/null) \$HOME/.local/bin/uvx /opt/homebrew/bin/uvx /usr/local/bin/uvx uvx; do [ -x \\\"\$p\\\" ] && exec \\\"\$p\\\" --from git+https://github.com/DanielGuru/panel-mcp-server.git panel-mcp-server; done; echo 'uvx not found' >&2; exit 1\"]"
             echo "tool_timeout_sec = 1200"
             echo ""
             echo "[mcp_servers.panel.env]"
@@ -1894,7 +1894,7 @@ PY
 cat <<'CODExEOF'
 [mcp_servers.panel]
 command = "sh"
-args = ["-c", "exec \$(which uvx 2>/dev/null || echo uvx) --from git+https://github.com/BeehiveInnovations/panel-mcp-server.git panel-mcp-server"]
+args = ["-c", "exec \$(which uvx 2>/dev/null || echo uvx) --from git+https://github.com/DanielGuru/panel-mcp-server.git panel-mcp-server"]
 tool_timeout_sec = 1200
 
 [mcp_servers.panel.env]
@@ -2446,7 +2446,7 @@ EOF
     cat << EOF
    [mcp_servers.panel]
    command = "bash"
-   args = ["-c", "for p in \$(which uvx 2>/dev/null) \$HOME/.local/bin/uvx /opt/homebrew/bin/uvx /usr/local/bin/uvx uvx; do [ -x \\\"\$p\\\" ] && exec \\\"\$p\\\" --from git+https://github.com/BeehiveInnovations/panel-mcp-server.git panel-mcp-server; done; echo 'uvx not found' >&2; exit 1"]
+   args = ["-c", "for p in \$(which uvx 2>/dev/null) \$HOME/.local/bin/uvx /opt/homebrew/bin/uvx /usr/local/bin/uvx uvx; do [ -x \\\"\$p\\\" ] && exec \\\"\$p\\\" --from git+https://github.com/DanielGuru/panel-mcp-server.git panel-mcp-server; done; echo 'uvx not found' >&2; exit 1"]
 
    [mcp_servers.panel.env]
    PATH = "/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin:\$HOME/.local/bin:\$HOME/.cargo/bin:\$HOME/bin"
@@ -2566,7 +2566,7 @@ show_help() {
     echo "  $0 --clear-cache Clear Python cache (fixes import issues)"
     echo ""
     echo "For more information, visit:"
-    echo "  https://github.com/BeehiveInnovations/panel-mcp-server"
+    echo "  https://github.com/DanielGuru/panel-mcp-server"
 }
 
 # Show version only

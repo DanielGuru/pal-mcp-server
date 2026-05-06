@@ -144,8 +144,10 @@ Grok has no OAuth path — it always uses `XAI_API_KEY`.
 use panel:listmodels
 ```
 
-Expected output: four configured providers (openai, anthropic, gemini, xai),
-each with their flagship aliases. If a provider is missing, its API key isn't
+Expected output: one entry per provider you set an API key for. The full
+multiaudit path uses all four (openai, anthropic, gemini, xai), but you can
+start with one — `chat` / `consensus` / `panel` work as long as the model you
+name is reachable. If a provider you expected is missing, its API key isn't
 loaded — recheck the env block in `~/.claude.json`.
 
 If `panel:` doesn't autocomplete in Claude Code, the MCP server isn't registered.
@@ -165,9 +167,11 @@ Claude will fire `panel:multiaudit`, which:
 1. Reads the current branch's `git diff` vs `main`.
 2. Packages it with intent context (recent commits + a structured rubric:
    verdict / bugs / design / security / missing tests / what you'd attack).
-3. Fires a 4-way panel via `start_task` — defaults: `host` (Claude Code itself
-   via MCP sampling), `codex`, `gemini`, `grok-4.3`. 1 debate round. Codex
-   judges.
+3. Fires a 4-way panel via `start_task` — defaults: `codex`, `gemini`,
+   `claude`, `grok-4.3`. 1 debate round. Codex judges. `host` (Claude Code
+   itself via MCP sampling) is opt-in, since most MCP hosts don't advertise
+   the sampling capability today — pass `panelists=["host", ...]`
+   explicitly to invite it.
 4. Returns a `task_id` + a **live web viewer URL** — open it to watch panelists
    complete in real time, see the debate tree, and drill into any sub-run.
 
@@ -249,7 +253,7 @@ Concrete examples:
 | "ask claude …" | `clink` (claude CLI subprocess) | Free (Claude subscription); paid fallback if quota |
 | "use gpt-5.5" / "use grok-4.3" | `chat` with that exact model | Paid (`OPENAI_API_KEY` / `XAI_API_KEY`) |
 | "consensus across …" | `consensus` workflow | Paid (mixes the named models) |
-| "audit this" / magic phrases | `multiaudit` → 4-way panel | Mixed (3 OAuth + 1 paid Grok by default) |
+| "audit this" / magic phrases | `multiaudit` → 4-way panel | Mixed: 3 OAuth (codex / gemini / claude) + 1 paid (grok-4.3) by default |
 
 OAuth-to-API fallback is **always surfaced**, never silent. The panel reads
 `metadata.oauth_fallback_used` from each panelist's response and labels its

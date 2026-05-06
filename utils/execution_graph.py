@@ -20,9 +20,11 @@ artifacts, continuations."
 
 Design choices
 --------------
-- **SQLite, not external DB.** Zero ops, lives in $HOME, fits a single-user
-  developer tool. WAL mode enables concurrent reads while a writer is
-  active. Path tunable via PANEL_GRAPH_DB; default ~/.panel/execution_graph.db.
+- **SQLite, not external DB.** Zero ops, fits a single-user developer tool.
+  WAL mode enables concurrent reads while a writer is active. Path tunable
+  via PANEL_GRAPH_DB; per-repo default is ``<cwd>/.panel/execution_graph.db``
+  (so each project Claude Code opens has an isolated debate history). Set
+  PANEL_GRAPH_DB to an absolute path for a shared/global view.
 
 - **Append-only events; mutable runs.** Events are an immutable timeline
   (start, progress, complete, error). Runs carry summary fields that update

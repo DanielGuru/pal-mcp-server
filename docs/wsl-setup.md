@@ -27,7 +27,7 @@ npm install -g @anthropic-ai/claude-code
    cd ~
    
    # Clone the repository
-   git clone https://github.com/BeehiveInnovations/panel-mcp-server.git
+   git clone https://github.com/DanielGuru/panel-mcp-server.git
    cd panel-mcp-server
    ```
 

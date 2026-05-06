@@ -97,7 +97,7 @@ class MultiauditTool(BaseTool):
             "Trigger a multi-model audit of the current branch's changes. "
             "Reads the git diff (vs main, or uncommitted if no diff vs main), "
             "packages it with intent context from recent commits, and fires "
-            "an adversarial debate panel (codex + gemini + grok-4.3 by default, "
+            "an adversarial debate panel (codex + gemini + claude + grok-4.3 by default, "
             "1 debate round, codex as judge). Returns the task_id + live web "
             "viewer URL + a summary line. The user opens the URL to watch the "
             "debate; you poll task_status / run_tree for intermediate findings. "

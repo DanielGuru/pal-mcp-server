@@ -35,8 +35,8 @@ class OpenRouterProvider(OpenAICompatibleProvider):
 
     # Custom headers required by OpenRouter
     DEFAULT_HEADERS = {
-        "HTTP-Referer": get_env("OPENROUTER_REFERER", "https://github.com/BeehiveInnovations/panel-mcp-server")
-        or "https://github.com/BeehiveInnovations/panel-mcp-server",
+        "HTTP-Referer": get_env("OPENROUTER_REFERER", "https://github.com/DanielGuru/panel-mcp-server")
+        or "https://github.com/DanielGuru/panel-mcp-server",
         "X-Title": get_env("OPENROUTER_TITLE", "Panel MCP Server") or "Panel MCP Server",
     }
 

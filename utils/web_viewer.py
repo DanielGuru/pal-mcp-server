@@ -579,17 +579,22 @@ function effectiveRunStatus(tree) {
   return tree.status;
 }
 
-// Pick a representative tool name — prefer the deepest non-dispatcher
-// child so we say "panel" rather than "multiaudit · 60ms".
+// Pick a representative tool name — skip past dispatcher wrappers
+// (multiaudit / start_task) to the first real tool, but DON'T descend
+// further. For multiaudit → start_task → panel → [panelists], we want
+// "panel" — not "multiaudit" (the wrapper that returned in 60ms) and
+// not "panelist:grok-4.3" (whichever child we visited last).
 function effectiveToolName(tree) {
   const dispatchers = new Set(['multiaudit', 'start_task']);
-  let best = tree;
   function walk(n) {
-    if (!dispatchers.has(n.tool_name)) best = n;
-    for (const c of (n.children || [])) walk(c);
+    if (!dispatchers.has(n.tool_name)) return n;
+    for (const c of (n.children || [])) {
+      const found = walk(c);
+      if (found) return found;
+    }
+    return null;
   }
-  walk(tree);
-  return best;
+  return walk(tree) || tree;
 }
 
 let LAST_EVENT_COUNT = 0;
