@@ -482,6 +482,107 @@ def test_per_call_override_wins_over_env(tmp_path, monkeypatch):
 # ----------------------------------------------------------------------
 
 
+def test_propagates_start_task_error_no_false_success(tmp_path, monkeypatch):
+    """When start_task returns a structured error payload (admission control,
+    unknown wrapped tool, etc.) WITHOUT raising, bugfind must surface that
+    as an error — not return ``status: started`` with task_id=null and
+    ``next_steps`` telling the user to poll a nonexistent task. Audit-flagged
+    blocker fixed in this commit."""
+    repo = _make_git_repo(tmp_path)
+
+    async def fake_execute(name, arguments):
+        from mcp.types import TextContent
+
+        return [
+            TextContent(
+                type="text",
+                text=json.dumps(
+                    {"status": "error", "error": "too_many_active_tasks: 8/8 running"}
+                ),
+            )
+        ]
+
+    import server
+
+    monkeypatch.setattr(server, "execute_tool", fake_execute)
+
+    from tools.bugfind import BugfindTool
+
+    async def go():
+        return await BugfindTool().execute(
+            {
+                "bug_description": "x",
+                "working_directory_absolute_path": str(repo),
+                "skip_log_tail": True,
+            }
+        )
+
+    out = asyncio.run(go())
+    body = json.loads(out[0].text)
+    assert body["status"] == "error"
+    assert "too_many_active_tasks" in body["error"]
+    # Critical: the user must NOT see status=started for a refused dispatch
+    assert body.get("task_id") in (None, "")
+
+
+def test_rejects_file_as_working_directory(tmp_path):
+    """An existing regular file at working_directory_absolute_path passes
+    Path.exists() but would crash subprocess.run(..., cwd=cwd) later. Reject
+    upfront. Audit-flagged."""
+    a_file = tmp_path / "this_is_a_file.txt"
+    a_file.write_text("not a directory\n")
+
+    from tools.bugfind import BugfindTool
+
+    async def go():
+        return await BugfindTool().execute(
+            {
+                "bug_description": "x",
+                "working_directory_absolute_path": str(a_file),
+            }
+        )
+
+    out = asyncio.run(go())
+    body = json.loads(out[0].text)
+    assert body["status"] == "error"
+    assert "is not a directory" in body["error"]
+
+
+def test_default_panelists_immutable_against_env_at_import(tmp_path, monkeypatch):
+    """DEFAULT_PANELISTS is now an immutable tuple. If env was set at server
+    boot and later cleared, execute() must still fall back to the canonical
+    4-model list — not a stale mutated value. Audit-flagged."""
+    repo = _make_git_repo(tmp_path)
+
+    # Simulate: env was set at import (not actually relevant since the
+    # tuple is immutable) and is now cleared.
+    monkeypatch.delenv("PANEL_BUGFIND_PANELISTS", raising=False)
+    monkeypatch.delenv("PANEL_BUGFIND_JUDGE", raising=False)
+
+    captured: dict = {}
+    import server
+
+    monkeypatch.setattr(server, "execute_tool", _fake_dispatch(captured))
+
+    from tools.bugfind import BugfindTool, DEFAULT_PANELISTS
+
+    # Hard guard: must be a tuple (immutable), not a list
+    assert isinstance(DEFAULT_PANELISTS, tuple)
+
+    async def go():
+        return await BugfindTool().execute(
+            {
+                "bug_description": "x",
+                "working_directory_absolute_path": str(repo),
+                "skip_log_tail": True,
+            }
+        )
+
+    out = asyncio.run(go())
+    body = json.loads(out[0].text)
+    assert body["panelists"] == ["codex", "gemini", "claude", "grok-4.3"]
+
+
 def test_bugfind_registered_in_server_tools():
     import server
 

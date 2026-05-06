@@ -518,6 +518,93 @@ def test_run_tree_tool_with_cost_rollup(tmp_path, monkeypatch):
     assert rollup.get("untagged") == 1  # panel itself
 
 
+def test_run_tree_transcript_mode(tmp_path, monkeypatch):
+    """``mode='transcript'`` returns a clean text block of just the
+    panelist_answer + judge_synthesis events, chronologically. This is the
+    canonical way an agent reads a panel result — no scraping the full
+    progress-event stream into a subagent."""
+    import json
+
+    import utils.execution_graph as eg
+
+    monkeypatch.setattr(eg, "_GRAPH", eg.ExecutionGraph(tmp_path / "g.db"))
+    monkeypatch.setattr(eg, "_GRAPH_DISABLED", False)
+    g = eg.get_graph()
+
+    # Build a panel-shaped tree with panelist_answer events on the children
+    panel_run = g.start_run("panel", args={})
+    p1 = g.start_run("clink", parent_run_id=panel_run, args={})
+    g.add_event(
+        p1, event_type="panelist_answer", message="[round 1 · codex]\nVerdict: SHIP"
+    )
+    g.add_event(p1, event_type="progress", message="codex: tool done")  # noise
+    g.complete_run(p1, cost_tier="oauth_free")
+    p2 = g.start_run("clink", parent_run_id=panel_run, args={})
+    g.add_event(
+        p2, event_type="panelist_answer", message="[round 1 · gemini]\nVerdict: HOLD"
+    )
+    g.complete_run(p2, cost_tier="oauth_free")
+    judge = g.start_run("clink", parent_run_id=panel_run, args={})
+    g.add_event(
+        judge,
+        event_type="judge_synthesis",
+        message="[judge:codex]\nConsensus: ship with fixes",
+    )
+    g.complete_run(judge, cost_tier="oauth_free")
+    g.complete_run(panel_run)
+
+    from tools.graph_query import RunTreeTool
+
+    async def go():
+        return await RunTreeTool().execute(
+            {"run_id": panel_run, "mode": "transcript"}
+        )
+
+    body = json.loads(asyncio.run(go())[0].text)
+    assert body["status"] == "ok"
+    assert body["mode"] == "transcript"
+    assert body["run_id"] == panel_run
+
+    transcript = body["transcript"]
+    # The three panelist/judge events must appear, with the noise filtered out
+    assert "[round 1 · codex]" in transcript
+    assert "Verdict: SHIP" in transcript
+    assert "[round 1 · gemini]" in transcript
+    assert "Verdict: HOLD" in transcript
+    assert "[judge:codex]" in transcript
+    assert "ship with fixes" in transcript
+    # Noise progress event is NOT in the transcript
+    assert "codex: tool done" not in transcript
+    # cost_tier_rollup still present
+    assert body["cost_tier_rollup"].get("oauth_free") == 3
+
+
+def test_run_tree_transcript_mode_empty_run(tmp_path, monkeypatch):
+    """A run with no panelist_answer/judge_synthesis events returns a
+    clear placeholder explaining that mode='full' is what they want."""
+    import json
+
+    import utils.execution_graph as eg
+
+    monkeypatch.setattr(eg, "_GRAPH", eg.ExecutionGraph(tmp_path / "g.db"))
+    monkeypatch.setattr(eg, "_GRAPH_DISABLED", False)
+    g = eg.get_graph()
+
+    rid = g.start_run("chat", args={"prompt": "hi"})
+    g.add_event(rid, event_type="progress", message="boot")
+    g.complete_run(rid)
+
+    from tools.graph_query import RunTreeTool
+
+    async def go():
+        return await RunTreeTool().execute({"run_id": rid, "mode": "transcript"})
+
+    body = json.loads(asyncio.run(go())[0].text)
+    assert body["status"] == "ok"
+    assert "no panelist_answer" in body["transcript"]
+    assert "mode='full'" in body["transcript"]
+
+
 def test_query_tools_when_graph_disabled(monkeypatch):
     """When PANEL_GRAPH_DB='' the query tools must report disabled gracefully."""
     import json

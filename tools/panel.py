@@ -359,6 +359,36 @@ async def _run_panelist(
                 started=started,
             )
 
+        # Pre-flight provider availability check for paid-API agents. Without
+        # this, a missing XAI_API_KEY shows up as "panel/grok-4.3: ✗ error"
+        # in the activity feed with no hint that the fix is "set XAI_API_KEY"
+        # — users see a generic failure and don't know it's a config issue.
+        # Rule: no OAuth path → must have an API provider; if neither, fail
+        # fast with an actionable message instead of dispatching to chat
+        # only to have it raise the same thing wrapped in panel's generic
+        # exception handler.
+        if not is_clink:
+            from providers.registry import ModelProviderRegistry
+
+            if ModelProviderRegistry.get_provider_for_model(agent) is None:
+                duration = round(time.monotonic() - started, 2)
+                hint = _provider_setup_hint(agent)
+                error_msg = (
+                    f"no provider configured for model {agent!r}. {hint} "
+                    f"(or pass panelists=[...] to drop this agent from the panel)."
+                )
+                await emit_progress(
+                    f"panel/{label}: ✗ {error_msg}", progress=1.0
+                )
+                return {
+                    "agent": agent,
+                    "label": label,
+                    "role": role,
+                    "ok": False,
+                    "duration_s": duration,
+                    "error": error_msg,
+                }
+
         # Dispatch through server.execute_tool so panelists get the same
         # validation as MCP-boundary calls (model resolution, file-size cap).
         # Pre-fix, panel was a quiet way to bypass MCP-boundary validation.
@@ -422,7 +452,14 @@ async def _run_panelist(
         }
     except Exception as exc:  # noqa: BLE001
         duration = round(time.monotonic() - started, 2)
-        await emit_progress(f"panel/{label}: ✗ error", progress=1.0)
+        # Surface the underlying exception in the progress event, not just
+        # "✗ error". A user staring at the live activity feed needs to see
+        # WHY a panelist failed (no provider / quota / timeout chain / etc.)
+        # without having to dig into task_result.
+        snippet = f"{type(exc).__name__}: {exc}"
+        if len(snippet) > 240:
+            snippet = snippet[:240] + "…"
+        await emit_progress(f"panel/{label}: ✗ {snippet}", progress=1.0)
         return {
             "agent": agent,
             "label": label,
@@ -431,6 +468,28 @@ async def _run_panelist(
             "duration_s": duration,
             "error": f"{type(exc).__name__}: {exc}",
         }
+
+
+def _provider_setup_hint(model_name: str) -> str:
+    """Human-friendly hint for which env var to set when a model has no
+    provider. Used by the pre-flight dispatch check so users see the fix
+    inline in the panel activity feed.
+    """
+
+    lower = model_name.lower()
+    if lower.startswith("grok-") or "grok" in lower:
+        return "Set XAI_API_KEY (xAI Grok has no OAuth path; API only)."
+    if lower.startswith("gpt-") or lower.startswith("o3"):
+        return "Set OPENAI_API_KEY (or use the 'codex' clink agent for free OAuth via ChatGPT subscription)."
+    if lower.startswith("claude-") or lower == "claude":
+        return "Set ANTHROPIC_API_KEY (or use the 'claude' clink agent for free OAuth via Claude subscription)."
+    if lower.startswith("gemini-") or lower == "gemini":
+        return "Set GEMINI_API_KEY (or use the 'gemini' clink agent for free OAuth via Google account)."
+    return (
+        "Configure a provider for this model: ANTHROPIC_API_KEY / "
+        "OPENAI_API_KEY / GEMINI_API_KEY / XAI_API_KEY / OPENROUTER_API_KEY / "
+        "CUSTOM_API_URL — then restart your MCP client."
+    )
 
 
 def _truncate(text: str, *, cap: int) -> str:

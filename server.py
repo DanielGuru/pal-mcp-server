@@ -1813,7 +1813,15 @@ async def main():
         "consider debate_rounds=1 if the topic is contested\n"
         "Always wrap panel in start_task — it can run for several minutes per round. For free OAuth runs "
         "use codex+gemini+claude panelists with codex as judge — three frontier families at zero cost. "
-        "Add grok-4.3 only when the user asks for paid model diversity or names it explicitly."
+        "Add grok-4.3 only when the user asks for paid model diversity or names it explicitly. "
+        "**Reading panel results — canonical path:** when a panel/multiaudit/bugfind dispatch "
+        "completes, call `run_tree(run_id, mode='transcript')` to get the panelist verdicts + "
+        "judge synthesis as clean text — exactly what the user sees on the live web viewer page. "
+        "Do NOT scrape `task_status`'s full progress-event stream into a subagent: that stream "
+        "carries tool_use chatter, file reads, and command echoes that bury the actual verdicts. "
+        "The run_id is in every panel/multiaudit/bugfind response (parsed out of `web_viewer_url`'s "
+        "`?run=` query param). When the user asks 'what did the panel say?' or 'show me the "
+        "verdicts', this is the one tool call that answers it."
     )
 
     if IS_AUTO_MODE:

@@ -307,8 +307,27 @@ class MultiauditTool(BaseTool):
         except Exception as exc:  # noqa: BLE001
             return _err(f"start_task dispatch failed: {type(exc).__name__}: {exc}")
 
-        # start_task returns a JSON-encoded ToolOutput; pull the task_id out
+        # start_task returns structured error payloads (admission control
+        # failure, unknown wrapped tool, etc.) WITHOUT raising. Without
+        # this guard, multiaudit would happily report "started" with
+        # task_id=null and tell the user to poll a task that doesn't
+        # exist — operational lie at the worst possible moment.
+        # (Audit-flagged in the bugfind review; same defect class.)
+        from tools.bugfind import _extract_start_status
+
+        start_status, start_error = _extract_start_status(start_result)
+        if start_status != "started":
+            return _err(
+                f"start_task refused dispatch: {start_error or 'unknown error'} "
+                f"(status={start_status!r}). The audit panel was NOT started."
+            )
         task_id = _extract_task_id(start_result)
+        if not task_id:
+            return _err(
+                "start_task returned status=started but no task_id was found. "
+                "The panel may or may not have started; this is a server-side "
+                "contract violation."
+            )
 
         # ------ get the web viewer URL if available ------
         # Deep-link to this multiaudit's own run so the operator's auto-opened
@@ -349,8 +368,8 @@ class MultiauditTool(BaseTool):
             "next_steps": [
                 "Open the web viewer URL below to watch the debate live.",
                 "Poll task_status(task_id) for high-level progress.",
-                "Call run_tree(task_id_or_run_id) for the structured panel tree.",
-                "Wait for task_result(task_id, wait_seconds=N) to surface the final headline + judge synthesis.",
+                "When complete, call run_tree(run_id, mode='transcript') to read the panelist verdicts + judge synthesis as clean text — same view as the live viewer page. Pull the run_id from web_viewer_url's ?run=<id> query param.",
+                "Or: task_result(task_id, wait_seconds=N) for the synthesized final headline.",
             ],
         }
         if web_url:

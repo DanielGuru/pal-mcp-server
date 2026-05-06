@@ -701,6 +701,11 @@ function effectiveToolName(tree) {
 }
 
 let LAST_EVENT_COUNT = 0;
+// Tracks user-toggled state of the prompt header so re-renders don't
+// flip it back to the default. Map: run_id → 'open' | 'closed'.
+// Without this, the prompt header collapsed every 1.5s when
+// renderConversation rebuilt #content's innerHTML.
+const PROMPT_HEADER_STATE = new Map();
 // "Sticky bottom" auto-scroll. We don't try to remember intent across
 // renders — we just check, AT RENDER TIME, whether the user is near the
 // bottom of the page. If yes, follow new content. If they've scrolled up
@@ -708,6 +713,50 @@ let LAST_EVENT_COUNT = 0;
 // previous 600px/200px hysteresis flag fought the user when they
 // scrolled mid-stream.
 const STICKY_BOTTOM_PX = 100;
+
+// Count panelist sub-runs by status so the activity message can be
+// honest about who's actually mid-flight. Pre-fix, "panelists still
+// talking" fired even when the only active panelist was streaming
+// quietly and 2/4 had errored, making the message misleading.
+function countPanelistStates(tree) {
+  let total = 0;
+  let completed = 0;
+  let running = 0;
+  let failed = 0;
+  function walk(node) {
+    const isPanelist =
+      String(node.label || '').startsWith('panelist:') ||
+      String(node.tool_name || '') === 'clink' && (node.parent_run_id || node.label || '').toLowerCase().includes('panelist');
+    if (isPanelist) {
+      total++;
+      if (node.status === 'completed') completed++;
+      else if (node.status === 'running') running++;
+      else if (node.status === 'failed' || node.status === 'cancelled') failed++;
+    }
+    for (const c of (node.children || [])) walk(c);
+  }
+  walk(tree);
+  return { total, completed, running, failed };
+}
+
+function buildLiveStatusLine(tree, eventCount, panelistAnswerCount) {
+  const counts = countPanelistStates(tree);
+  // No sub-panelists detected — fall back to old wording
+  if (counts.total === 0) {
+    return eventCount > 0
+      ? 'panelists still talking…'
+      : 'panelists are thinking — first answer arriving soon…';
+  }
+  const parts = [];
+  parts.push(`${panelistAnswerCount}/${counts.total} answers in`);
+  if (counts.running > 0) {
+    parts.push(`${counts.running} still talking`);
+  }
+  if (counts.failed > 0) {
+    parts.push(`${counts.failed} failed`);
+  }
+  return parts.join(' · ');
+}
 
 async function renderConversation() {
   if (!SELECTED) {
@@ -741,14 +790,23 @@ async function renderConversation() {
 
     const promptHeader = renderPromptHeader(tree);
 
+    // Count finalised panelist answers so the live-status line is honest
+    // about progress rather than just saying "still talking" when half
+    // the panel has returned and the rest are done/errored.
+    const panelistAnswerCount = events.filter(
+      e => e.event_type === 'panelist_answer' || e.event_type === 'judge_synthesis'
+    ).length;
+
     let middle;
     if (events.length) {
       middle = events.map(renderTranscriptEvent).join('');
       if (effStatus === 'running') {
-        middle += `<div class="thinking">panelists still talking…</div>`;
+        const line = buildLiveStatusLine(tree, events.length, panelistAnswerCount);
+        middle += `<div class="thinking">${escapeHtml(line)}</div>`;
       }
     } else if (effStatus === 'running' || hasAnyStatusActivity(tree)) {
-      middle = `<div class="thinking">panelists are thinking — first answer arriving soon…</div>`;
+      const line = buildLiveStatusLine(tree, 0, 0);
+      middle = `<div class="thinking">${escapeHtml(line)}</div>`;
     } else {
       middle = `<div class="empty">no transcript events for this run<div class="hint">this run didn't go through panel — try multiaudit or panel directly</div></div>`;
     }
@@ -763,6 +821,20 @@ async function renderConversation() {
     const preScrollY = window.scrollY;
 
     $('#content').innerHTML = summary + promptHeader + middle + renderRawTree(tree);
+
+    // Restore user-toggled state of the prompt header. Before this fix
+    // the <details> element rebuilt as closed (or its default-open) on
+    // every 1.5s refresh, which silently fought the user every time
+    // they tried to read it.
+    const ph = $('#content').querySelector('details.prompt-header');
+    if (ph) {
+      const stored = PROMPT_HEADER_STATE.get(SELECTED);
+      if (stored === 'open') ph.open = true;
+      else if (stored === 'closed') ph.open = false;
+      ph.addEventListener('toggle', () => {
+        PROMPT_HEADER_STATE.set(SELECTED, ph.open ? 'open' : 'closed');
+      });
+    }
 
     const newEventCount = events.length;
     LAST_EVENT_COUNT = newEventCount;

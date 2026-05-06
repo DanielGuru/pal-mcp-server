@@ -198,9 +198,14 @@ class RunTreeTool(BaseTool):
     def get_description(self) -> str:
         return (
             "Fetch a run and recursively all its descendants (children, edges, "
-            "events). The full replay surface for a panel: lets you see every "
-            "panelist sub-call, any OAuth fallback that fired, the judge run, "
-            "and per-leaf cost_tier — all from one query, even after Panel restart."
+            "events). The full replay surface for a panel: every panelist "
+            "sub-call, any OAuth fallback, the judge run, and per-leaf "
+            "cost_tier — all from one query, even after Panel restart. "
+            "**For panel/multiaudit/bugfind results, use mode='transcript' "
+            "to get JUST the panelist verdicts + judge synthesis as clean "
+            "text — same view the user sees on the live web viewer page. "
+            "Always prefer this over scraping task_status's progress event "
+            "log when you want to read the panel's findings.**"
         )
 
     def get_input_schema(self) -> dict[str, Any]:
@@ -209,7 +214,21 @@ class RunTreeTool(BaseTool):
             "properties": {
                 "run_id": {
                     "type": "string",
-                    "description": "Root run id. Get from list_runs or any prior MCP response that surfaced it.",
+                    "description": "Root run id. Get from list_runs or any prior MCP response that surfaced it (multiaudit/bugfind/panel responses include run ids in web_viewer_url).",
+                },
+                "mode": {
+                    "type": "string",
+                    "enum": ["full", "transcript"],
+                    "description": (
+                        "'full' (default): return the full tree JSON with "
+                        "events, children, and cost rollup. 'transcript': "
+                        "return ONLY the panelist_answer + judge_synthesis "
+                        "events as a chronologically-ordered text block — "
+                        "same view the user sees on the live web viewer "
+                        "page. Use this after a panel/multiaudit/bugfind "
+                        "completes to read the verdicts directly without "
+                        "spawning a subagent to scrape task_status."
+                    ),
                 },
             },
             "required": ["run_id"],
@@ -249,10 +268,69 @@ class RunTreeTool(BaseTool):
         tree = graph.get_run_tree(run_id)
         if tree is None:
             return _err(f"No run found with id {run_id!r}")
+
+        mode = (arguments.get("mode") or "full").lower()
+        if mode == "transcript":
+            # Return ONLY the panelist verdicts + judge synthesis as
+            # chronological text. Same view the user sees on the live
+            # web viewer. Bypasses the noise of progress events,
+            # tool_use logs, and the recursive tree structure — just
+            # the actual model outputs an agent or human cares about.
+            transcript = _render_panel_transcript(tree)
+            return _json_response(
+                {
+                    "status": "ok",
+                    "mode": "transcript",
+                    "run_id": run_id,
+                    "transcript": transcript,
+                    "cost_tier_rollup": _cost_tier_rollup(tree),
+                }
+            )
+
         # Roll up cost-tier counts so callers can scan spend without
         # walking the tree themselves.
         rollup = _cost_tier_rollup(tree)
         return _json_response({"status": "ok", "tree": tree, "cost_tier_rollup": rollup})
+
+
+def _render_panel_transcript(tree: dict[str, Any]) -> str:
+    """Walk the run tree, collect panelist_answer + judge_synthesis events,
+    sort chronologically, return as a single text block.
+
+    This is the canonical "read the panel results like the user does"
+    view — every agent that finishes a panel/multiaudit/bugfind dispatch
+    should call run_tree with mode='transcript' instead of scraping
+    task_status's full progress-event stream (which contains tool_use
+    chatter, file reads, command echoes, etc. that drown the verdicts).
+    """
+
+    events: list[dict[str, Any]] = []
+
+    def _walk(node: dict[str, Any]) -> None:
+        for ev in node.get("events") or []:
+            etype = ev.get("event_type")
+            if etype in ("panelist_answer", "judge_synthesis"):
+                events.append(ev)
+        for child in node.get("children") or []:
+            _walk(child)
+
+    _walk(tree)
+    events.sort(key=lambda e: e.get("ts") or 0)
+
+    if not events:
+        return (
+            "(no panelist_answer or judge_synthesis events found in this "
+            "run tree — either the run is still in progress or it wasn't "
+            "a panel-style dispatch. Use mode='full' for the raw tree.)"
+        )
+
+    blocks: list[str] = []
+    for ev in events:
+        msg = (ev.get("message") or "").rstrip()
+        if not msg:
+            continue
+        blocks.append(msg)
+    return "\n\n---\n\n".join(blocks)
 
 
 def _cost_tier_rollup(tree: dict[str, Any]) -> dict[str, int]:

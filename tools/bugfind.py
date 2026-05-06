@@ -57,11 +57,13 @@ logger = logging.getLogger(__name__)
 # via env / per-call args. Keep ``host`` opt-in (Claude Code doesn't
 # advertise sampling capability today; including it polluted every audit
 # with a "host failed" row).
-DEFAULT_PANELISTS = ["codex", "gemini", "claude", "grok-4.3"]
-DEFAULT_JUDGE = os.environ.get("PANEL_BUGFIND_JUDGE", "").strip() or "codex"
-_panelists_env = (os.environ.get("PANEL_BUGFIND_PANELISTS") or "").strip()
-if _panelists_env:
-    DEFAULT_PANELISTS = [p.strip() for p in _panelists_env.split(",") if p.strip()]
+#
+# DELIBERATELY IMMUTABLE: the import-time fallback is the hardcoded
+# 4-model list; env-driven overrides are read fresh inside ``execute()``.
+# An earlier version mutated this at import time, which created a stale-
+# defaults bug after live env clearing (panel-flagged in the bugfind
+# audit). Don't reintroduce module-level mutation.
+DEFAULT_PANELISTS = ("codex", "gemini", "claude", "grok-4.3")
 DEFAULT_DEBATE_ROUNDS = 1
 DEFAULT_PANELIST_TIMEOUT_S = 300
 
@@ -70,7 +72,13 @@ DEFAULT_PANELIST_TIMEOUT_S = 300
 # verbose log file or a giant attached file can't blow the budget.
 _LOG_TAIL_CHAR_CAP = 8_000  # ~ last 200 lines of error-only log
 _FILE_CHAR_CAP = 30_000     # per attached file
-_TOTAL_CONTEXT_CHAR_CAP = 80_000  # safety net across all sections
+# Total cap of 200KB — well under every default panelist's context
+# window (Gemini 1M, Claude / GPT-5.5 200K, Grok-4.3 128K) so the cap
+# is a "no single bugfind eats the whole budget" guardrail, not a
+# functional ceiling. Was 80KB; raised after audit feedback that
+# users attaching 4 × 30KB files were silently losing trailing
+# attachments to the tail-truncate.
+_TOTAL_CONTEXT_CHAR_CAP = 200_000
 _RECENT_COMMITS_COUNT = 8
 _LOG_FILE_CANDIDATES = ("logs/mcp_server.log", "logs/mcp_activity.log")
 
@@ -121,7 +129,15 @@ class BugfindTool(BaseTool):
                         "Absolute paths of files the panel should read "
                         "verbatim. Use this when the bug references specific "
                         "code that the panel needs to see. Each file is "
-                        "capped at ~30KB; truncated files get a marker."
+                        "capped at ~30KB; truncated files get a marker. "
+                        "**SECURITY: file contents are sent verbatim to the "
+                        "configured panelist APIs (OpenAI / Anthropic / "
+                        "Gemini / xAI / OAuth CLIs) as part of the panel "
+                        "prompt. Don't attach files containing secrets — "
+                        "no redaction is applied to attached_files content. "
+                        "Attach source code, config templates, error "
+                        "screenshots' source — not `.env`, credentials, or "
+                        "shell history.**"
                     ),
                 },
                 "panelists": {
@@ -217,17 +233,27 @@ class BugfindTool(BaseTool):
                 f"working_directory_absolute_path does not exist: {cwd}. "
                 "Pass an absolute path to the repo you want investigated."
             )
+        if not cwd_path.is_dir():
+            # An existing regular file would pass exists() but crash
+            # subprocess.run(..., cwd=cwd) with NotADirectoryError later.
+            # Fail fast with a clear message instead. (Audit-flagged.)
+            return _err(
+                f"working_directory_absolute_path is not a directory: {cwd}. "
+                "Pass the absolute path to a repository directory, not a file."
+            )
 
         # Live env defaults — same pattern as multiaudit (round-3 panel
         # finding: the settings tab mutates env at runtime, so freezing at
-        # import time made live toggles a lie).
+        # import time made live toggles a lie). DEFAULT_PANELISTS is now
+        # the immutable hardcoded tuple — when env is cleared at runtime,
+        # we fall back to the canonical list, not a stale mutated copy.
         env_judge = (os.environ.get("PANEL_BUGFIND_JUDGE") or "").strip()
         env_panelists = (os.environ.get("PANEL_BUGFIND_PANELISTS") or "").strip()
         live_default_judge = env_judge or "codex"
         live_default_panelists = (
             [p.strip() for p in env_panelists.split(",") if p.strip()]
             if env_panelists
-            else DEFAULT_PANELISTS
+            else list(DEFAULT_PANELISTS)
         )
 
         panelists = arguments.get("panelists") or live_default_panelists
@@ -293,7 +319,24 @@ class BugfindTool(BaseTool):
         except Exception as exc:  # noqa: BLE001
             return _err(f"start_task dispatch failed: {type(exc).__name__}: {exc}")
 
+        # start_task returns structured error payloads (e.g. too many active
+        # tasks, unknown wrapped tool) WITHOUT raising. Without this guard,
+        # bugfind would happily report "started" with task_id=null and tell
+        # the user to poll a task that doesn't exist — operational lie at
+        # exactly the moment the user is chasing a bug. (Audit-flagged.)
+        start_status, start_error = _extract_start_status(start_result)
+        if start_status != "started":
+            return _err(
+                f"start_task refused dispatch: {start_error or 'unknown error'} "
+                f"(status={start_status!r}). The panel was NOT started."
+            )
         task_id = _extract_task_id(start_result)
+        if not task_id:
+            return _err(
+                "start_task returned status=started but no task_id was found "
+                "in the response. The panel may or may not have started; "
+                "this is a server-side contract violation."
+            )
 
         # Web viewer deep-link to this bugfind run, same logic as multiaudit
         try:
@@ -334,8 +377,8 @@ class BugfindTool(BaseTool):
             "next_steps": [
                 "Open the web viewer URL below to watch the debate live.",
                 "Poll task_status(task_id) for high-level progress.",
-                "Call run_tree(task_id_or_run_id) for the structured panel tree.",
-                "Wait for task_result(task_id, wait_seconds=N) to surface the final fix proposal from the judge.",
+                "When complete, call run_tree(run_id, mode='transcript') to read the panelist verdicts + judge fix proposal as clean text — same view as the live viewer page. Pull the run_id from web_viewer_url's ?run=<id> query param.",
+                "Or: task_result(task_id, wait_seconds=N) for the synthesized final output.",
             ],
         }
         if web_url:
@@ -519,6 +562,47 @@ Begin your investigation. This is round 1; in round 2 you'll see the other \
 panelists' takes and must engage directly — what did they get wrong, where \
 did they convince you, what's your revised position?
 """
+
+
+def _extract_start_status(
+    start_result: list[TextContent],
+) -> tuple[str | None, str | None]:
+    """Parse start_task's response. Returns (status, error_message).
+
+    start_task returns ``{"status": "started", "task_id": "..."}`` on
+    success and ``{"status": "error", "error": "..."}`` on refusal
+    (admission control, unknown wrapped tool, etc.) WITHOUT raising.
+    Bugfind needs to distinguish these so it doesn't lie about
+    successful dispatch. (Audit-flagged.)
+    """
+
+    if not start_result:
+        return None, "empty start_task response"
+    text = getattr(start_result[0], "text", None)
+    if not text:
+        return None, "start_task response had no text"
+    try:
+        body = json.loads(text)
+    except (json.JSONDecodeError, ValueError):
+        return None, "start_task response was not JSON"
+    if not isinstance(body, dict):
+        return None, "start_task response was not a dict"
+
+    # Direct shape (start_task returns this verbatim)
+    if "status" in body:
+        return str(body["status"]), str(body.get("error") or "") or None
+
+    # Wrapped-ToolOutput shape — content holds the JSON we want
+    content = body.get("content")
+    if isinstance(content, str):
+        try:
+            inner = json.loads(content)
+            if isinstance(inner, dict) and "status" in inner:
+                return str(inner["status"]), str(inner.get("error") or "") or None
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+    return None, "start_task response had no status field"
 
 
 def _extract_task_id(start_result: list[TextContent]) -> str | None:
