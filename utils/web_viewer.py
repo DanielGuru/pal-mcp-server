@@ -356,39 +356,82 @@ function speakerClass(label) {
   return 'speaker-other';
 }
 
+// Map a free-form speaker label ("[round 1 · grok-4.3]" /
+// "[xai/grok-4.3]" / "[claude/claude-opus-4-7]") down to a stable key
+// used to dedupe streaming-vs-final transcript blocks. The streaming
+// label format from utils/stream_progress.py is "<provider>/<model>";
+// the panelist_answer label format from tools/panel.py is "round N ·
+// <agent>". We match on the same set of model substrings the
+// speakerClass function uses for colouring.
+function speakerKeyForDedupe(label) {
+  const lower = String(label || '').toLowerCase();
+  if (lower.startsWith('judge')) return 'judge';
+  if (lower.includes('codex') || lower.includes('openai') || lower.includes('gpt')) return 'codex';
+  if (lower.includes('gemini')) return 'gemini';
+  if (lower.includes('grok') || lower.includes('xai')) return 'grok';
+  if (lower.includes('claude') || lower.includes('anthropic')) return 'claude';
+  if (lower.includes('host')) return 'host';
+  return null;
+}
+
+function _extractLabel(msg) {
+  const m = String(msg || '').match(/^\[([^\]]+)\]/);
+  return m ? m[1] : '';
+}
+
 function flattenTranscriptEvents(node, out) {
-  // Walk the run tree and collect transcript-renderable events from
-  // every node, regardless of depth.
+  // Walk the run tree once collecting transcript-renderable events,
+  // then do a second pass to suppress streaming blocks whose speaker
+  // already has a final panelist_answer in scope.
   //
   // Three event types feed the transcript pane:
   //   panelist_answer / judge_synthesis — final, authoritative
   //   text_chunk — provider streaming progress; aggregated per node
   //                into one transcript block.
   //
-  // Per-node logic: if the node has any panelist_answer/judge_synthesis,
-  // use those (they carry the full response). Otherwise fall back to
-  // aggregated text_chunk events. Critically the fallback runs whether
-  // the node is running OR completed — that way when a streamed panelist
-  // finishes, its accumulated chunks stay baked into the transcript even
-  // if the final panelist_answer hasn't been emitted yet (e.g. on early
-  // termination, error path, or the brief gap between stream-end and
-  // emit). Previously the streaming block disappeared the instant
-  // status flipped from running → completed.
+  // Per-node aggregation: if the node has chunks, synthesize one
+  // panelist_streaming block. The streaming block stays baked into the
+  // transcript even AFTER the node completes (so the user keeps seeing
+  // the model's words during the gap before the canonical
+  // panelist_answer fires) — but the dedupe pass below removes it once
+  // a panelist_answer for the same speaker has actually arrived.
+  const collected = [];
+  _walkCollect(node, collected);
+
+  // Build the set of speaker keys that have a final answer somewhere
+  // in this tree.
+  const finalKeys = new Set();
+  for (const e of collected) {
+    if (e.event_type === 'panelist_answer' || e.event_type === 'judge_synthesis') {
+      const k = speakerKeyForDedupe(_extractLabel(e.message));
+      if (k) finalKeys.add(k);
+    }
+  }
+
+  // Emit, suppressing redundant streaming blocks. A panelist_streaming
+  // whose speaker key already has a final answer is pure noise — the
+  // panelist_answer event carries the full content authoritatively.
+  for (const e of collected) {
+    if (e.event_type === 'panelist_streaming') {
+      const k = speakerKeyForDedupe(_extractLabel(e.message));
+      if (k && finalKeys.has(k)) continue;
+    }
+    out.push(e);
+  }
+  return out;
+}
+
+function _walkCollect(node, out) {
   if (node.events) {
-    let hasFinal = false;
     const chunks = [];
     for (const e of node.events) {
       if (e.event_type === 'panelist_answer' || e.event_type === 'judge_synthesis') {
         out.push(e);
-        hasFinal = true;
       } else if (e.event_type === 'text_chunk') {
         chunks.push(e);
       }
     }
-    if (!hasFinal && chunks.length) {
-      // Synthesize an aggregate event from concatenated chunk messages.
-      // Each chunk message is "[label] content" — strip the bracket and
-      // join the bodies into one growing transcript block.
+    if (chunks.length) {
       let label = '';
       const bodyParts = [];
       for (const c of chunks) {
@@ -407,8 +450,7 @@ function flattenTranscriptEvents(node, out) {
       });
     }
   }
-  for (const c of (node.children || [])) flattenTranscriptEvents(c, out);
-  return out;
+  for (const c of (node.children || [])) _walkCollect(c, out);
 }
 
 function hasAnyStatusActivity(node) {
@@ -809,7 +851,14 @@ def _try_open_browser(url: str) -> None:
 
     def _go():
         try:
-            opened = webbrowser.open(url, new=2, autoraise=False)
+            # new=0: reuse an existing browser tab/window when possible.
+            # new=2 (force-new-tab) caused proliferation across PAL
+            # restarts — every Claude Code restart spawned another tab
+            # the user had to hunt down. With new=0 the browser brings
+            # an existing localhost:<port> tab to the foreground and
+            # refreshes it, so the operator keeps a single canonical
+            # viewer tab for as long as PAL grabs the same port.
+            opened = webbrowser.open(url, new=0, autoraise=False)
             logger.info("auto-opened browser tab: opened=%s url=%s", opened, url)
         except Exception as exc:  # noqa: BLE001
             logger.debug("auto-open failed (%s); user can navigate manually", exc)

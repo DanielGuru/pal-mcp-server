@@ -2,6 +2,7 @@
 
 import asyncio
 import atexit
+import contextvars
 import logging
 import os
 import threading
@@ -301,14 +302,22 @@ class ModelProvider(ABC):
         setup work until they return.
 
         We dispatch the existing sync stack to a worker thread via
-        `asyncio.to_thread`. The event loop stays free; concurrent panelists
-        actually run concurrently. The inner `time.sleep` in `_run_with_retries`
-        is also isolated by the same mechanism — no asyncio refactor needed
-        deeper in the stack.
+        ``loop.run_in_executor`` (using PAL's bounded executor — see
+        ``_PROVIDER_EXECUTOR``). Each call captures the caller's
+        ``contextvars`` and runs the worker via ``ctx.run(...)`` so the
+        active ``run_id`` ContextVar reaches provider code; without that,
+        provider-side streaming progress emits silently no-op. The event
+        loop stays free; concurrent panelists actually run concurrently.
+        The inner ``time.sleep`` in ``_run_with_retries`` is isolated by
+        the same mechanism — no asyncio refactor needed deeper in the
+        stack.
 
-        TODO: a fully streaming async path (OpenAI `stream=True`,
-        incremental MCP progress notifications) would also unlock per-token UI
-        for direct-API panelists. That's a larger refactor; tracked separately.
+        Streaming v2 (per-token deltas pumped to the live viewer via the
+        execution graph) is implemented for Anthropic / OpenAI / xAI /
+        Gemini direct-API providers in ``providers/anthropic.py``,
+        ``providers/openai_compatible.py``, and ``providers/gemini.py``.
+        The OpenAI Responses endpoint (gpt-5.1-codex / o3-pro) still
+        uses ``.create()``; that's tracked on the open queue.
         """
         sem = _get_api_semaphore()
         executor = _get_provider_executor()
@@ -321,7 +330,6 @@ class ModelProvider(ABC):
         # Fix: capture the caller's context here (where the run_context
         # ContextVar IS set) and run the worker inside it. Now provider
         # threads see the active run id and emit graph events correctly.
-        import contextvars
         ctx = contextvars.copy_context()
 
         def _call_in_context() -> ModelResponse:

@@ -760,11 +760,56 @@ def test_stream_progress_emitter_throttles_and_emits(monkeypatch):
     emitter.finalize()
 
     assert len(events) >= 1
-    last = events[-1]
-    assert last["run_id"] == "rid"
-    assert last["event_type"] == "text_chunk"
-    assert "Hello" in last["message"] and "world" in last["message"]
-    assert "[claude/x]" in last["message"]
+    # Combined across all emits, both deltas were shipped exactly once.
+    combined = "".join(e["message"] for e in events)
+    assert "Hello" in combined and "world" in combined
+    assert combined.count("Hello") == 1 and combined.count("world") == 1
+    for e in events:
+        assert e["run_id"] == "rid"
+        assert e["event_type"] == "text_chunk"
+        assert "[claude/x]" in e["message"]
+
+
+def test_stream_progress_emitter_emits_only_deltas_not_cumulative(monkeypatch):
+    """Round-3 panel caught this as a browser-DoS: if the emitter
+    re-joins the entire buffer on every emit without clearing, each
+    successive text_chunk event carries cumulative content. The viewer
+    then concatenates them, growing DOM size O(N²) — a 60s response can
+    push tens of megabytes into a single tab. Each emit must ship ONLY
+    new deltas accumulated since the last emit."""
+    from utils.stream_progress import StreamProgressEmitter
+
+    bodies: list[str] = []
+
+    class _FakeGraph:
+        def add_event(self, run_id, *, event_type, message, progress):
+            # Strip the "[label] " prefix to inspect just the body.
+            body = message.split("] ", 1)[1] if "] " in message else message
+            bodies.append(body)
+
+    import utils.execution_graph as eg
+    monkeypatch.setattr(eg, "get_graph", lambda: _FakeGraph())
+
+    emitter = StreamProgressEmitter(label="x", run_id="rid", throttle_s=0.0)
+    emitter.feed("AAA")
+    emitter.feed("BBB")
+    emitter.finalize()
+    emitter.feed("CCC")
+    emitter.feed("DDD")
+    emitter.finalize()
+
+    # Each emit ships only the deltas since the last emit; bodies must
+    # NOT contain cumulative text.
+    joined = "".join(bodies)
+    # Exactly one occurrence of each delta, total = sum of feeds.
+    assert joined.count("AAA") == 1
+    assert joined.count("BBB") == 1
+    assert joined.count("CCC") == 1
+    assert joined.count("DDD") == 1
+    # Overall length is bounded by sum of feeds (12), not quadratic.
+    assert sum(len(b) for b in bodies) <= 16, (
+        f"emitter shipped cumulative content; body sizes: {[len(b) for b in bodies]}"
+    )
 
 
 def test_stream_progress_emitter_no_run_id_is_silent(monkeypatch):
@@ -838,13 +883,14 @@ def test_gemini_streaming_zero_chunks_raises_clear_error(monkeypatch):
     monkeypatch.setenv("PAL_GEMINI_STREAM", "1")
     monkeypatch.setenv("GEMINI_API_KEY", "k")
     provider = GeminiModelProvider("k")
+    import pytest
     with patch.object(type(provider), "client", new_callable=lambda: property(lambda _: MagicMock(models=MagicMock(generate_content_stream=fake_stream)))):
-        try:
+        # Strict pytest.raises so a future regression that drops the
+        # ``if response is None`` guard FAILS this test instead of
+        # passing silently. The retry wrapper rewraps the inner
+        # RuntimeError; both layers carry the "no chunks" hint.
+        with pytest.raises(RuntimeError, match="(?i)no chunks|gemini stream"):
             provider.generate_content(prompt="hi", model_name="gemini-3.1-pro-preview")
-        except RuntimeError as exc:
-            assert "no chunks" in str(exc).lower() or "stream" in str(exc).lower()
-            return
-        # Some retry wrappers raise instead of bubbling — both shapes ok.
 
 
 def test_multiaudit_judge_configurable_via_env(monkeypatch):
@@ -857,6 +903,17 @@ def test_multiaudit_judge_configurable_via_env(monkeypatch):
     import tools.multiaudit as m
     importlib.reload(m)
     assert m.DEFAULT_JUDGE == "claude"
+
+
+def test_multiaudit_panelists_configurable_via_env(monkeypatch):
+    """``PAL_MULTIAUDIT_PANELISTS`` env var (comma-separated) overrides
+    the default panelist list. Whitespace tolerated, empty entries
+    dropped."""
+    monkeypatch.setenv("PAL_MULTIAUDIT_PANELISTS", "claude, grok-4.3 , gemini")
+    import importlib
+    import tools.multiaudit as m
+    importlib.reload(m)
+    assert m.DEFAULT_PANELISTS == ["claude", "grok-4.3", "gemini"]
 
 
 def test_agenerate_content_is_an_awaitable_method():

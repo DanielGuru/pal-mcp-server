@@ -80,19 +80,26 @@ class StreamProgressEmitter:
 
     def _emit(self) -> None:
         """Best-effort write to the execution graph against ``run_id``.
-        Swallows everything: streaming hot path must not fail because of
-        telemetry."""
+        Each emit ships ONLY the new deltas accumulated since the last
+        emit, then clears the buffer. Critical: the viewer concats
+        successive text_chunk messages, so emitting cumulative content
+        would grow each event's body O(N) and DOM size O(N²). Round-3
+        panel caught this as a browser-DoS class bug. Swallows everything:
+        streaming hot path must not fail because of telemetry."""
         if self.run_id is None:
+            self._buffer.clear()
             return
         try:
             from utils.execution_graph import get_graph
             graph = get_graph()
             if graph is None:
+                self._buffer.clear()
                 return
             content = "".join(self._buffer)
-            # Tail-slice if oversized so we always show the most recent
-            # token activity rather than the start. The viewer concats
-            # successive text_chunk messages anyway when rendering.
+            self._buffer.clear()
+            # Tail-slice individual oversized deltas so a single huge
+            # chunk doesn't blow the row size. Multi-chunk reconstruction
+            # is the viewer's job.
             if len(content) > self.body_cap:
                 content = "…" + content[-self.body_cap:]
             graph.add_event(
@@ -102,6 +109,7 @@ class StreamProgressEmitter:
                 progress=0.0,
             )
         except Exception as exc:  # noqa: BLE001
+            self._buffer.clear()
             logger.debug("stream_progress emit failed: %s", exc)
 
 
