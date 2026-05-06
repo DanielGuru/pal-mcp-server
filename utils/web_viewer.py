@@ -169,7 +169,13 @@ async function fetchRuns() {
 }
 
 function statusBadge(status) {
-  return `<span class="badge b-${status}">${status}</span>`;
+  // Class names limited to a safe alphabet so a malicious status can't
+  // escape the class attribute or inject a new one. Display text escaped
+  // separately. statusBadge runs BEFORE escapeHtml/safeClass are defined
+  // textually in the script — both are forward-references resolved at
+  // call time, which works because JS hoists function declarations.
+  const cls = safeClass(status);
+  return `<span class="badge b-${cls}">${escapeHtml(status || '')}</span>`;
 }
 
 function fmtTime(ts) {
@@ -188,14 +194,17 @@ function fmtElapsed(start, end) {
 }
 
 function renderRunRow(r) {
-  const cost = r.cost_tier ? `<div class="cost cost-${r.cost_tier}">${r.cost_tier}</div>` : '';
+  const costTier = safeClass(r.cost_tier);
+  const cost = r.cost_tier
+    ? `<div class="cost cost-${costTier}">${escapeHtml(r.cost_tier)}</div>`
+    : '';
   const sel = (SELECTED === r.run_id) ? ' selected' : '';
-  return `<div class="run-row${sel}" data-run="${r.run_id}">
+  return `<div class="run-row${sel}" data-run="${escapeAttr(r.run_id)}">
     <div class="row-top">
-      <span class="tool">${r.tool_name}</span>
+      <span class="tool">${escapeHtml(r.tool_name)}</span>
       ${statusBadge(r.status)}
     </div>
-    <div class="label">${r.label || r.run_id.slice(0,12) + '…'} · ${fmtElapsed(r.started_at, r.completed_at)}</div>
+    <div class="label">${escapeHtml(r.label || (r.run_id || '').slice(0,12) + '…')} · ${escapeHtml(fmtElapsed(r.started_at, r.completed_at))}</div>
     ${cost}
   </div>`;
 }
@@ -223,7 +232,7 @@ async function renderRunsList() {
 
 function renderRollup(rollup) {
   const items = Object.entries(rollup).map(([k, v]) =>
-    `<span class="cost-${k}">${v} ${k}</span>`).join('');
+    `<span class="cost-${safeClass(k)}">${escapeHtml(String(v))} ${escapeHtml(k)}</span>`).join('');
   return items ? `<div class="rollup">${items}</div>` : '';
 }
 
@@ -231,15 +240,17 @@ function renderEvents(events) {
   if (!events || !events.length) return '';
   const lines = events.map(e => {
     const t = new Date(e.ts * 1000).toLocaleTimeString();
-    const m = (e.message || '').replace(/</g, '&lt;');
-    return `<div>[${t}] ${e.event_type}: ${m}</div>`;
+    return `<div>[${escapeHtml(t)}] ${escapeHtml(e.event_type || '')}: ${escapeHtml(e.message || '')}</div>`;
   }).join('');
   return `<div class="events">${lines}</div>`;
 }
 
 function renderTreeNode(node, depth = 0) {
-  const cost = node.cost_tier ? `<span class="cost cost-${node.cost_tier}">${node.cost_tier}</span>` : '';
-  const edge = node.edge_kind ? `<span class="edge-tag">${node.edge_kind}</span>` : '';
+  const costTier = safeClass(node.cost_tier);
+  const cost = node.cost_tier
+    ? `<span class="cost cost-${costTier}">${escapeHtml(node.cost_tier)}</span>`
+    : '';
+  const edge = node.edge_kind ? `<span class="edge-tag">${escapeHtml(node.edge_kind)}</span>` : '';
   const elapsed = fmtElapsed(node.started_at, node.completed_at);
   const args = node.args_json ? `<details><summary>args</summary><pre>${escapeHtml(node.args_json)}</pre></details>` : '';
   const result = node.result_json ? `<details><summary>result</summary><pre>${escapeHtml(node.result_json)}</pre></details>` : '';
@@ -249,11 +260,11 @@ function renderTreeNode(node, depth = 0) {
   const cls = depth > 3 ? 'depth-3' : `depth-${depth}`;
   return `<div class="card ${cls}">
     <div class="card-h">
-      <span class="name">${node.tool_name}</span>
+      <span class="name">${escapeHtml(node.tool_name || '')}</span>
       ${edge}
       ${statusBadge(node.status)}
       ${cost}
-      <span class="meta" style="color:var(--muted);font-size:11px;">${node.label || ''} · ${elapsed}</span>
+      <span class="meta" style="color:var(--muted);font-size:11px;">${escapeHtml(node.label || '')} · ${escapeHtml(elapsed)}</span>
     </div>
     ${args}${result}${error}${events}
     ${childrenHtml}
@@ -261,7 +272,20 @@ function renderTreeNode(node, depth = 0) {
 }
 
 function escapeHtml(s) {
-  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]);
+  return String(s == null ? '' : s).replace(/[&<>"']/g,
+    c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]);
+}
+
+function escapeAttr(s) {
+  // Same as escapeHtml — attribute quotes are double, so &quot; suffices.
+  return escapeHtml(s);
+}
+
+function safeClass(s) {
+  // CSS class names can't safely take arbitrary input — restrict to a
+  // safe alphabet so a malicious cost_tier like 'foo" onload="' can't
+  // escape the class attribute.
+  return String(s == null ? '' : s).replace(/[^a-zA-Z0-9_-]/g, '_');
 }
 
 async function renderDetail() {
@@ -280,18 +304,18 @@ async function renderDetail() {
     const rollup = body.cost_tier_rollup || {};
     $('#detail').innerHTML = `
       <div class="header-row">
-        <h2>${tree.tool_name}</h2>
+        <h2>${escapeHtml(tree.tool_name || '')}</h2>
         ${statusBadge(tree.status)}
-        <span class="meta" style="color:var(--muted);">${tree.label || tree.run_id.slice(0,16)+'…'}</span>
+        <span class="meta" style="color:var(--muted);">${escapeHtml(tree.label || (tree.run_id || '').slice(0,16)+'…')}</span>
       </div>
       <div class="meta-row">
-        started ${fmtTime(tree.started_at)} · ${fmtElapsed(tree.started_at, tree.completed_at)}
+        started ${escapeHtml(fmtTime(tree.started_at))} · ${escapeHtml(fmtElapsed(tree.started_at, tree.completed_at))}
       </div>
       ${renderRollup(rollup)}
       ${renderTreeNode(tree)}
     `;
   } catch (e) {
-    $('#detail').innerHTML = '<div class="empty">error: ' + e.message + '</div>';
+    $('#detail').innerHTML = '<div class="empty">error: ' + escapeHtml(e.message) + '</div>';
   }
 }
 
@@ -384,11 +408,39 @@ class _Handler(BaseHTTPRequestHandler):
             from urllib.parse import parse_qs
 
             qs = parse_qs(parsed.query)
-            limit = int(qs.get("limit", ["50"])[0])
-            status = (qs.get("status", [None])[0]) or None
+
+            # Bounded + validated limit. Pre-fix, int() ran outside try/except
+            # so a single GET /runs?limit=abc crashed the daemon thread; and
+            # ?limit=-1 reached SQLite as `LIMIT -1` = unbounded dump.
+            try:
+                raw_limit = qs.get("limit", ["50"])[0]
+                limit = int(raw_limit)
+            except (ValueError, TypeError):
+                self._send_json(
+                    {"status": "error", "error": f"invalid 'limit' parameter: {raw_limit!r}"},
+                    status=400,
+                )
+                return
+            if limit < 1 or limit > 200:
+                self._send_json(
+                    {"status": "error", "error": "'limit' must be between 1 and 200"},
+                    status=400,
+                )
+                return
+
+            status_filter = (qs.get("status", [None])[0]) or None
+            if status_filter is not None and status_filter not in (
+                "running", "completed", "failed", "cancelled"
+            ):
+                self._send_json(
+                    {"status": "error", "error": f"invalid 'status' filter: {status_filter!r}"},
+                    status=400,
+                )
+                return
+
             tool_name = (qs.get("tool_name", [None])[0]) or None
             try:
-                rows = graph.list_runs(limit=limit, status=status, tool_name=tool_name)
+                rows = graph.list_runs(limit=limit, status=status_filter, tool_name=tool_name)
             except Exception as exc:  # noqa: BLE001
                 self._send_json({"status": "error", "error": str(exc)}, status=500)
                 return

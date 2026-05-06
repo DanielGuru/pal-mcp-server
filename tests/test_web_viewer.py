@@ -110,6 +110,82 @@ def test_run_tree_endpoint_with_descendants(graph_with_data):
     assert payload["cost_tier_rollup"].get("oauth_free") == 1
 
 
+def test_invalid_limit_returns_400_not_crash(graph_with_data):
+    """Pre-fix: int('abc') ran outside try/except → ValueError → daemon
+    thread crashed. Now: 400 with a clear error message."""
+    from urllib.error import HTTPError
+
+    url, _ = graph_with_data
+    try:
+        _read(url + "runs?limit=abc")
+        assert False, "expected 400"
+    except HTTPError as exc:
+        assert exc.code == 400
+        body = exc.read().decode("utf-8")
+        assert "invalid 'limit'" in body
+
+
+def test_negative_limit_rejected(graph_with_data):
+    """Pre-fix: ?limit=-1 → SQL `LIMIT -1` = unbounded dump of entire table."""
+    from urllib.error import HTTPError
+
+    url, _ = graph_with_data
+    try:
+        _read(url + "runs?limit=-1")
+        assert False, "expected 400"
+    except HTTPError as exc:
+        assert exc.code == 400
+
+
+def test_oversized_limit_rejected(graph_with_data):
+    """Cap upper limit to keep one curl from dumping arbitrary rows."""
+    from urllib.error import HTTPError
+
+    url, _ = graph_with_data
+    try:
+        _read(url + "runs?limit=99999")
+        assert False, "expected 400"
+    except HTTPError as exc:
+        assert exc.code == 400
+
+
+def test_invalid_status_filter_rejected(graph_with_data):
+    """Status filter is whitelisted to known states."""
+    from urllib.error import HTTPError
+
+    url, _ = graph_with_data
+    try:
+        _read(url + "runs?status=evil")
+        assert False, "expected 400"
+    except HTTPError as exc:
+        assert exc.code == 400
+
+
+def test_html_escape_in_run_label_does_not_xss(graph_with_data):
+    """A panelist label containing <script> must NOT be rendered raw.
+    The page escapes server-supplied strings client-side; we verify the
+    JSON layer surfaces the raw label and the escaping logic is in the
+    embedded HTML."""
+    import json
+
+    url, graph = graph_with_data
+    rid = graph.start_run("chat", label="<img src=x onerror=alert(1)>")
+    graph.complete_run(rid)
+
+    # The raw label is in the JSON response (clients should escape on render)
+    _, body = _read(url + "runs")
+    payload = json.loads(body)
+    raw_label = payload["runs"][0]["label"]
+    assert "<img" in raw_label  # raw in JSON
+
+    # The HTML page must contain the escapeHtml function and use it
+    _, page = _read(url)
+    assert "function escapeHtml" in page
+    assert "function safeClass" in page
+    # statusBadge / renderRunRow / renderTreeNode must call escapeHtml
+    assert page.count("escapeHtml(") >= 6  # multiple sites
+
+
 def test_unknown_run_returns_404(graph_with_data):
     url, _ = graph_with_data
     try:
