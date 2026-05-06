@@ -611,14 +611,14 @@ class OpenAICompatibleProvider(ModelProvider):
         # providers/base.py docstring on _PROVIDER_EXECUTOR for the rationale.
         from providers.base import get_default_api_timeout
 
-        # Streaming v2: opt-in via PAL_OPENAI_STREAM=1. When enabled, per-chunk
-        # deltas flow into the live viewer via emit_progress and large
-        # responses don't stall on a single .create() round-trip. Default OFF
-        # because the integration cassettes lock the request body hash to
-        # the non-streaming shape — flip the env var on in your ~/.claude.json
-        # to use it; cassettes can be re-recorded separately.
-        _stream_enabled = (get_env("PAL_OPENAI_STREAM", "") or "").strip().lower() in (
-            "1", "true", "yes", "on",
+        # Streaming v2: ON by default so per-chunk deltas flow into the
+        # live viewer (the operator watches text accumulate in real time
+        # instead of staring at a "RUNNING" badge until the call returns).
+        # Opt OUT with PAL_OPENAI_STREAM=0 — the integration cassette tests
+        # need this because the recorded fixtures hash a non-streaming
+        # request body. Re-recording cassettes lifts that constraint.
+        _stream_enabled = (get_env("PAL_OPENAI_STREAM", "1") or "1").strip().lower() not in (
+            "0", "false", "no", "off",
         )
         completion_params = {
             "model": resolved_model,

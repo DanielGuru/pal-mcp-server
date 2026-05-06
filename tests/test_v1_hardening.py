@@ -634,10 +634,10 @@ def test_provider_executor_shutdown_resets_global(monkeypatch):
     assert base._PROVIDER_EXECUTOR is None
 
 
-def test_openai_streaming_v2_opt_in_via_env(monkeypatch):
-    """PAL_OPENAI_STREAM=1 must flip the openai-compatible provider into
-    streaming mode (stream=True + stream_options.include_usage). Default
-    OFF keeps the request body hash-stable for cassette-replay tests."""
+def test_openai_streaming_v2_default_on_opt_out_via_env(monkeypatch):
+    """Streaming v2 is ON by default — operators see the model write live
+    in the viewer. PAL_OPENAI_STREAM=0 opts back to .create() shape so the
+    cassette-replay integration tests can hash a stable request body."""
     from unittest.mock import MagicMock, patch
 
     from providers.openai import OpenAIModelProvider
@@ -675,13 +675,15 @@ def test_openai_streaming_v2_opt_in_via_env(monkeypatch):
         resp.usage = MagicMock(prompt_tokens=1, completion_tokens=1, total_tokens=2)
         return resp
 
-    monkeypatch.setenv("PAL_OPENAI_STREAM", "1")
+    # Default (env unset) → streaming on
+    monkeypatch.delenv("PAL_OPENAI_STREAM", raising=False)
     provider = OpenAIModelProvider("test-key")
     with patch.object(type(provider), "client", new_callable=lambda: property(lambda _: MagicMock(chat=MagicMock(completions=MagicMock(create=fake_create))))):
         provider.generate_content(prompt="hi", model_name="gpt-5")
     assert captured.get("stream") is True
     assert captured.get("stream_options") == {"include_usage": True}
 
+    # Explicit opt-out → legacy non-streaming shape
     captured.clear()
     monkeypatch.setenv("PAL_OPENAI_STREAM", "0")
     with patch.object(type(provider), "client", new_callable=lambda: property(lambda _: MagicMock(chat=MagicMock(completions=MagicMock(create=fake_create))))):
