@@ -497,6 +497,47 @@ def test_proxy_passes_through_validate_model_name():
     assert wrapped.validate_model_name("anything") is True
 
 
+def test_get_capabilities_delegates_to_inner_not_wrapper_lookup():
+    """Regression: ``get_capabilities`` is a real method on ``ModelProvider``
+    that uses ``self._lookup_capabilities`` against ``self.MODEL_CAPABILITIES``.
+    On the wrapper subclass, that map is empty — so without an explicit
+    override, every model raises "Unsupported model" even though the inner
+    provider supports it. Discovered via the grok-4.3 dispatch failure
+    where validate_model_name returned True but get_capabilities raised.
+    """
+
+    class _ProviderWithCaps(_FakeProvider):
+        def get_capabilities(self, model_name: str):
+            return {"_marker": "from-inner", "model_name": model_name}
+
+    inner = _ProviderWithCaps()
+    wrapped = OAuthFirstProvider(inner)
+
+    caps = wrapped.get_capabilities("grok-4.3")
+    assert caps["_marker"] == "from-inner", (
+        "wrapper.get_capabilities must delegate to inner; got "
+        f"{caps!r} which suggests the base ModelProvider implementation "
+        "ran on the wrapper itself with an empty MODEL_CAPABILITIES — "
+        "the bug this test exists to prevent."
+    )
+    assert caps["model_name"] == "grok-4.3"
+
+
+def test_get_all_model_capabilities_delegates_to_inner():
+    """Same MRO trap as get_capabilities — without the override, the wrapper
+    reports zero models even though the inner provider has many."""
+
+    class _ProviderWithMap(_FakeProvider):
+        def get_all_model_capabilities(self):
+            return {"grok-4.3": "x", "grok-4.1-fast": "y"}
+
+    inner = _ProviderWithMap()
+    wrapped = OAuthFirstProvider(inner)
+
+    out = wrapped.get_all_model_capabilities()
+    assert out == {"grok-4.3": "x", "grok-4.1-fast": "y"}
+
+
 def test_proxy_unknown_attributes_via_getattr():
     """Methods we don't override should still work via __getattr__."""
 

@@ -719,15 +719,18 @@ const STICKY_BOTTOM_PX = 100;
 // talking" fired even when the only active panelist was streaming
 // quietly and 2/4 had errored, making the message misleading.
 function countPanelistStates(tree) {
+  // Walk the tree; a node is a panelist sub-run if its label starts with
+  // "panelist:" — that's the contract from tools/panel.py:_run_panelist.
+  // (An earlier draft had a second clause OR'd against this checking
+  // tool_name==='clink' AND parent_run_id.toLowerCase().includes('panelist'),
+  // but parent_run_id is always a UUID so the tool_name branch never
+  // fired meaningfully — dropped for clarity.)
   let total = 0;
   let completed = 0;
   let running = 0;
   let failed = 0;
   function walk(node) {
-    const isPanelist =
-      String(node.label || '').startsWith('panelist:') ||
-      String(node.tool_name || '') === 'clink' && (node.parent_run_id || node.label || '').toLowerCase().includes('panelist');
-    if (isPanelist) {
+    if (String(node.label || '').startsWith('panelist:')) {
       total++;
       if (node.status === 'completed') completed++;
       else if (node.status === 'running') running++;
@@ -793,8 +796,12 @@ async function renderConversation() {
     // Count finalised panelist answers so the live-status line is honest
     // about progress rather than just saying "still talking" when half
     // the panel has returned and the rest are done/errored.
+    // Filter to ``panelist_answer`` ONLY — including ``judge_synthesis``
+    // here would inflate the numerator above the panelist count
+    // ("5/4 answers in" briefly, while the judge fires before the run
+    // flips completed). Audit-flagged.
     const panelistAnswerCount = events.filter(
-      e => e.event_type === 'panelist_answer' || e.event_type === 'judge_synthesis'
+      e => e.event_type === 'panelist_answer'
     ).length;
 
     let middle;

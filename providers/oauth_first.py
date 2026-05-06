@@ -165,8 +165,30 @@ class OAuthFirstProvider(ModelProvider):
     def validate_model_name(self, model_name: str) -> bool:
         return self._inner.validate_model_name(model_name)
 
+    def get_capabilities(self, model_name: str):
+        # CRITICAL: delegate to inner. The base ``ModelProvider.get_capabilities``
+        # uses ``self._lookup_capabilities`` against ``self.MODEL_CAPABILITIES``,
+        # which on the wrapper is empty — we'd raise "Unsupported model" for
+        # every model the inner provider actually supports. Discovered via
+        # the grok-4.3 dispatch failure: validate_model_name returned True
+        # (proxy), but get_capabilities raised because Python's MRO picked
+        # ``ModelProvider.get_capabilities`` on the wrapper subclass instead
+        # of falling through to ``__getattr__``.
+        return self._inner.get_capabilities(model_name)
+
     def get_model_capabilities(self, model_name: str):
-        return self._inner.get_model_capabilities(model_name)
+        # Legacy name still used by some call sites; delegate to inner.
+        if hasattr(self._inner, "get_model_capabilities"):
+            return self._inner.get_model_capabilities(model_name)
+        return self._inner.get_capabilities(model_name)
+
+    def get_all_model_capabilities(self):
+        # Same MRO trap as get_capabilities — without this the wrapper
+        # reports zero models even though the inner provider has many.
+        return self._inner.get_all_model_capabilities()
+
+    def get_capabilities_by_rank(self):
+        return self._inner.get_capabilities_by_rank()
 
     def list_models(self, *args, **kwargs):
         return self._inner.list_models(*args, **kwargs)

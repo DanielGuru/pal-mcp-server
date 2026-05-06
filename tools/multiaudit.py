@@ -62,18 +62,13 @@ logger = logging.getLogger(__name__)
 # multiaudit with a "host failed" row. Operators who run Panel under a
 # host that DOES support sampling (or want to invite the host explicitly)
 # can pass panelists=["host", "codex", ...] manually.
-DEFAULT_PANELISTS = ["codex", "gemini", "claude", "grok-4.3"]
-# The judge synthesises the panel's final headline. Default is codex
-# (free OAuth) but anyone can be the judge. Override precedence:
-#   1. ``judge=`` arg on the multiaudit call
-#   2. ``PANEL_MULTIAUDIT_JUDGE`` env var (e.g. set in ~/.claude.json env
-#      block to make a global default like "claude" or "grok-4.3")
-#   3. Hardcoded "codex"
-DEFAULT_JUDGE = os.environ.get("PANEL_MULTIAUDIT_JUDGE", "").strip() or "codex"
-# Same env-var-overridable pattern for panelists. Comma-separated list.
-_panelists_env = (os.environ.get("PANEL_MULTIAUDIT_PANELISTS") or "").strip()
-if _panelists_env:
-    DEFAULT_PANELISTS = [p.strip() for p in _panelists_env.split(",") if p.strip()]
+# DELIBERATELY IMMUTABLE: the import-time fallback is the hardcoded
+# 4-model tuple; env-driven overrides are read fresh inside ``execute()``.
+# An earlier version mutated this at import time, which created a stale-
+# defaults bug after live env clearing (panel-flagged in the multiaudit
+# audit, mirroring the bugfind fix). Don't reintroduce module-level
+# mutation.
+DEFAULT_PANELISTS = ("codex", "gemini", "claude", "grok-4.3")
 DEFAULT_DEBATE_ROUNDS = 1
 DEFAULT_PANELIST_TIMEOUT_S = 300
 
@@ -232,7 +227,7 @@ class MultiauditTool(BaseTool):
         live_default_panelists = (
             [p.strip() for p in env_panelists.split(",") if p.strip()]
             if env_panelists
-            else DEFAULT_PANELISTS
+            else list(DEFAULT_PANELISTS)
         )
         panelists = arguments.get("panelists") or live_default_panelists
         judge = arguments.get("judge") or live_default_judge
@@ -312,10 +307,11 @@ class MultiauditTool(BaseTool):
         # this guard, multiaudit would happily report "started" with
         # task_id=null and tell the user to poll a task that doesn't
         # exist — operational lie at the worst possible moment.
-        # (Audit-flagged in the bugfind review; same defect class.)
-        from tools.bugfind import _extract_start_status
+        # Shared helper lives in tools/shared/ now to avoid the
+        # cross-tool private-import coupling the panel called out.
+        from tools.shared.task_dispatch import extract_start_status
 
-        start_status, start_error = _extract_start_status(start_result)
+        start_status, start_error = extract_start_status(start_result)
         if start_status != "started":
             return _err(
                 f"start_task refused dispatch: {start_error or 'unknown error'} "

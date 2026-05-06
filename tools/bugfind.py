@@ -324,7 +324,9 @@ class BugfindTool(BaseTool):
         # bugfind would happily report "started" with task_id=null and tell
         # the user to poll a task that doesn't exist — operational lie at
         # exactly the moment the user is chasing a bug. (Audit-flagged.)
-        start_status, start_error = _extract_start_status(start_result)
+        from tools.shared.task_dispatch import extract_start_status
+
+        start_status, start_error = extract_start_status(start_result)
         if start_status != "started":
             return _err(
                 f"start_task refused dispatch: {start_error or 'unknown error'} "
@@ -564,45 +566,10 @@ did they convince you, what's your revised position?
 """
 
 
-def _extract_start_status(
-    start_result: list[TextContent],
-) -> tuple[str | None, str | None]:
-    """Parse start_task's response. Returns (status, error_message).
-
-    start_task returns ``{"status": "started", "task_id": "..."}`` on
-    success and ``{"status": "error", "error": "..."}`` on refusal
-    (admission control, unknown wrapped tool, etc.) WITHOUT raising.
-    Bugfind needs to distinguish these so it doesn't lie about
-    successful dispatch. (Audit-flagged.)
-    """
-
-    if not start_result:
-        return None, "empty start_task response"
-    text = getattr(start_result[0], "text", None)
-    if not text:
-        return None, "start_task response had no text"
-    try:
-        body = json.loads(text)
-    except (json.JSONDecodeError, ValueError):
-        return None, "start_task response was not JSON"
-    if not isinstance(body, dict):
-        return None, "start_task response was not a dict"
-
-    # Direct shape (start_task returns this verbatim)
-    if "status" in body:
-        return str(body["status"]), str(body.get("error") or "") or None
-
-    # Wrapped-ToolOutput shape — content holds the JSON we want
-    content = body.get("content")
-    if isinstance(content, str):
-        try:
-            inner = json.loads(content)
-            if isinstance(inner, dict) and "status" in inner:
-                return str(inner["status"]), str(inner.get("error") or "") or None
-        except (json.JSONDecodeError, ValueError):
-            pass
-
-    return None, "start_task response had no status field"
+# NOTE: ``_extract_start_status`` previously lived here; moved to
+# ``tools/shared/task_dispatch.py:extract_start_status`` so multiaudit
+# and bugfind don't cross-couple on a private helper. Tests import the
+# shared symbol directly.
 
 
 def _extract_task_id(start_result: list[TextContent]) -> str | None:

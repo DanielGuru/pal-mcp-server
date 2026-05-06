@@ -314,3 +314,90 @@ def test_default_panelist_set_includes_host(tmp_path, monkeypatch):
     # Anything missing means the audit only hears from a subset of vendors.
     for required in ("codex", "gemini", "claude", "grok-4.3"):
         assert required in panelists, f"expected '{required}' in defaults; got {panelists}"
+
+
+def test_default_panelists_immutable_against_env_at_import(tmp_path, monkeypatch):
+    """``DEFAULT_PANELISTS`` is now an immutable tuple. If env was set at
+    server boot and later cleared, ``execute()`` must still fall back to
+    the canonical 4-model list — not a stale mutated value. Mirrors the
+    bugfind test; was the missed fix in the multiaudit audit (codex
+    judge: ``no, fix multiaudit defaults first``)."""
+    repo = _git_repo(tmp_path)
+
+    monkeypatch.delenv("PANEL_MULTIAUDIT_PANELISTS", raising=False)
+    monkeypatch.delenv("PANEL_MULTIAUDIT_JUDGE", raising=False)
+
+    captured: dict = {}
+
+    async def fake_execute(name, arguments):
+        captured["arguments"] = arguments
+        from mcp.types import TextContent
+
+        return [
+            TextContent(
+                type="text",
+                text=json.dumps({"status": "started", "task_id": "t"}),
+            )
+        ]
+
+    import server
+
+    monkeypatch.setattr(server, "execute_tool", fake_execute)
+
+    from tools.multiaudit import DEFAULT_PANELISTS, MultiauditTool
+
+    # Hard guard: must be a tuple (immutable), not a list. A future
+    # regression that re-introduces module-level mutation would change
+    # this back to a list and the assertion would fire.
+    assert isinstance(DEFAULT_PANELISTS, tuple)
+
+    async def go():
+        return await MultiauditTool().execute(
+            {"working_directory_absolute_path": str(repo)}
+        )
+
+    out = asyncio.run(go())
+    body = json.loads(out[0].text)
+    assert body["panelists"] == ["codex", "gemini", "claude", "grok-4.3"]
+
+
+def test_propagates_start_task_error_no_false_success(tmp_path, monkeypatch):
+    """When start_task returns a structured error payload (admission control,
+    unknown wrapped tool, etc.) WITHOUT raising, multiaudit must surface
+    that as an error — not return ``status: started`` with ``task_id: null``
+    and ``next_steps`` telling the user to poll a nonexistent task. Mirrors
+    bugfind regression test; was missing from multiaudit per the audit."""
+    repo = _git_repo(tmp_path)
+
+    async def fake_execute(name, arguments):
+        from mcp.types import TextContent
+
+        return [
+            TextContent(
+                type="text",
+                text=json.dumps(
+                    {
+                        "status": "error",
+                        "error": "too_many_active_tasks: 8/8 running",
+                    }
+                ),
+            )
+        ]
+
+    import server
+
+    monkeypatch.setattr(server, "execute_tool", fake_execute)
+
+    from tools.multiaudit import MultiauditTool
+
+    async def go():
+        return await MultiauditTool().execute(
+            {"working_directory_absolute_path": str(repo)}
+        )
+
+    out = asyncio.run(go())
+    body = json.loads(out[0].text)
+    assert body["status"] == "error"
+    assert "too_many_active_tasks" in body["error"]
+    # Critical: the user must NOT see status=started for a refused dispatch
+    assert body.get("task_id") in (None, "")

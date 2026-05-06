@@ -893,27 +893,106 @@ def test_gemini_streaming_zero_chunks_raises_clear_error(monkeypatch):
             provider.generate_content(prompt="hi", model_name="gemini-3.1-pro-preview")
 
 
-def test_multiaudit_judge_configurable_via_env(monkeypatch):
+def test_multiaudit_judge_configurable_via_env(tmp_path, monkeypatch):
     """``PANEL_MULTIAUDIT_JUDGE`` env var must override the default
     'codex' judge, so operators can swap the synthesiser without
-    editing code."""
+    editing code. Asserted via runtime dispatch (env is read at
+    ``execute()`` time, not module-import time, since the round-2
+    audit caught that import-time freeze made the live settings
+    tab a lie)."""
+    import asyncio
+    import json as _json
+    import subprocess as _sp
+
+    repo = tmp_path / "r"
+    repo.mkdir()
+    _sp.run(["git", "init", "-q"], cwd=repo, check=True)
+    _sp.run(["git", "config", "user.email", "t@t"], cwd=repo, check=True)
+    _sp.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
+    _sp.run(["git", "checkout", "-q", "-b", "main"], cwd=repo, check=True)
+    (repo / "f.txt").write_text("a")
+    _sp.run(["git", "add", "."], cwd=repo, check=True)
+    _sp.run(["git", "commit", "-q", "-m", "i"], cwd=repo, check=True)
+    _sp.run(["git", "checkout", "-q", "-b", "feat"], cwd=repo, check=True)
+    (repo / "f.txt").write_text("b")
+    _sp.run(["git", "commit", "-aq", "-m", "c"], cwd=repo, check=True)
+
     monkeypatch.setenv("PANEL_MULTIAUDIT_JUDGE", "claude")
-    # Re-import to pick up env at module load.
-    import importlib
-    import tools.multiaudit as m
-    importlib.reload(m)
-    assert m.DEFAULT_JUDGE == "claude"
+
+    async def fake_execute(name, arguments):
+        from mcp.types import TextContent
+
+        return [
+            TextContent(
+                type="text",
+                text=_json.dumps({"status": "started", "task_id": "t"}),
+            )
+        ]
+
+    import server
+
+    monkeypatch.setattr(server, "execute_tool", fake_execute)
+
+    from tools.multiaudit import MultiauditTool
+
+    out = asyncio.run(
+        MultiauditTool().execute({"working_directory_absolute_path": str(repo)})
+    )
+    body = _json.loads(out[0].text)
+    assert body["judge"] == "claude"
 
 
-def test_multiaudit_panelists_configurable_via_env(monkeypatch):
+def test_multiaudit_panelists_configurable_via_env(tmp_path, monkeypatch):
     """``PANEL_MULTIAUDIT_PANELISTS`` env var (comma-separated) overrides
-    the default panelist list. Whitespace tolerated, empty entries
-    dropped."""
+    the default panelist list at execute time. Whitespace tolerated,
+    empty entries dropped. Module-level ``DEFAULT_PANELISTS`` is now
+    an immutable tuple — env overrides resolve fresh inside
+    ``execute()``."""
+    import asyncio
+    import json as _json
+    import subprocess as _sp
+
+    repo = tmp_path / "r"
+    repo.mkdir()
+    _sp.run(["git", "init", "-q"], cwd=repo, check=True)
+    _sp.run(["git", "config", "user.email", "t@t"], cwd=repo, check=True)
+    _sp.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
+    _sp.run(["git", "checkout", "-q", "-b", "main"], cwd=repo, check=True)
+    (repo / "f.txt").write_text("a")
+    _sp.run(["git", "add", "."], cwd=repo, check=True)
+    _sp.run(["git", "commit", "-q", "-m", "i"], cwd=repo, check=True)
+    _sp.run(["git", "checkout", "-q", "-b", "feat"], cwd=repo, check=True)
+    (repo / "f.txt").write_text("b")
+    _sp.run(["git", "commit", "-aq", "-m", "c"], cwd=repo, check=True)
+
     monkeypatch.setenv("PANEL_MULTIAUDIT_PANELISTS", "claude, grok-4.3 , gemini")
-    import importlib
-    import tools.multiaudit as m
-    importlib.reload(m)
-    assert m.DEFAULT_PANELISTS == ["claude", "grok-4.3", "gemini"]
+
+    async def fake_execute(name, arguments):
+        from mcp.types import TextContent
+
+        return [
+            TextContent(
+                type="text",
+                text=_json.dumps({"status": "started", "task_id": "t"}),
+            )
+        ]
+
+    import server
+
+    monkeypatch.setattr(server, "execute_tool", fake_execute)
+
+    from tools.multiaudit import DEFAULT_PANELISTS, MultiauditTool
+
+    # Module-level fallback is the immutable canonical tuple — anything
+    # else means a future regression reintroduced import-time mutation.
+    assert isinstance(DEFAULT_PANELISTS, tuple)
+    assert DEFAULT_PANELISTS == ("codex", "gemini", "claude", "grok-4.3")
+
+    out = asyncio.run(
+        MultiauditTool().execute({"working_directory_absolute_path": str(repo)})
+    )
+    body = _json.loads(out[0].text)
+    assert body["panelists"] == ["claude", "grok-4.3", "gemini"]
 
 
 def test_multiaudit_judge_resolves_env_at_execute_not_import(tmp_path, monkeypatch):
@@ -952,13 +1031,12 @@ def test_multiaudit_judge_resolves_env_at_execute_not_import(tmp_path, monkeypat
     import server
     monkeypatch.setattr(server, "execute_tool", fake_execute)
 
-    # First import locks DEFAULT_JUDGE='codex' (env unset). Then mutate
-    # env and dispatch — the live judge must be 'claude', not 'codex'.
+    # Module imports with env unset, falls back to canonical 'codex'.
+    # Then we mutate env at runtime — the live judge must be 'claude',
+    # not 'codex', because the module-level constant is no longer
+    # populated from env at import time.
     monkeypatch.delenv("PANEL_MULTIAUDIT_JUDGE", raising=False)
-    import importlib
     import tools.multiaudit as m
-    importlib.reload(m)
-    assert m.DEFAULT_JUDGE == "codex"
 
     monkeypatch.setenv("PANEL_MULTIAUDIT_JUDGE", "claude")
 
