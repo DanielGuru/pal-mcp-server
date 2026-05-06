@@ -84,12 +84,29 @@ class AnthropicModelProvider(RegistryBackedProviderMixin, ModelProvider):
     # Same percentage scheme as the Gemini provider — keeps the cross-provider
     # API identical so a tool can pass the same thinking_mode regardless of
     # which model it lands on.
+    # Legacy budget percentages — kept for now to gate "is thinking on at all"
+    # but the Anthropic API for Opus 4.7 / Sonnet 4.6 no longer accepts the
+    # old `thinking.type=enabled, budget_tokens=N` schema. The provider now
+    # sends `thinking.type=adaptive` plus `output_config.effort`, mapped from
+    # PAL's thinking_mode via THINKING_EFFORT below.
     THINKING_BUDGETS = {
         "minimal": 0.005,
         "low": 0.08,
         "medium": 0.33,
         "high": 0.67,
         "max": 1.0,
+    }
+
+    # PAL thinking_mode → Anthropic output_config.effort. The new schema
+    # accepts low/medium/high; "minimal" maps to low (effort=none disables
+    # thinking entirely, but PAL's "minimal" is conceptually still on),
+    # "max" maps to high (no "max" effort in the API).
+    THINKING_EFFORT = {
+        "minimal": "low",
+        "low": "low",
+        "medium": "medium",
+        "high": "high",
+        "max": "high",
     }
 
     # Required by the Anthropic API. Overridden per-call when the caller
@@ -230,33 +247,31 @@ class AnthropicModelProvider(RegistryBackedProviderMixin, ModelProvider):
         if system_prompt:
             request_kwargs["system"] = system_prompt
 
-        # Decide whether to enable thinking BEFORE adding temperature. The
-        # Anthropic API rejects requests that combine `thinking` with a
-        # non-default `temperature`, so we attach exactly one of them.
-        # Audit-flagged: the previous code attached both unconditionally
-        # and every thinking-eligible call returned 400.
-        # Anthropic also requires `budget_tokens < max_tokens`, with
-        # min budget = 1024. If max_tokens <= 1024 the constraint is
-        # mathematically unsatisfiable, so we disable thinking instead
-        # of forcing an invalid clamp.
-        ANTHROPIC_MIN_THINKING_BUDGET = 1024
+        # Anthropic's current API (Opus 4.7 / Sonnet 4.6) replaced the old
+        # `thinking.type=enabled, budget_tokens=N` schema with adaptive
+        # thinking + output_config.effort. The old schema returns 400 with
+        # 'Use "thinking.type.adaptive" and "output_config.effort" to
+        # control thinking behavior'.
+        #
+        # We send `thinking.type=adaptive` and let Anthropic decide the
+        # actual budget; PAL's thinking_mode (minimal/low/medium/high/max)
+        # maps to output_config.effort via THINKING_EFFORT.
+        #
+        # Temperature is still mutually exclusive with thinking on
+        # Anthropic — attach exactly one. Audit-flagged: the previous code
+        # attached both unconditionally and every thinking-eligible call
+        # returned 400.
         thinking_enabled = (
             capabilities.supports_extended_thinking
-            and thinking_mode in self.THINKING_BUDGETS
+            and thinking_mode in self.THINKING_EFFORT
             and model_cfg is not None
             and model_cfg.max_thinking_tokens > 0
-            and request_kwargs["max_tokens"] > ANTHROPIC_MIN_THINKING_BUDGET
         )
         effective_thinking = thinking_mode if thinking_enabled else None
 
         if thinking_enabled:
-            raw_budget = int(model_cfg.max_thinking_tokens * self.THINKING_BUDGETS[thinking_mode])
-            # Order matters: floor at MIN, then ceiling at max_tokens-1.
-            # Previous code used max(MIN, min(budget, max_tokens-1)) which
-            # silently violates `budget < max_tokens` when max_tokens<=MIN
-            # — fixed by gating thinking_enabled on max_tokens above.
-            budget = min(max(ANTHROPIC_MIN_THINKING_BUDGET, raw_budget), request_kwargs["max_tokens"] - 1)
-            request_kwargs["thinking"] = {"type": "enabled", "budget_tokens": budget}
+            request_kwargs["thinking"] = {"type": "adaptive"}
+            request_kwargs["output_config"] = {"effort": self.THINKING_EFFORT[thinking_mode]}
         elif capabilities.supports_temperature:
             # Only pass temperature when thinking is OFF — Anthropic
             # forbids the combination.

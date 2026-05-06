@@ -122,21 +122,32 @@ class AnthropicRequestShapeTest(unittest.TestCase):
             "with streaming the 21k non-streaming cap should be lifted",
         )
 
-    def test_thinking_disabled_when_max_tokens_too_small(self):
-        """Audit-flagged blocker: when caller passes max_output_tokens
-        <= 1024 the budget invariant `1024 <= budget < max_tokens` is
-        unsatisfiable. Disable thinking instead of sending an invalid
-        request."""
-        kwargs = self._capture_call(max_output_tokens=512, thinking_mode="medium")
-        self.assertNotIn("thinking", kwargs)
-        self.assertEqual(kwargs["max_tokens"], 512)
-
-    def test_thinking_budget_below_max_tokens(self):
+    def test_thinking_uses_adaptive_schema(self):
+        """Anthropic API for Opus 4.7 / Sonnet 4.6 rejects the old
+        `thinking.type=enabled, budget_tokens=N` schema with a 400 telling
+        callers to use `thinking.type=adaptive` and `output_config.effort`.
+        Verify the new schema is what reaches the SDK."""
         kwargs = self._capture_call(thinking_mode="medium")
-        if "thinking" in kwargs:
-            budget = kwargs["thinking"]["budget_tokens"]
-            self.assertGreaterEqual(budget, 1024)
-            self.assertLess(budget, kwargs["max_tokens"])
+        self.assertEqual(kwargs.get("thinking"), {"type": "adaptive"})
+        self.assertEqual(kwargs.get("output_config"), {"effort": "medium"})
+        self.assertNotIn("budget_tokens", str(kwargs.get("thinking", {})))
+
+    def test_thinking_effort_mapping(self):
+        """PAL thinking_mode → Anthropic effort: minimal/low → low,
+        medium → medium, high/max → high."""
+        for mode, expected_effort in [
+            ("minimal", "low"),
+            ("low", "low"),
+            ("medium", "medium"),
+            ("high", "high"),
+            ("max", "high"),
+        ]:
+            kwargs = self._capture_call(thinking_mode=mode)
+            self.assertEqual(
+                kwargs.get("output_config"),
+                {"effort": expected_effort},
+                f"thinking_mode={mode} should map to effort={expected_effort}",
+            )
 
 
 class AnthropicImageEncodingTest(unittest.TestCase):
