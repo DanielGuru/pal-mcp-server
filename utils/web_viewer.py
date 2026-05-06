@@ -118,6 +118,14 @@ _INDEX_HTML = """<!doctype html>
   .events { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px;
             color: var(--muted); margin-top: 8px; }
   .events div { padding: 2px 0; }
+  .events-live { background: #11141a; border: 1px solid #2a3a5e; border-left: 3px solid var(--accent);
+                 padding: 8px 10px; border-radius: 4px; margin-top: 8px;
+                 max-height: 320px; overflow-y: auto; }
+  .events-live .events-h { font-family: -apple-system, sans-serif; font-size: 10px;
+                           text-transform: uppercase; letter-spacing: 0.5px;
+                           color: var(--accent); margin-bottom: 6px; }
+  .events-details { margin-top: 8px; }
+  .events-details summary { cursor: pointer; color: var(--muted); font-size: 11px; }
   pre { background: #14151a; padding: 10px; border-radius: 4px; overflow-x: auto;
         max-height: 300px; font-size: 11px; }
   .empty { color: var(--muted); padding: 30px; text-align: center; }
@@ -215,15 +223,35 @@ async function renderRunsList() {
     const hash = JSON.stringify(runs.map(r => [r.run_id, r.status, r.completed_at]));
     if (hash === LAST_RUNS_HASH) return;
     LAST_RUNS_HASH = hash;
+
+    // Auto-select the most recent ROOT run (no parent) the first time
+    // we see one — gets the user straight to the live debate without
+    // hunting through the panelist sub-rows. Pick a root because root
+    // runs (panel / multiaudit / start_task) tell the whole story; the
+    // panelist children are visible inside that root's tree view.
+    if (!SELECTED && runs.length) {
+      const liveRoot = runs.find(r => !r.parent_run_id && r.status === 'running')
+                    || runs.find(r => !r.parent_run_id);
+      if (liveRoot) {
+        SELECTED = liveRoot.run_id;
+      }
+    }
+
     const html = runs.length
       ? runs.map(renderRunRow).join('')
-      : '<div class="empty">no runs yet</div>';
+      : '<div class="empty">no runs yet — fire a PAL tool and it will appear here</div>';
     $('#runs').innerHTML = html;
     document.querySelectorAll('.run-row').forEach(el => {
       el.addEventListener('click', () => selectRun(el.dataset.run));
     });
     $('#dot').style.color = '#9ece6a';
-    $('#conn').textContent = `${runs.length} run${runs.length === 1 ? '' : 's'} · ${new Date().toLocaleTimeString()}`;
+    const liveCount = runs.filter(r => r.status === 'running').length;
+    const liveLabel = liveCount ? ` · ${liveCount} live` : '';
+    $('#conn').textContent = `${runs.length} run${runs.length === 1 ? '' : 's'}${liveLabel} · ${new Date().toLocaleTimeString()}`;
+    if (SELECTED && !document.querySelector('.run-row.selected')) {
+      // Re-render the detail pane in case the auto-select fired this tick
+      renderDetail();
+    }
   } catch (e) {
     $('#dot').style.color = '#f7768e';
     $('#conn').textContent = 'connection lost — retrying';
@@ -236,13 +264,38 @@ function renderRollup(rollup) {
   return items ? `<div class="rollup">${items}</div>` : '';
 }
 
-function renderEvents(events) {
+function renderEvents(events, opts) {
   if (!events || !events.length) return '';
-  const lines = events.map(e => {
+  opts = opts || {};
+  // For RUNNING nodes, show events prominently as a live activity feed —
+  // tail-newest, no "details" wrapper, brighter styling. For completed
+  // nodes, collapse to a normal events block (history, not focus).
+  const isLive = opts.live === true;
+  // Tail to the most recent N events on live nodes so the panel doesn't
+  // grow unbounded during long debates.
+  const recent = isLive ? events.slice(-25) : events;
+  const lines = recent.map(e => {
     const t = new Date(e.ts * 1000).toLocaleTimeString();
-    return `<div>[${escapeHtml(t)}] ${escapeHtml(e.event_type || '')}: ${escapeHtml(e.message || '')}</div>`;
+    const typeColour = isLive ? eventTypeColour(e.event_type) : '';
+    return `<div${typeColour}>[${escapeHtml(t)}] ${escapeHtml(e.event_type || '')}: ${escapeHtml(e.message || '')}</div>`;
   }).join('');
-  return `<div class="events">${lines}</div>`;
+  if (isLive) {
+    return `<div class="events events-live">
+      <div class="events-h">live activity (${events.length} events)</div>
+      ${lines}
+    </div>`;
+  }
+  return `<details class="events-details"><summary>${events.length} events</summary><div class="events">${lines}</div></details>`;
+}
+
+function eventTypeColour(t) {
+  // Colour-code event types so a glance distinguishes thinking vs. doing.
+  // Inline styles keep this dependency-free and portable.
+  if (t === 'progress') return ' style="color:var(--accent);"';
+  if (t === 'start') return ' style="color:var(--good);font-weight:600;"';
+  if (t === 'complete') return ' style="color:var(--good);font-weight:600;"';
+  if (t === 'error') return ' style="color:var(--bad);font-weight:600;"';
+  return '';
 }
 
 function renderTreeNode(node, depth = 0) {
@@ -255,7 +308,7 @@ function renderTreeNode(node, depth = 0) {
   const args = node.args_json ? `<details><summary>args</summary><pre>${escapeHtml(node.args_json)}</pre></details>` : '';
   const result = node.result_json ? `<details><summary>result</summary><pre>${escapeHtml(node.result_json)}</pre></details>` : '';
   const error = node.error ? `<details open><summary style="color:#f7768e">error</summary><pre>${escapeHtml(node.error)}</pre></details>` : '';
-  const events = renderEvents(node.events);
+  const events = renderEvents(node.events, { live: node.status === 'running' });
   const childrenHtml = (node.children || []).map(c => renderTreeNode(c, depth + 1)).join('');
   const cls = depth > 3 ? 'depth-3' : `depth-${depth}`;
   return `<div class="card ${cls}">

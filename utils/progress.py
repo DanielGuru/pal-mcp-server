@@ -67,6 +67,27 @@ async def emit_progress(
     Returns:
         True if delivered (to a sink or via MCP), False if skipped.
     """
+    # ALWAYS write the event into the execution graph (best-effort) so the
+    # web viewer can render a live activity feed for any in-flight run.
+    # Pre-streaming-v1 the viewer just showed a status badge; events were
+    # captured into TaskRecord.progress_events but never flowed to the
+    # graph. Now: every emit_progress call appends to the graph against
+    # the current run_id (set by run_context in execute_tool).
+    try:
+        from utils.execution_graph import current_run_id, get_graph
+        run_id = current_run_id()
+        graph = get_graph()
+        if run_id is not None and graph is not None:
+            graph.add_event(
+                run_id,
+                event_type="progress",
+                message=message,
+                progress=progress,
+            )
+    except Exception as exc:  # noqa: BLE001
+        # Graph emissions are observability — never break the actual call.
+        logger.debug("graph emit_progress raised: %s", exc)
+
     sink = _progress_sink.get()
     if sink is not None:
         try:

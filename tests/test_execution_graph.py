@@ -323,6 +323,35 @@ def test_run_context_marks_failure_on_exception(tmp_path, monkeypatch):
     assert "simulated failure" in run["error"]
 
 
+def test_emit_progress_writes_event_into_graph(tmp_path, monkeypatch):
+    """Streaming v1: emit_progress must append to the current run's
+    event timeline so the web viewer can render a live activity feed.
+    Pre-fix progress events lived only in TaskRecord.progress_events
+    and never flowed to the graph."""
+    import utils.execution_graph as eg
+    from utils.progress import emit_progress
+
+    monkeypatch.setattr(eg, "_GRAPH", eg.ExecutionGraph(tmp_path / "g.db"))
+    monkeypatch.setattr(eg, "_GRAPH_DISABLED", False)
+
+    captured_run_id = {}
+
+    async def go():
+        with eg.run_context("chat", args={}) as run_id:
+            captured_run_id["id"] = run_id
+            await emit_progress("step 1 of 3", progress=0.33)
+            await emit_progress("step 2 of 3", progress=0.66)
+            await emit_progress("step 3 of 3", progress=1.0)
+
+    asyncio.run(go())
+
+    events = eg.get_graph().get_run_events(captured_run_id["id"])
+    progress_events = [e for e in events if e["event_type"] == "progress"]
+    assert len(progress_events) == 3
+    assert progress_events[0]["message"] == "step 1 of 3"
+    assert progress_events[2]["message"] == "step 3 of 3"
+
+
 def test_execute_tool_records_run_in_graph(tmp_path, monkeypatch):
     """End-to-end: server.execute_tool must open a graph run, capture
     success/cost_tier/model_used. No real provider call — we use 'version'
