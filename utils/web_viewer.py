@@ -1171,6 +1171,11 @@ class _Handler(BaseHTTPRequestHandler):
         "PANEL_GEMINI_STREAM",
         "PANEL_MULTIAUDIT_JUDGE",
         "PANEL_MULTIAUDIT_PANELISTS",
+        # bugfind mirrors multiaudit's env-driven defaults; both tools read
+        # at execute() time so live mutation works the same way for both.
+        # Audit-flagged: only multiaudit was on the live whitelist.
+        "PANEL_BUGFIND_JUDGE",
+        "PANEL_BUGFIND_PANELISTS",
     )
 
     # Read-only settings exposed to the UI. These DO need a Panel restart

@@ -217,7 +217,7 @@ python3 -c "import ast; ast.parse(open('PATH').read()); print('ok')"
 ~/.local/share/uv/tools/panel-mcp-server/bin/python3 -c "
 import sys; sys.path.insert(0, '/Users/$USER/Projects/panel-mcp-server')
 import server; print('tools:', sorted(server.TOOLS.keys()))
-"  # should report 28 tools
+"  # should report 29 tools
 
 # Regression suite (~80ms)
 ~/.local/share/uv/tools/panel-mcp-server/bin/python3 -m pytest tests/test_v1_hardening.py -v
@@ -280,7 +280,7 @@ When the user names "codex" / "gemini" / "claude" without a specific paid model,
 
 ## Open work queue (handoff state)
 
-The infrastructure is solid: 28 tools, 97 tests passing on the new surfaces, three size gates respect provenance, web viewer is XSS-hardened + lazy-started + streaming-v1. Outstanding for the next session:
+The infrastructure is solid: 29 tools, 97 tests passing on the new surfaces, three size gates respect provenance, web viewer is XSS-hardened + lazy-started + streaming-v1. Outstanding for the next session:
 
 1. **Streaming v2 — per-token for direct-API providers.** All four flagships stream by default: Anthropic via `client.messages.stream` (unconditional), OpenAI / xAI via `client.chat.completions.create(stream=True)` (opt out with `PANEL_OPENAI_STREAM=0`), Gemini via `client.models.generate_content_stream` (opt out with `PANEL_GEMINI_STREAM=0`). The shared `utils/stream_progress.py` emitter (a) takes an explicit run_id captured eagerly so it survives `loop.run_in_executor`'s ContextVar drop, (b) writes the actual accumulating text content (not chunk-count pings), (c) throttles by wall time (`DEFAULT_THROTTLE_S = 0.1`) so SQLite doesn't get hammered. The viewer renders aggregated `text_chunk` events in the transcript pane as `panelist_streaming` blocks, and bakes them in once the run completes if the canonical `panelist_answer` hasn't dropped. Still TODO: the OpenAI Responses endpoint (gpt-5.1-codex / o3-pro family — separate streaming API surface).
 2. **Multi-step panel workflow** — refactor panel from fire-and-forget into a workflow tool (like `consensus`) so Claude Code can intervene between debate rounds, not just observe. Today `host` is a peer panelist via MCP sampling; multi-step would let Claude see round-1 results, refine the round-2 prompt, weigh in mid-flight, then continue.
