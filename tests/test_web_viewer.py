@@ -303,6 +303,47 @@ def test_settings_post_rejects_off_whitelist(graph_with_data):
     assert os.environ.get("OPENAI_API_KEY") != "leaked"
 
 
+def test_settings_post_rejects_non_json_content_type(graph_with_data):
+    """CSRF defense: simple-request CSRF (HTML form / no-cors fetch with
+    text/plain) must be rejected. Settings POST requires explicit
+    application/json so the browser is forced into a preflight that
+    our handler will deny by default. Round-3 panel-flagged."""
+    import json as _json
+    from urllib.error import HTTPError
+    from urllib.request import Request, urlopen
+
+    url, _ = graph_with_data
+    body = _json.dumps({"key": "PAL_MULTIAUDIT_JUDGE", "value": "claude"}).encode()
+    req = Request(url + "api/settings", data=body, method="POST",
+                  headers={"Content-Type": "text/plain"})
+    try:
+        urlopen(req, timeout=2.0)
+        raised = False
+    except HTTPError as exc:
+        raised = True
+        assert exc.code == 415  # unsupported media type
+    assert raised, "non-JSON Content-Type must be rejected"
+
+
+def test_settings_post_rejects_oversized_body(graph_with_data):
+    """A POST body larger than 4KB must be rejected with 413 to prevent
+    memory / thread-time DoS via giant payloads. Round-3 panel-flagged."""
+    from urllib.error import HTTPError
+    from urllib.request import Request, urlopen
+
+    url, _ = graph_with_data
+    big = b"x" * 5000
+    req = Request(url + "api/settings", data=big, method="POST",
+                  headers={"Content-Type": "application/json"})
+    try:
+        urlopen(req, timeout=2.0)
+        raised = False
+    except HTTPError as exc:
+        raised = True
+        assert exc.code == 413
+    assert raised, "oversized body must be rejected"
+
+
 def test_web_url_tool_reports_disabled(monkeypatch):
     """When the viewer isn't running the tool reports gracefully."""
     import asyncio

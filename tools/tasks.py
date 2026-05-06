@@ -68,11 +68,44 @@ def _persist_task(record: "TaskRecord") -> None:
             if record.status == "completed" and record.result_text is not None
             else None
         )
+        # Bound stored payloads so a single huge tool output (e.g. a
+        # 200KB panel transcript) doesn't bloat the tasks table.
+        # _SNAPSHOT_CAP mirrors the cap on runs.result_json. Round-3
+        # panel-flagged: previously unbounded.
+        if result_json is not None:
+            try:
+                from utils.execution_graph import _SNAPSHOT_CAP
+            except ImportError:  # pragma: no cover
+                _SNAPSHOT_CAP = 16384
+            if len(result_json) > _SNAPSHOT_CAP:
+                result_json = result_json[:_SNAPSHOT_CAP] + "…[truncated]"
+        # Best-effort linkage to the graph run that backed this task.
+        # We don't carry the run_id through execute_tool's contextvar
+        # boundary directly (that would mean threading a hook through
+        # generic dispatch code). Instead, after the task starts, we
+        # query the graph for the most recent root run whose tool name
+        # matches the task and whose start_ts is >= the task's start.
+        # For a single-task-running-one-tool setup this is correct
+        # essentially always; if it ever mislinks, the result_json is
+        # the authoritative payload anyway.
+        run_id: Optional[str] = None
+        if record.started_at is not None:
+            try:
+                rows = graph.list_runs(limit=20, tool_name=record.tool_name)
+                for r in rows:
+                    if r.get("parent_run_id"):
+                        continue  # only roots
+                    started = r.get("started_at") or 0.0
+                    if started >= record.started_at - 1.0:
+                        run_id = r.get("run_id")
+                        break
+            except Exception:  # noqa: BLE001
+                pass
         graph.upsert_task(
             record.task_id,
             tool=record.tool_name,
             label=record.label,
-            run_id=None,  # populated on first lifecycle update if available
+            run_id=run_id,
             status=record.status,
             created_at=record.created_at,
             started_at=record.started_at,
@@ -834,11 +867,33 @@ class TaskResultTool(BaseTool):
                                     "task_id": task_id,
                                     "tool": persisted.get("tool"),
                                     "label": persisted.get("label"),
+                                    # Preserve link to the execution
+                                    # graph run so callers can drill
+                                    # into run_tree(run_id) post-restart
+                                    # to recover the panel sub-tree.
+                                    "run_id": persisted.get("run_id"),
                                     "status": status,
                                     "created_at": persisted.get("created_at"),
                                     "started_at": persisted.get("started_at"),
                                     "completed_at": persisted.get("completed_at"),
-                                    "from_graph": True,  # restart-recovered
+                                    # Round-3 audit security note: the
+                                    # in-memory task path enforces
+                                    # session ownership via
+                                    # `require_session=True`. The graph
+                                    # fallback CANNOT — the original
+                                    # session object died with the
+                                    # process. A task_id is therefore
+                                    # effectively a bearer secret after
+                                    # restart. PAL is local-only by
+                                    # default (viewer bound to 127.0.0.1
+                                    # without PAL_WEB_ALLOW_REMOTE) so
+                                    # the practical exposure is the
+                                    # local user; we surface the
+                                    # restart-recovered marker on the
+                                    # response so callers can detect
+                                    # they crossed that boundary.
+                                    "from_graph": True,
+                                    "session_security": "bearer_after_restart",
                                 },
                             }
                             if status == "completed" and persisted.get("result_json"):

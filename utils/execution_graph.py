@@ -221,6 +221,12 @@ class ExecutionGraph:
         # /events endpoint: clients subscribe and re-fetch only when
         # the version changes, replacing the 1.5–2s polling loop.
         self._version = 0
+        # Wakeup signal for SSE handlers: they wait on this Condition
+        # instead of busy-polling get_version() on a 250ms timer (which
+        # burns CPU even when idle and per active connection). Each
+        # write notifies all waiters; a 15s timeout still fires for
+        # keepalive pings.
+        self._version_cv = threading.Condition(self._lock)
         # check_same_thread=False: panel fan-out runs through this from
         # multiple threads (the bounded provider executor). The lock above
         # serialises actual writes; SQLite WAL mode handles concurrent reads.
@@ -334,8 +340,25 @@ class ExecutionGraph:
             return self._version
 
     def _bump_version(self) -> None:
-        """Caller must hold ``self._lock``."""
+        """Caller must hold ``self._lock``.
+        Notifies the version Condition so SSE handlers waiting on a
+        write wake immediately instead of polling on a fixed timer.
+        ``self._version_cv`` shares the same underlying lock as
+        ``self._lock``, so notify_all() is legal from inside ``with
+        self._lock`` blocks."""
         self._version += 1
+        self._version_cv.notify_all()
+
+    def wait_for_version_change(self, last_seen: int, timeout: float = 15.0) -> int:
+        """Block until the version differs from ``last_seen`` or
+        ``timeout`` seconds elapse. Returns the current version. SSE
+        handlers loop on this so they only wake on real writes and on
+        the keepalive deadline — no busy polling."""
+        with self._version_cv:
+            self._version_cv.wait_for(
+                lambda: self._version != last_seen, timeout=timeout
+            )
+            return self._version
 
     # -- tasks --------------------------------------------------------------
 
@@ -382,12 +405,19 @@ class ExecutionGraph:
     def get_task(self, task_id: str) -> Optional[dict[str, Any]]:
         """Look up a persisted task. Returns dict with the row's columns
         or None. Used by TaskManager.task_result on memory miss after
-        restart."""
-        cur = self._conn.execute("SELECT * FROM tasks WHERE task_id=?", (task_id,))
-        row = cur.fetchone()
-        if row is None:
-            return None
-        return self._row_to_dict(cur, row)
+        restart.
+
+        Reads ARE serialised through self._lock just like writes. SQLite
+        WAL + check_same_thread=False permits concurrent reads at the
+        engine level, but the Python connection object is not reentrant
+        under concurrent execute() calls — and panel fan-out plus the
+        viewer easily produces that. Round-3 panel-flagged."""
+        with self._lock:
+            cur = self._conn.execute("SELECT * FROM tasks WHERE task_id=?", (task_id,))
+            row = cur.fetchone()
+            if row is None:
+                return None
+            return self._row_to_dict(cur, row)
 
     def add_event(
         self,

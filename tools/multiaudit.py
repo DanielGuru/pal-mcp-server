@@ -222,8 +222,20 @@ class MultiauditTool(BaseTool):
             )
 
         extra_context = arguments.get("extra_context") or ""
-        panelists = arguments.get("panelists") or DEFAULT_PANELISTS
-        judge = arguments.get("judge") or DEFAULT_JUDGE
+        # Resolve env defaults at execute() time, not import time. The
+        # settings tab mutates os.environ live; freezing these at module
+        # load made the live-judge / live-panelists toggles a lie.
+        # Round-3 panel-flagged.
+        env_judge = (os.environ.get("PAL_MULTIAUDIT_JUDGE") or "").strip()
+        env_panelists = (os.environ.get("PAL_MULTIAUDIT_PANELISTS") or "").strip()
+        live_default_judge = env_judge or "codex"
+        live_default_panelists = (
+            [p.strip() for p in env_panelists.split(",") if p.strip()]
+            if env_panelists
+            else DEFAULT_PANELISTS
+        )
+        panelists = arguments.get("panelists") or live_default_panelists
+        judge = arguments.get("judge") or live_default_judge
         debate_rounds = arguments.get("debate_rounds")
         if debate_rounds is None:
             debate_rounds = DEFAULT_DEBATE_ROUNDS

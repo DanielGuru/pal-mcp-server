@@ -916,6 +916,63 @@ def test_multiaudit_panelists_configurable_via_env(monkeypatch):
     assert m.DEFAULT_PANELISTS == ["claude", "grok-4.3", "gemini"]
 
 
+def test_multiaudit_judge_resolves_env_at_execute_not_import(tmp_path, monkeypatch):
+    """The settings tab claims live mutation of PAL_MULTIAUDIT_JUDGE.
+    Round-3 audit caught that the value was frozen at module import via
+    DEFAULT_JUDGE; setting the env var AFTER multiaudit was already
+    imported had no effect on the next dispatch. Resolve env vars
+    inside execute() so live toggles actually take effect."""
+    import asyncio
+    import json as _json
+    from pathlib import Path
+
+    # Fresh git repo with main + a feature branch carrying a real diff
+    # so multiaudit reaches the dispatch.
+    repo = tmp_path / "r"
+    repo.mkdir()
+    import subprocess as _sp
+    _sp.run(["git", "init", "-q"], cwd=repo, check=True)
+    _sp.run(["git", "config", "user.email", "t@t"], cwd=repo, check=True)
+    _sp.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
+    _sp.run(["git", "checkout", "-q", "-b", "main"], cwd=repo, check=True)
+    (repo / "f.txt").write_text("a")
+    _sp.run(["git", "add", "."], cwd=repo, check=True)
+    _sp.run(["git", "commit", "-q", "-m", "i"], cwd=repo, check=True)
+    _sp.run(["git", "checkout", "-q", "-b", "feature"], cwd=repo, check=True)
+    (repo / "f.txt").write_text("b")
+    _sp.run(["git", "commit", "-aq", "-m", "c"], cwd=repo, check=True)
+
+    captured: dict = {}
+
+    async def fake_execute(name, arguments):
+        captured["arguments"] = arguments
+        from mcp.types import TextContent
+        return [TextContent(type="text", text=_json.dumps({"status": "started", "task_id": "t"}))]
+
+    import server
+    monkeypatch.setattr(server, "execute_tool", fake_execute)
+
+    # First import locks DEFAULT_JUDGE='codex' (env unset). Then mutate
+    # env and dispatch — the live judge must be 'claude', not 'codex'.
+    monkeypatch.delenv("PAL_MULTIAUDIT_JUDGE", raising=False)
+    import importlib
+    import tools.multiaudit as m
+    importlib.reload(m)
+    assert m.DEFAULT_JUDGE == "codex"
+
+    monkeypatch.setenv("PAL_MULTIAUDIT_JUDGE", "claude")
+
+    async def go():
+        return await m.MultiauditTool().execute(
+            {"working_directory_absolute_path": str(repo)}
+        )
+
+    asyncio.run(go())
+    assert captured["arguments"]["arguments"]["judge"] == "claude", (
+        "live env mutation must reach execute() — round-3 panel-flagged"
+    )
+
+
 def test_agenerate_content_holds_semaphore_until_thread_completes_on_cancel(monkeypatch):
     """Cancel-aware semaphore release. The asyncio task may be cancelled
     mid-flight, but the worker thread keeps running its blocking SDK
@@ -1045,6 +1102,73 @@ def test_agenerate_content_releases_semaphore_on_submit_failure(monkeypatch):
         return not _get_api_semaphore().locked()
 
     assert asyncio.run(go()), "semaphore leaked after submit-failure path"
+
+
+def test_task_result_falls_back_to_graph_for_terminal_states(tmp_path, monkeypatch):
+    """task_result on memory miss must hit the graph DB and surface
+    completed/failed/cancelled persisted records as terminal results.
+    Powers cross-restart task recovery."""
+    import asyncio
+    import json as _json
+
+    from utils.execution_graph import ExecutionGraph
+    import utils.execution_graph as eg
+
+    g = ExecutionGraph(db_path=tmp_path / "tr.db")
+    monkeypatch.setattr(eg, "_GRAPH", g)
+    monkeypatch.setattr(eg, "_GRAPH_DISABLED", False)
+
+    g.upsert_task(
+        "deadc0de", tool="panel", label="multiaudit:main",
+        run_id="run-aaa", status="completed",
+        created_at=1.0, started_at=1.1, completed_at=10.0,
+        result_json='[{"headline": "ok"}]', error=None,
+    )
+
+    from tools.tasks import TaskResultTool
+
+    async def go():
+        return await TaskResultTool().execute({"task_id": "deadc0de", "wait_seconds": 0})
+
+    out = asyncio.run(go())
+    body = _json.loads(out[0].text)
+    assert body["status"] == "completed"
+    assert body["task"]["from_graph"] is True
+    assert body["task"]["session_security"] == "bearer_after_restart"
+    assert body["task"]["run_id"] == "run-aaa"
+    assert body["result"] == [{"headline": "ok"}]
+
+
+def test_task_result_surfaces_interrupted_for_non_terminal_persisted(tmp_path, monkeypatch):
+    """A persisted task with status='running' represents a process
+    that died mid-flight. Surface a clear "interrupted by PAL restart"
+    error rather than the misleading "unknown task_id"."""
+    import asyncio
+    import json as _json
+
+    from utils.execution_graph import ExecutionGraph
+    import utils.execution_graph as eg
+
+    g = ExecutionGraph(db_path=tmp_path / "ti.db")
+    monkeypatch.setattr(eg, "_GRAPH", g)
+    monkeypatch.setattr(eg, "_GRAPH_DISABLED", False)
+
+    g.upsert_task(
+        "abandon1", tool="panel", label=None, run_id=None,
+        status="running",  # interrupted, never reached terminal
+        created_at=1.0, started_at=1.1, completed_at=None,
+        result_json=None, error=None,
+    )
+
+    from tools.tasks import TaskResultTool
+
+    async def go():
+        return await TaskResultTool().execute({"task_id": "abandon1", "wait_seconds": 0})
+
+    out = asyncio.run(go())
+    body = _json.loads(out[0].text)
+    assert body["status"] == "error"
+    assert "interrupted" in body["error"].lower()
 
 
 def test_web_viewer_refuses_non_localhost_bind_without_opt_in(monkeypatch):

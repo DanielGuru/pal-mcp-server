@@ -62,6 +62,16 @@ _AUTO_OPEN = os.environ.get("PAL_WEB_AUTO_OPEN", "1").strip().lower() not in (
     "0", "false", "no", "off", "",
 )
 
+# Settings mutation lock. /api/settings POST writes to os.environ from
+# the HTTP worker thread; provider lookups read it from asyncio /
+# executor threads. Python's GIL serialises individual dict ops, but a
+# concurrent burst of POSTs (or a POST while a provider is in the
+# middle of a multi-key read) can interleave inconsistently. A small
+# RLock around the mutation block keeps each POST atomic from the
+# settings-tab perspective. Reads stay lock-free — they're tolerant of
+# value churn since each provider re-reads on every call.
+_SETTINGS_MUTEX = threading.RLock()
+
 # Module-level state for the running server, so callers can probe its URL.
 _SERVER: Optional[ThreadingHTTPServer] = None
 _SERVER_THREAD: Optional[threading.Thread] = None
@@ -824,11 +834,28 @@ function _startSSE() {
 
 renderRunPicker();
 _startSSE();
-// Polling kept as belt-and-braces. Slow cadence so SSE is the primary
-// path; if SSE is healthy these are mostly no-ops since hash compare
-// short-circuits.
-setInterval(renderRunPicker, _SSE_HEALTHY ? 5000 : 2000);
-setInterval(() => { if (SELECTED && CURRENT_TAB === 'transcript') renderConversation(); }, _SSE_HEALTHY ? 5000 : 1500);
+// Polling kept as belt-and-braces. SSE is the primary path; these
+// intervals back it up. The ternary is evaluated INSIDE each tick (not
+// once at load) so when SSE comes online and flips _SSE_HEALTHY=true,
+// the polls slow down accordingly. Round-3 panel caught the previous
+// version, which evaluated the rate once at module load and so never
+// honoured the SSE-is-healthy contract.
+setInterval(() => {
+  if (CURRENT_TAB !== 'transcript') return;
+  renderRunPicker();
+}, 2000);
+setInterval(() => {
+  if (!SELECTED || CURRENT_TAB !== 'transcript') return;
+  // When SSE is healthy, only refetch every 5s as a safety net; SSE
+  // pushes drive the real updates. When SSE is broken, fall back to
+  // a tighter 1.5s poll so the viewer still feels live.
+  const stride = _SSE_HEALTHY ? 5000 : 1500;
+  const now = Date.now();
+  if (!renderConversation._lastTick || now - renderConversation._lastTick >= stride) {
+    renderConversation._lastTick = now;
+    renderConversation();
+  }
+}, 500);
 </script>
 </body>
 </html>
@@ -878,17 +905,32 @@ class _Handler(BaseHTTPRequestHandler):
         from utils.execution_graph import get_graph
         return get_graph()
 
+    def _is_localhost_request(self) -> bool:
+        """Settings endpoints expose env vars (provider key presence,
+        OAuth-CLI status) and accept os.environ mutation. Even when
+        PAL_WEB_ALLOW_REMOTE=1 lets the rest of the viewer bind to a
+        non-localhost interface, /api/settings stays localhost-only as
+        defense-in-depth — a remote operator should not be able to flip
+        the multiaudit judge or probe credential file presence. Round-3
+        panel-flagged."""
+        addr = getattr(self, "client_address", ("",))[0] or ""
+        # IPv4 loopback is exact; IPv6 loopback is ::1 or
+        # ::ffff:127.0.0.1 (when accept(2) returns the v4-mapped form).
+        return (
+            addr == "127.0.0.1"
+            or addr == "::1"
+            or addr.startswith("127.")
+            or addr.startswith("::ffff:127.")
+        )
+
     # ---- SSE ----------------------------------------------------------
 
     def _serve_sse_events(self, graph) -> None:
         """Stream `data: <version>\\n\\n` whenever the graph mutates.
-        The client refetches affected endpoints only when its last-seen
-        version differs. We don't push payloads through the stream
-        itself — that keeps individual messages tiny and lets the
-        client decide which sub-resource to refresh. Connection lives
-        until the client disconnects or the loop wakes up after the
-        process exits (keepalive comments every 15s prevent proxy
-        idle-disconnects)."""
+        Event-driven: handlers wait on a Condition variable that fires
+        on every write rather than polling a 250ms timer. Idle
+        connections cost zero CPU. The 15s timeout doubles as the
+        keepalive cadence (proxy idle-disconnect protection)."""
         try:
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
@@ -899,32 +941,31 @@ class _Handler(BaseHTTPRequestHandler):
         except Exception:  # noqa: BLE001
             return
 
-        import time as _t
-        last_seen = -1
-        last_keepalive = _t.monotonic()
-        # Send an initial ping so the client knows the stream is live.
+        # Initial ping so the client knows the stream is live.
         try:
-            current = graph.get_version()
-            self.wfile.write(f"data: {current}\n\n".encode("utf-8"))
+            last_seen = graph.get_version()
+            self.wfile.write(f"data: {last_seen}\n\n".encode("utf-8"))
             self.wfile.flush()
-            last_seen = current
         except Exception:
             return
 
         while True:
             try:
-                current = graph.get_version()
+                # Block until the version changes or 15s elapses.
+                current = graph.wait_for_version_change(last_seen, timeout=15.0)
                 if current != last_seen:
                     self.wfile.write(f"data: {current}\n\n".encode("utf-8"))
                     self.wfile.flush()
                     last_seen = current
-                if _t.monotonic() - last_keepalive > 15:
+                else:
+                    # Timeout hit — keepalive comment so proxies don't
+                    # close the connection on idle.
                     self.wfile.write(b": keepalive\n\n")
                     self.wfile.flush()
-                    last_keepalive = _t.monotonic()
-                _t.sleep(0.25)
             except (BrokenPipeError, ConnectionResetError, OSError):
                 # Client disconnected.
+                return
+            except Exception:  # noqa: BLE001
                 return
 
     # ---- settings -----------------------------------------------------
@@ -1007,9 +1048,36 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _serve_settings_post(self) -> None:
         """Mutate whitelisted env vars. Body: {"key": "PAL_X", "value": "..."}.
-        Returns the new snapshot. Anything off-whitelist is rejected."""
+        Returns the new snapshot. Anything off-whitelist is rejected.
+
+        CSRF defense: require an explicit ``application/json`` content
+        type. A "simple request" via HTML form (text/plain) or a
+        no-cors fetch from a malicious page can otherwise reach
+        localhost without preflight; rejecting non-JSON content types
+        forces the browser into a preflight, which our handler will
+        deny via lack of CORS allow-origin headers. Round-3
+        panel-flagged."""
+        ctype = (self.headers.get("Content-Type", "") or "").split(";", 1)[0].strip().lower()
+        if ctype != "application/json":
+            self._send_json(
+                {"status": "error", "error": "Content-Type must be application/json"},
+                status=415,
+            )
+            return
         try:
-            length = int(self.headers.get("Content-Length", "0"))
+            length = int(self.headers.get("Content-Length", "0") or "0")
+        except ValueError:
+            self._send_json({"status": "error", "error": "bad Content-Length"}, status=400)
+            return
+        # Cap the body so a remote viewer (or buggy local client) can't
+        # spend memory or block the handler thread on a giant POST.
+        if length < 0 or length > 4096:
+            self._send_json(
+                {"status": "error", "error": "body too large (max 4096 bytes)"},
+                status=413,
+            )
+            return
+        try:
             raw = self.rfile.read(length) if length else b""
             body = json.loads(raw.decode("utf-8")) if raw else {}
         except (ValueError, UnicodeDecodeError) as exc:
@@ -1028,11 +1096,14 @@ class _Handler(BaseHTTPRequestHandler):
                 {"status": "error", "error": "value must be a scalar"}, status=400,
             )
             return
-        # Coerce to string. Empty string clears.
-        if value is None or value == "":
-            os.environ.pop(key, None)
-        else:
-            os.environ[key] = str(value)
+        # Coerce to string. Empty string clears. Lock-protected so a
+        # burst of POSTs to the same key resolves to one of the supplied
+        # values rather than partial interleaving.
+        with _SETTINGS_MUTEX:
+            if value is None or value == "":
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = str(value)
         logger.info("settings: %s = %r (live)", key, os.environ.get(key, ""))
         self._serve_settings_get()
 
@@ -1042,6 +1113,12 @@ class _Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path
         if path == "/api/settings":
+            if not self._is_localhost_request():
+                self._send_json(
+                    {"status": "error", "error": "settings endpoint is localhost-only"},
+                    status=403,
+                )
+                return
             self._serve_settings_post()
             return
         self._not_found()
@@ -1079,8 +1156,14 @@ class _Handler(BaseHTTPRequestHandler):
         # The settings tab is the operator's "control plane" — most env
         # vars are read at module load and need a restart to take effect,
         # but the streaming/judge knobs are looked up per-call so they
-        # mutate live.
+        # mutate live. Localhost-only even with PAL_WEB_ALLOW_REMOTE.
         if path == "/api/settings":
+            if not self._is_localhost_request():
+                self._send_json(
+                    {"status": "error", "error": "settings endpoint is localhost-only"},
+                    status=403,
+                )
+                return
             self._serve_settings_get()
             return
 
@@ -1203,6 +1286,12 @@ def start_web_viewer() -> Optional[str]:
         try:
             port = _pick_port(_DEFAULT_PORT)
             server = ThreadingHTTPServer((_BIND_HOST, port), _Handler)
+            # daemon_threads: SSE handlers are long-lived blocking
+            # streams. Without this, an open EventSource connection
+            # keeps the process alive past parent exit until the proxy
+            # eventually gives up — round-3 panel-flagged shutdown
+            # hang. Daemon threads die with the main thread cleanly.
+            server.daemon_threads = True
         except Exception as exc:  # noqa: BLE001
             logger.warning("web viewer boot failed (%s); UI disabled for this process", exc)
             return None
