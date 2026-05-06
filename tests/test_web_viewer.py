@@ -243,6 +243,66 @@ def test_viewer_lazy_starts_on_first_tool_call(tmp_path, monkeypatch):
     wv.stop_web_viewer()
 
 
+def test_settings_endpoint_returns_snapshot(graph_with_data):
+    """GET /api/settings returns the live + restart-required env vars,
+    provider key presence, OAuth status, viewer info, graph version."""
+    url, _ = graph_with_data
+    status, body = _read(url + "api/settings")
+    assert status == 200
+    payload = json.loads(body)
+    assert payload["status"] == "ok"
+    s = payload["settings"]
+    assert "live" in s and "live_keys" in s
+    assert "PAL_OPENAI_STREAM" in s["live"]
+    assert "PAL_GEMINI_STREAM" in s["live"]
+    assert "PAL_MULTIAUDIT_JUDGE" in s["live"]
+    assert "restart_required" in s
+    assert "PAL_MAX_CONCURRENT_API" in s["restart_required"]
+    assert "provider_keys" in s
+    assert "oauth_clis" in s
+    assert "viewer" in s and s["viewer"]["url"] == url.rstrip("/") + "/"
+    assert "graph" in s and s["graph"]["version"] is not None
+
+
+def test_settings_post_mutates_whitelist(graph_with_data):
+    """POST /api/settings with a whitelisted key updates os.environ
+    immediately so per-call lookups see the new value."""
+    import os
+    from urllib.request import Request, urlopen
+
+    url, _ = graph_with_data
+    body = json.dumps({"key": "PAL_MULTIAUDIT_JUDGE", "value": "claude"}).encode()
+    req = Request(url + "api/settings", data=body, method="POST",
+                  headers={"Content-Type": "application/json"})
+    with urlopen(req, timeout=2.0) as r:
+        out = json.loads(r.read())
+    assert out["status"] == "ok"
+    assert os.environ.get("PAL_MULTIAUDIT_JUDGE") == "claude"
+    # Cleanup so other tests don't see the mutation.
+    os.environ.pop("PAL_MULTIAUDIT_JUDGE", None)
+
+
+def test_settings_post_rejects_off_whitelist(graph_with_data):
+    """A POST for a non-whitelisted key returns 400 and does not
+    touch os.environ. Prevents arbitrary env mutation via the viewer."""
+    import os
+    from urllib.error import HTTPError
+    from urllib.request import Request, urlopen
+
+    url, _ = graph_with_data
+    body = json.dumps({"key": "OPENAI_API_KEY", "value": "leaked"}).encode()
+    req = Request(url + "api/settings", data=body, method="POST",
+                  headers={"Content-Type": "application/json"})
+    try:
+        urlopen(req, timeout=2.0)
+        raised = False
+    except HTTPError as exc:
+        raised = True
+        assert exc.code == 400
+    assert raised, "off-whitelist mutation must be rejected"
+    assert os.environ.get("OPENAI_API_KEY") != "leaked"
+
+
 def test_web_url_tool_reports_disabled(monkeypatch):
     """When the viewer isn't running the tool reports gracefully."""
     import asyncio

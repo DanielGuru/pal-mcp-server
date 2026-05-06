@@ -31,7 +31,7 @@ import os
 import socket
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Optional
+from typing import Any, Optional
 from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
@@ -115,6 +115,27 @@ _INDEX_HTML = r"""<!doctype html>
   header button:hover { color: var(--fg); border-color: #444; }
   header button.active { color: var(--accent); border-color: var(--accent); }
   main { max-width: 920px; margin: 0 auto; padding: 22px 24px 80px; }
+  /* Settings tab — compact tables, inline-edit row for live whitelist */
+  .settings-h { font-size: 12px; font-weight: 600; color: var(--accent);
+                margin: 22px 0 8px; letter-spacing: 0.4px; text-transform: uppercase; }
+  .settings-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  .settings-table th { text-align: left; color: var(--muted); font-weight: 500;
+                       padding: 4px 8px; border-bottom: 1px solid var(--border); }
+  .settings-table td { padding: 6px 8px; border-bottom: 1px solid #1f2027;
+                       vertical-align: middle; }
+  .settings-table code { background: #1f2027; padding: 2px 6px; border-radius: 3px;
+                         color: var(--fg); }
+  .settings-input { background: #14151a; border: 1px solid var(--border); color: var(--fg);
+                    padding: 4px 8px; border-radius: 3px; font-family: ui-monospace, monospace;
+                    font-size: 12px; width: 100%; min-width: 180px; }
+  .settings-save { background: transparent; border: 1px solid var(--border); color: var(--muted);
+                   padding: 4px 12px; border-radius: 3px; font-size: 11px; cursor: pointer; }
+  .settings-save:hover { color: var(--accent); border-color: var(--accent); }
+  .settings-readonly { color: var(--warn); font-size: 11px; }
+  .settings-hint { color: var(--muted); font-size: 11px; margin-top: 8px;
+                   padding: 8px; background: #1a1b21; border-radius: 4px; }
+  .ok { color: var(--good); }
+  .bad { color: var(--bad); }
   .summary { color: var(--muted); font-size: 12px; margin-bottom: 18px;
              padding-bottom: 14px; border-bottom: 1px solid var(--border); }
   .summary .verdict-tally { display: inline-flex; gap: 8px; margin-left: 10px; }
@@ -182,6 +203,8 @@ _INDEX_HTML = r"""<!doctype html>
   <span class="port" id="port" title="Viewer port. Each PAL process owns its own; orphan instances may listen on prior ports.">port —</span>
   <div class="controls">
     <select id="run-picker"><option>loading runs…</option></select>
+    <button id="tab-transcript" class="active" title="Live panel transcript">transcript</button>
+    <button id="tab-settings" title="Live settings + provider status">settings</button>
     <button id="raw-toggle" title="Toggle raw tree view">raw</button>
   </div>
 </header>
@@ -189,6 +212,9 @@ _INDEX_HTML = r"""<!doctype html>
   <div class="empty">waiting for a panel run…
     <div class="hint">fire <code>multiaudit</code> or <code>panel</code> from PAL and the conversation will appear here</div>
   </div>
+</main>
+<main id="settings-pane" style="display:none;">
+  <div class="empty">loading settings…</div>
 </main>
 <script>
 // =============================================================================
@@ -664,9 +690,145 @@ $('#raw-toggle').addEventListener('click', () => {
   $('#raw-toggle').classList.toggle('active', RAW_MODE);
 });
 
+// -- tab switcher: transcript ↔ settings ---------------------------------
+let CURRENT_TAB = 'transcript';
+function switchTab(name) {
+  CURRENT_TAB = name;
+  const isTranscript = name === 'transcript';
+  $('#content').style.display = isTranscript ? '' : 'none';
+  $('#settings-pane').style.display = isTranscript ? 'none' : '';
+  $('#tab-transcript').classList.toggle('active', isTranscript);
+  $('#tab-settings').classList.toggle('active', !isTranscript);
+  if (!isTranscript) renderSettings();
+}
+$('#tab-transcript').addEventListener('click', () => switchTab('transcript'));
+$('#tab-settings').addEventListener('click', () => switchTab('settings'));
+
+// -- settings rendering --------------------------------------------------
+async function renderSettings() {
+  try {
+    const r = await fetch('/api/settings');
+    const body = await r.json();
+    const s = body.settings || {};
+    const pane = $('#settings-pane');
+    const live = s.live || {};
+    const liveKeys = s.live_keys || [];
+    const restart = s.restart_required || {};
+    const providerKeys = s.provider_keys || {};
+    const oauthClis = s.oauth_clis || {};
+    const viewer = s.viewer || {};
+    const graph = s.graph || {};
+    const tools = s.tools || [];
+
+    const liveRows = liveKeys.map(k => `
+      <tr>
+        <td><code>${escapeHtml(k)}</code></td>
+        <td><input class="settings-input" data-key="${escapeAttr(k)}"
+                   value="${escapeAttr(live[k] || '')}" /></td>
+        <td><button class="settings-save" data-key="${escapeAttr(k)}">save</button></td>
+      </tr>`).join('');
+    const restartRows = Object.keys(restart).sort().map(k => `
+      <tr><td><code>${escapeHtml(k)}</code></td>
+          <td><code>${escapeHtml(restart[k] || '(unset)')}</code></td>
+          <td><span class="settings-readonly">restart required</span></td></tr>`).join('');
+    const provRows = Object.entries(providerKeys).map(([k, v]) =>
+      `<tr><td>${escapeHtml(k)}</td><td>${v ? '<span class="ok">●</span> key set' : '<span class="bad">●</span> no key'}</td></tr>`
+    ).join('');
+    const oauthRows = Object.entries(oauthClis).map(([k, v]) =>
+      `<tr><td>${escapeHtml(k)} CLI</td><td>${v ? '<span class="ok">●</span> logged in' : '<span class="bad">●</span> not logged in'}</td></tr>`
+    ).join('');
+
+    pane.innerHTML = `
+      <h2 class="settings-h">Live (no restart needed)</h2>
+      <table class="settings-table">
+        <thead><tr><th>env var</th><th>value</th><th></th></tr></thead>
+        <tbody>${liveRows}</tbody>
+      </table>
+
+      <h2 class="settings-h">Provider keys</h2>
+      <table class="settings-table"><tbody>${provRows}</tbody></table>
+
+      <h2 class="settings-h">OAuth CLIs</h2>
+      <table class="settings-table"><tbody>${oauthRows}</tbody></table>
+
+      <h2 class="settings-h">Viewer</h2>
+      <table class="settings-table"><tbody>
+        <tr><td>host</td><td><code>${escapeHtml(viewer.host || '')}</code></td></tr>
+        <tr><td>port</td><td><code>${escapeHtml(String(viewer.port || ''))}</code></td></tr>
+        <tr><td>url</td><td><code>${escapeHtml(viewer.url || '')}</code></td></tr>
+      </tbody></table>
+
+      <h2 class="settings-h">Execution graph</h2>
+      <table class="settings-table"><tbody>
+        <tr><td>db</td><td><code>${escapeHtml(graph.db_path || '(disabled)')}</code></td></tr>
+        <tr><td>version</td><td><code>${escapeHtml(String(graph.version ?? ''))}</code></td></tr>
+        <tr><td>tools</td><td>${tools.length} registered</td></tr>
+      </tbody></table>
+
+      <h2 class="settings-h">Restart required (read-only)</h2>
+      <table class="settings-table">
+        <thead><tr><th>env var</th><th>value</th><th></th></tr></thead>
+        <tbody>${restartRows}</tbody>
+      </table>
+      <div class="settings-hint">Change these in your <code>~/.claude.json</code> mcpServers.pal.env block, then restart Claude Code.</div>
+    `;
+
+    pane.querySelectorAll('.settings-save').forEach(btn => {
+      btn.addEventListener('click', async (e) => {
+        const k = e.target.dataset.key;
+        const input = pane.querySelector(`input[data-key="${k}"]`);
+        const v = input ? input.value : '';
+        try {
+          const r = await fetch('/api/settings', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({key: k, value: v}),
+          });
+          const j = await r.json();
+          if (j.status === 'ok') {
+            e.target.textContent = 'saved ✓';
+            setTimeout(() => { e.target.textContent = 'save'; }, 1500);
+          } else {
+            e.target.textContent = 'error';
+          }
+        } catch (err) {
+          e.target.textContent = 'error';
+        }
+      });
+    });
+  } catch (err) {
+    $('#settings-pane').innerHTML = `<div class="empty">error loading settings: ${escapeHtml(err.message)}</div>`;
+  }
+}
+
+// -- live updates: SSE first, polling fallback --------------------------
+let _SSE_HEALTHY = false;
+function _startSSE() {
+  try {
+    const es = new EventSource('/events');
+    es.addEventListener('message', () => {
+      _SSE_HEALTHY = true;
+      // Pings carry the new graph version; refresh both surfaces.
+      renderRunPicker();
+      if (CURRENT_TAB === 'transcript' && SELECTED) renderConversation();
+    });
+    es.addEventListener('error', () => {
+      // Browser will auto-reconnect; if it stays broken, the polling
+      // intervals below pick up the slack.
+      _SSE_HEALTHY = false;
+    });
+  } catch (_) {
+    // EventSource missing — fall through to pure polling.
+  }
+}
+
 renderRunPicker();
-setInterval(renderRunPicker, 2000);
-setInterval(() => { if (SELECTED) renderConversation(); }, 1500);
+_startSSE();
+// Polling kept as belt-and-braces. Slow cadence so SSE is the primary
+// path; if SSE is healthy these are mostly no-ops since hash compare
+// short-circuits.
+setInterval(renderRunPicker, _SSE_HEALTHY ? 5000 : 2000);
+setInterval(() => { if (SELECTED && CURRENT_TAB === 'transcript') renderConversation(); }, _SSE_HEALTHY ? 5000 : 1500);
 </script>
 </body>
 </html>
@@ -716,7 +878,173 @@ class _Handler(BaseHTTPRequestHandler):
         from utils.execution_graph import get_graph
         return get_graph()
 
+    # ---- SSE ----------------------------------------------------------
+
+    def _serve_sse_events(self, graph) -> None:
+        """Stream `data: <version>\\n\\n` whenever the graph mutates.
+        The client refetches affected endpoints only when its last-seen
+        version differs. We don't push payloads through the stream
+        itself — that keeps individual messages tiny and lets the
+        client decide which sub-resource to refresh. Connection lives
+        until the client disconnects or the loop wakes up after the
+        process exits (keepalive comments every 15s prevent proxy
+        idle-disconnects)."""
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Connection", "keep-alive")
+            self.send_header("X-Accel-Buffering", "no")  # disable nginx buffering
+            self.end_headers()
+        except Exception:  # noqa: BLE001
+            return
+
+        import time as _t
+        last_seen = -1
+        last_keepalive = _t.monotonic()
+        # Send an initial ping so the client knows the stream is live.
+        try:
+            current = graph.get_version()
+            self.wfile.write(f"data: {current}\n\n".encode("utf-8"))
+            self.wfile.flush()
+            last_seen = current
+        except Exception:
+            return
+
+        while True:
+            try:
+                current = graph.get_version()
+                if current != last_seen:
+                    self.wfile.write(f"data: {current}\n\n".encode("utf-8"))
+                    self.wfile.flush()
+                    last_seen = current
+                if _t.monotonic() - last_keepalive > 15:
+                    self.wfile.write(b": keepalive\n\n")
+                    self.wfile.flush()
+                    last_keepalive = _t.monotonic()
+                _t.sleep(0.25)
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                # Client disconnected.
+                return
+
+    # ---- settings -----------------------------------------------------
+
+    # Whitelist of env vars the operator can flip live from the settings
+    # tab. These are looked up per-call inside the relevant providers
+    # (see providers/openai_compatible.py, providers/gemini.py, and
+    # tools/multiaudit.py PAL_MULTIAUDIT_JUDGE), so mutating them takes
+    # effect on the next provider/multiaudit dispatch — no PAL restart
+    # needed. Anything NOT on this list requires a restart and is shown
+    # read-only.
+    _SETTINGS_LIVE_WHITELIST = (
+        "PAL_OPENAI_STREAM",
+        "PAL_GEMINI_STREAM",
+        "PAL_MULTIAUDIT_JUDGE",
+        "PAL_MULTIAUDIT_PANELISTS",
+    )
+
+    # Read-only settings exposed to the UI. These DO need a PAL restart
+    # to take effect, so the settings tab shows them with a "needs
+    # restart" hint rather than letting the operator edit them in-place.
+    _SETTINGS_RESTART_REQUIRED = (
+        "DEFAULT_MODEL",
+        "DISABLED_TOOLS",
+        "PAL_TASK_WAIT_CAP_S",
+        "PAL_CLAUDE_OAUTH_FALLBACK_MODEL",
+        "PAL_MAX_CONCURRENT_API",
+        "PAL_MAX_PROVIDER_THREADS",
+        "PAL_API_TIMEOUT_S",
+        "PAL_GRAPH_DB",
+        "PAL_WEB_PORT",
+        "PAL_WEB_HOST",
+        "PAL_WEB_AUTO_OPEN",
+        "PAL_WEB_DISABLE",
+        "PAL_WEB_ALLOW_REMOTE",
+    )
+
+    def _serve_settings_get(self) -> None:
+        """Return env-var snapshot, provider key presence, OAuth status,
+        version, viewer port. Read-only — POST mutates the whitelist."""
+        import pathlib
+        snapshot: dict[str, Any] = {
+            "live": {k: os.environ.get(k, "") for k in self._SETTINGS_LIVE_WHITELIST},
+            "live_keys": list(self._SETTINGS_LIVE_WHITELIST),
+            "restart_required": {
+                k: os.environ.get(k, "") for k in self._SETTINGS_RESTART_REQUIRED
+            },
+            "provider_keys": {
+                "openai": bool(os.environ.get("OPENAI_API_KEY")),
+                "anthropic": bool(os.environ.get("ANTHROPIC_API_KEY")),
+                "gemini": bool(os.environ.get("GEMINI_API_KEY")),
+                "xai": bool(os.environ.get("XAI_API_KEY")),
+            },
+            "oauth_clis": {
+                "codex": pathlib.Path("~/.codex/auth.json").expanduser().exists(),
+                "gemini": pathlib.Path("~/.gemini/oauth_creds.json").expanduser().exists(),
+                "claude": pathlib.Path("~/.claude").expanduser().exists(),
+            },
+            "viewer": {
+                "host": _BIND_HOST,
+                "port": _SERVER_PORT,
+                "url": get_server_url(),
+            },
+        }
+        try:
+            from utils.execution_graph import get_graph
+            graph = get_graph()
+            snapshot["graph"] = {
+                "version": graph.get_version() if graph else None,
+                "db_path": str(graph.db_path) if graph else None,
+            }
+        except Exception:  # noqa: BLE001
+            snapshot["graph"] = None
+        try:
+            import server as _server
+            snapshot["tools"] = sorted(getattr(_server, "TOOLS", {}).keys())
+        except Exception:  # noqa: BLE001
+            snapshot["tools"] = []
+        self._send_json({"status": "ok", "settings": snapshot})
+
+    def _serve_settings_post(self) -> None:
+        """Mutate whitelisted env vars. Body: {"key": "PAL_X", "value": "..."}.
+        Returns the new snapshot. Anything off-whitelist is rejected."""
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            raw = self.rfile.read(length) if length else b""
+            body = json.loads(raw.decode("utf-8")) if raw else {}
+        except (ValueError, UnicodeDecodeError) as exc:
+            self._send_json({"status": "error", "error": f"bad body: {exc}"}, status=400)
+            return
+        key = body.get("key")
+        value = body.get("value")
+        if not isinstance(key, str) or key not in self._SETTINGS_LIVE_WHITELIST:
+            self._send_json(
+                {"status": "error", "error": f"key not on live whitelist: {key!r}"},
+                status=400,
+            )
+            return
+        if not isinstance(value, (str, int, float, bool)) and value is not None:
+            self._send_json(
+                {"status": "error", "error": "value must be a scalar"}, status=400,
+            )
+            return
+        # Coerce to string. Empty string clears.
+        if value is None or value == "":
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = str(value)
+        logger.info("settings: %s = %r (live)", key, os.environ.get(key, ""))
+        self._serve_settings_get()
+
     # ---- routing ------------------------------------------------------
+
+    def do_POST(self) -> None:  # noqa: N802 (stdlib API)
+        parsed = urlparse(self.path)
+        path = parsed.path
+        if path == "/api/settings":
+            self._serve_settings_post()
+            return
+        self._not_found()
 
     def do_GET(self) -> None:  # noqa: N802 (stdlib API)
         parsed = urlparse(self.path)
@@ -736,6 +1064,24 @@ class _Handler(BaseHTTPRequestHandler):
                 {"status": "error", "error": "execution graph is disabled"},
                 status=503,
             )
+            return
+
+        # Server-Sent Events stream of graph version pings. The viewer
+        # subscribes once and only re-fetches /runs and /runs/<id>/tree
+        # when the version increments — replaces the old fixed 1.5–2s
+        # polling loop. Falls back to polling on the client side if the
+        # browser/proxy can't keep an SSE connection open.
+        if path == "/events":
+            self._serve_sse_events(graph)
+            return
+
+        # Settings: live introspection + a small whitelisted mutate path.
+        # The settings tab is the operator's "control plane" — most env
+        # vars are read at module load and need a restart to take effect,
+        # but the streaming/judge knobs are looked up per-call so they
+        # mutate live.
+        if path == "/api/settings":
+            self._serve_settings_get()
             return
 
         if path == "/runs":

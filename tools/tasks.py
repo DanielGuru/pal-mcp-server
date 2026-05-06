@@ -49,6 +49,40 @@ from tools.shared.base_tool import BaseTool
 
 logger = logging.getLogger("pal.tasks")
 
+
+def _persist_task(record: "TaskRecord") -> None:
+    """Best-effort write of task lifecycle to the execution graph DB.
+    Survives PAL restart so task_result(task_id) keeps working for
+    completed tasks. In-flight tasks die with the process — we don't
+    pretend otherwise — but final outputs persist.
+
+    Swallows everything: persistence failure must NOT break the live
+    task path. The graph itself is observability, not load-bearing."""
+    try:
+        from utils.execution_graph import get_graph
+        graph = get_graph()
+        if graph is None:
+            return
+        result_json = (
+            json.dumps(record.result_text)
+            if record.status == "completed" and record.result_text is not None
+            else None
+        )
+        graph.upsert_task(
+            record.task_id,
+            tool=record.tool_name,
+            label=record.label,
+            run_id=None,  # populated on first lifecycle update if available
+            status=record.status,
+            created_at=record.created_at,
+            started_at=record.started_at,
+            completed_at=record.completed_at,
+            result_json=result_json,
+            error=record.error,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("task persistence failed: %s", exc)
+
 # How long to retain completed/failed records before garbage collecting.
 COMPLETED_TTL_S = 60 * 60  # 1 hour
 # Max concurrent running tasks (admission control).
@@ -253,6 +287,7 @@ class TaskManager:
             session=session,
         )
         self._tasks[task_id] = record
+        _persist_task(record)  # status=pending on creation
         record.asyncio_task = asyncio.create_task(
             self._run(record),
             name=f"pal-task-{task_id}",
@@ -360,6 +395,7 @@ class TaskManager:
         record.progress_events.append(
             {"ts": time.time(), "msg": f"task started: {record.tool_name}", "progress": 0.0}
         )
+        _persist_task(record)
 
         try:
             # Route through the central dispatcher — model resolution + file
@@ -409,6 +445,7 @@ class TaskManager:
                 }
             )
             record.completion_event.set()
+            _persist_task(record)  # final lifecycle write — survives restart
             # Free the cached arguments to help bound memory; caller has the
             # task summary already, no need to keep a copy of the input.
             record.arguments = {}
@@ -779,6 +816,49 @@ class TaskResultTool(BaseTool):
 
         record = TaskManager.get().get_record(task_id, session=_capture_session(), require_session=True)
         if record is None:
+            # Memory miss — fall back to the graph DB for tasks that
+            # completed before a PAL restart. In-flight tasks die with
+            # the process and aren't recoverable; only terminal records
+            # survive (we won't lie about a task being still running).
+            try:
+                from utils.execution_graph import get_graph
+                graph = get_graph()
+                if graph is not None:
+                    persisted = graph.get_task(task_id)
+                    if persisted is not None:
+                        status = persisted.get("status")
+                        if status in ("completed", "failed", "cancelled"):
+                            payload: dict[str, Any] = {
+                                "status": status,
+                                "task": {
+                                    "task_id": task_id,
+                                    "tool": persisted.get("tool"),
+                                    "label": persisted.get("label"),
+                                    "status": status,
+                                    "created_at": persisted.get("created_at"),
+                                    "started_at": persisted.get("started_at"),
+                                    "completed_at": persisted.get("completed_at"),
+                                    "from_graph": True,  # restart-recovered
+                                },
+                            }
+                            if status == "completed" and persisted.get("result_json"):
+                                try:
+                                    payload["result"] = json.loads(persisted["result_json"])
+                                except (TypeError, ValueError):
+                                    payload["result"] = persisted["result_json"]
+                            if persisted.get("error"):
+                                payload["error"] = persisted["error"]
+                            return _json_response(payload)
+                        # Persisted but not terminal → process died mid-run.
+                        return _json_response({
+                            "status": "error",
+                            "error": (
+                                f"task {task_id!r} was interrupted by PAL restart "
+                                f"(last state: {status}). In-flight tasks aren't recoverable."
+                            ),
+                        })
+            except Exception:  # noqa: BLE001
+                pass
             return _json_response({"status": "error", "error": f"unknown task_id {task_id!r}"})
 
         if not record.is_terminal() and wait_seconds > 0:

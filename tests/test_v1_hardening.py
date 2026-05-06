@@ -1078,6 +1078,58 @@ def test_web_viewer_localhost_bind_starts_normally(monkeypatch):
         wv.stop_web_viewer()
 
 
+def test_execution_graph_version_bumps_on_writes(tmp_path):
+    """SSE relies on get_version() incrementing on every write so the
+    viewer knows when to refetch. start_run, add_event, complete_run,
+    fail_run, cancel_run, upsert_task must all bump."""
+    from utils.execution_graph import ExecutionGraph
+
+    g = ExecutionGraph(db_path=tmp_path / "v.db")
+    v0 = g.get_version()
+    rid = g.start_run("test")
+    v1 = g.get_version()
+    g.add_event(rid, event_type="progress", message="hi")
+    v2 = g.get_version()
+    g.complete_run(rid, result={"ok": True})
+    v3 = g.get_version()
+    g.upsert_task("abc", tool="chat", label=None, run_id=rid,
+                  status="completed", created_at=0.0,
+                  completed_at=1.0, result_json='["ok"]')
+    v4 = g.get_version()
+    assert v0 < v1 < v2 < v3 < v4
+
+
+def test_task_persistence_round_trip(tmp_path, monkeypatch):
+    """upsert_task → get_task returns the same record. Powers the
+    task_result fallback path after PAL restart."""
+    from utils.execution_graph import ExecutionGraph
+
+    g = ExecutionGraph(db_path=tmp_path / "t.db")
+    g.upsert_task(
+        "abc123", tool="panel", label="multiaudit:main",
+        run_id="run-xyz", status="completed",
+        created_at=1.0, started_at=1.1, completed_at=10.0,
+        result_json='[{"headline": "ok"}]', error=None,
+    )
+    row = g.get_task("abc123")
+    assert row is not None
+    assert row["task_id"] == "abc123"
+    assert row["tool"] == "panel"
+    assert row["status"] == "completed"
+    assert row["result_json"] == '[{"headline": "ok"}]'
+    # idempotent upsert preserves earlier fields when None passed
+    g.upsert_task(
+        "abc123", tool="panel", label="multiaudit:main",
+        run_id=None, status="completed",
+        created_at=1.0, started_at=None, completed_at=None,
+        result_json=None, error=None,
+    )
+    row2 = g.get_task("abc123")
+    assert row2["run_id"] == "run-xyz"
+    assert row2["completed_at"] == 10.0
+    assert row2["result_json"] == '[{"headline": "ok"}]'
+
+
 def test_agenerate_content_is_an_awaitable_method():
     """Locking the API: every provider must expose async agenerate_content."""
     from providers.openai import OpenAIModelProvider

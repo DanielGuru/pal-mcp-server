@@ -189,7 +189,21 @@ push.
 
 ---
 
-## 6. The viewer — what to expect
+## 6. The settings tab — quick toggles
+
+The viewer has a **settings** button next to the run picker. It shows:
+
+- Live env vars you can change without restarting (streaming flags, `PAL_MULTIAUDIT_JUDGE`, `PAL_MULTIAUDIT_PANELISTS`). Edit the value, click `save` — the next provider/multiaudit call picks it up immediately.
+- Provider key presence (which API keys are loaded).
+- OAuth-CLI login status (codex / gemini / claude).
+- Viewer host/port/URL + execution-graph DB path + version + tools registered.
+- Read-only env vars that need a Claude Code restart to take effect.
+
+Useful for: flipping streaming off when debugging cassette tests, swapping the multiaudit judge mid-session, or sanity-checking why a provider is missing from `listmodels`.
+
+---
+
+## 7. The viewer — what to expect
 
 - **Lazy-started.** No tab on Claude Code boot. The first PAL tool call pops
   the viewer and keeps it for the rest of the process. Process exit kills it.

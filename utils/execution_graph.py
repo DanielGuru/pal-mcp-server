@@ -144,6 +144,25 @@ CREATE TABLE IF NOT EXISTS edges (
     PRIMARY KEY (parent_run_id, child_run_id, kind)
 );
 CREATE INDEX IF NOT EXISTS idx_edges_parent ON edges(parent_run_id);
+
+-- Background-task lifecycle persistence. TaskManager._tasks is in-memory
+-- (dies with the process); this table lets task_result(task_id) work
+-- across PAL restart for COMPLETED tasks. In-flight tasks aren't
+-- recovered — their worker thread is gone — but the final output is.
+CREATE TABLE IF NOT EXISTS tasks (
+    task_id TEXT PRIMARY KEY,
+    tool TEXT NOT NULL,
+    label TEXT,
+    run_id TEXT,                    -- linked execution-graph run, if any
+    status TEXT NOT NULL,           -- queued | running | completed | failed | cancelled
+    created_at REAL NOT NULL,
+    started_at REAL,
+    completed_at REAL,
+    result_json TEXT,               -- final wrapped-tool TextContent payload
+    error TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
+CREATE INDEX IF NOT EXISTS idx_tasks_completed ON tasks(completed_at DESC);
 """
 
 # Cap stored arg/result snapshots so a 50MB attachment doesn't bloat the DB.
@@ -198,6 +217,10 @@ class ExecutionGraph:
         self.db_path = Path(db_path) if db_path else _default_db_path()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
+        # Monotonic counter bumped on every write. Powers the SSE
+        # /events endpoint: clients subscribe and re-fetch only when
+        # the version changes, replacing the 1.5–2s polling loop.
+        self._version = 0
         # check_same_thread=False: panel fan-out runs through this from
         # multiple threads (the bounded provider executor). The lock above
         # serialises actual writes; SQLite WAL mode handles concurrent reads.
@@ -252,6 +275,7 @@ class ExecutionGraph:
                     "INSERT OR IGNORE INTO edges (parent_run_id, child_run_id, kind, ts) VALUES (?, ?, ?, ?)",
                     (parent_run_id, run_id, edge_kind, now),
                 )
+            self._bump_version()
         return run_id
 
     def complete_run(
@@ -273,6 +297,7 @@ class ExecutionGraph:
                 "INSERT INTO events (run_id, ts, event_type, message) VALUES (?, ?, 'complete', ?)",
                 (run_id, now, "complete"),
             )
+            self._bump_version()
 
     def fail_run(
         self,
@@ -291,6 +316,7 @@ class ExecutionGraph:
                 "INSERT INTO events (run_id, ts, event_type, message) VALUES (?, ?, 'error', ?)",
                 (run_id, now, error[:512]),
             )
+            self._bump_version()
 
     def cancel_run(self, run_id: str) -> None:
         now = time.time()
@@ -299,6 +325,69 @@ class ExecutionGraph:
                 "UPDATE runs SET status='cancelled', completed_at=? WHERE run_id=?",
                 (now, run_id),
             )
+            self._bump_version()
+
+    def get_version(self) -> int:
+        """Current write counter — bumped on every mutation. SSE clients
+        poll this once and only refetch the run tree when it changes."""
+        with self._lock:
+            return self._version
+
+    def _bump_version(self) -> None:
+        """Caller must hold ``self._lock``."""
+        self._version += 1
+
+    # -- tasks --------------------------------------------------------------
+
+    def upsert_task(
+        self,
+        task_id: str,
+        *,
+        tool: str,
+        label: Optional[str],
+        run_id: Optional[str],
+        status: str,
+        created_at: float,
+        started_at: Optional[float] = None,
+        completed_at: Optional[float] = None,
+        result_json: Optional[str] = None,
+        error: Optional[str] = None,
+    ) -> None:
+        """Persist task lifecycle so task_result survives PAL restart.
+        Idempotent on task_id — call on every status change."""
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO tasks (
+                    task_id, tool, label, run_id, status,
+                    created_at, started_at, completed_at, result_json, error
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(task_id) DO UPDATE SET
+                    tool=excluded.tool,
+                    label=excluded.label,
+                    run_id=COALESCE(excluded.run_id, tasks.run_id),
+                    status=excluded.status,
+                    started_at=COALESCE(excluded.started_at, tasks.started_at),
+                    completed_at=COALESCE(excluded.completed_at, tasks.completed_at),
+                    result_json=COALESCE(excluded.result_json, tasks.result_json),
+                    error=COALESCE(excluded.error, tasks.error)
+                """,
+                (
+                    task_id, tool, label, run_id, status,
+                    created_at, started_at, completed_at, result_json, error,
+                ),
+            )
+            self._bump_version()
+
+    def get_task(self, task_id: str) -> Optional[dict[str, Any]]:
+        """Look up a persisted task. Returns dict with the row's columns
+        or None. Used by TaskManager.task_result on memory miss after
+        restart."""
+        cur = self._conn.execute("SELECT * FROM tasks WHERE task_id=?", (task_id,))
+        row = cur.fetchone()
+        if row is None:
+            return None
+        return self._row_to_dict(cur, row)
 
     def add_event(
         self,
@@ -323,6 +412,7 @@ class ExecutionGraph:
                 "VALUES (?, ?, ?, ?, ?, ?)",
                 (run_id, now, event_type, capped, progress, _serialise(payload)),
             )
+            self._bump_version()
 
     def add_edge(self, parent_run_id: str, child_run_id: str, *, kind: str = "spawn") -> None:
         now = time.time()
