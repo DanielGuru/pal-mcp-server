@@ -304,7 +304,16 @@ Override with `PAL_GRAPH_DB=<absolute path>` for a shared / global view (e.g. th
 
 ## 🪟 Live Web Viewer
 
-PAL boots a tiny local HTTP server alongside the MCP stdio loop (default `http://127.0.0.1:8765/`) and pops a browser tab automatically. Single page renders the execution graph live: every panel run, every panelist sub-call, OAuth fallbacks shown as `fallback` edges, judge synthesis, per-leaf cost tier, full event timeline. Polls every 2s for the run list and 1.5s for the selected run-tree. No setup required — it just works on PAL launch.
+PAL serves a tiny local HTTP server (default `http://127.0.0.1:8765/`) that **lazy-starts on the first PAL tool call** — no tab pops if you never use PAL this session. Browser opens automatically when it does start.
+
+Single page renders the execution graph live:
+- Every panel run, panelist sub-call, OAuth fallback edge, judge synthesis
+- Per-leaf cost tier badges (oauth_free / oauth_fallback_paid / api_paid / host_sampling)
+- **Live activity feed for in-flight runs** — every emit_progress event from clink subprocesses (file_read, tool_use, text_chunk, etc.) shows up in real time, colour-coded by type, max-height scrolling so it doesn't grow unbounded
+- Auto-selects the most recent active run on first load — you land on the live thing without clicking
+- HTML-escaped + class-name-sanitised; bad query params return 400 instead of crashing the daemon
+
+Polls every 2s for the run list and 1.5s for the selected run-tree. Direct-API panelists (grok / gpt-5.5) currently show only start/end events — per-token streaming is the next-session item.
 
 | Env var | Default | Effect |
 |---|---|---|

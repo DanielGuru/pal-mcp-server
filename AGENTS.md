@@ -27,4 +27,8 @@ When the user says "multiaudit" / "audit this" / "audit this PR" / "panel this b
 
 ## What's open
 
-Multi-step panel workflow (Claude can intervene between debate rounds), TaskManager → execution-graph migration (restart-safe in-flight tasks), conversation memory persistence (continuation_id survives restart), SSE for the web viewer (currently 2s polling), true `stream=True` async path for direct-API providers, per-CLI custom OAuth patterns, cancel-aware semaphore release, dynamic-flow tests. See `CLAUDE.md` for full rationale.
+Top item for next session: **streaming v2 — per-token for direct-API providers** (grok / gpt-5.5 are opaque until done; need `stream=True` + delta pump through emit_progress → graph → viewer; touches providers/openai_compatible.py response shape).
+
+Then: multi-step panel workflow (Claude intervenes between debate rounds), TaskManager → execution-graph migration (restart-safe in-flight tasks), conversation memory persistence (continuation_id survives restart), SSE for the web viewer (currently 2s polling), multiaudit working_directory_absolute_path → graph alignment, web viewer auth for non-localhost binds, per-CLI custom OAuth patterns, cancel-aware semaphore release, dynamic-flow tests.
+
+See `CLAUDE.md` "Open work queue (handoff state)" for full rationale on each.
