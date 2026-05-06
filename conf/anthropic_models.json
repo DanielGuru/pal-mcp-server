@@ -2,7 +2,7 @@
   "_README": {
     "description": "Model metadata for Anthropic's Claude API access. Used by providers/anthropic.py and the clink claude→API OAuth fallback.",
     "usage": "Models listed here are exposed directly through the Anthropic provider. Aliases are case-insensitive.",
-    "field_notes": "Matches providers/shared/model_capabilities.py. Anthropic models support extended thinking via the SDK's 'thinking' parameter; the provider maps PAL's effort levels to those budgets."
+    "field_notes": "Matches providers/shared/model_capabilities.py. Anthropic models support extended thinking via the SDK's 'thinking' parameter; the provider maps Panel's effort levels to those budgets."
   },
   "models": [
     {

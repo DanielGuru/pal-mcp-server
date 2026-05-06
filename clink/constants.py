@@ -12,7 +12,7 @@ DEFAULT_STREAM_LIMIT = 10 * 1024 * 1024  # 10MB per stream
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 BUILTIN_PROMPTS_DIR = PROJECT_ROOT / "systemprompts" / "clink"
 CONFIG_DIR = PROJECT_ROOT / "conf" / "cli_clients"
-USER_CONFIG_DIR = Path.home() / ".pal" / "cli_clients"
+USER_CONFIG_DIR = Path.home() / ".panel" / "cli_clients"
 
 
 @dataclass(frozen=True)
@@ -58,10 +58,10 @@ INTERNAL_DEFAULTS: dict[str, CLIInternalDefaults] = {
         # Defaults to Sonnet (not Opus) so an unattended quota crossover
         # doesn't silently start spending at flagship rates — the panel
         # explicitly flagged Opus-as-default as a financial-DoS path. Set
-        # PAL_CLAUDE_OAUTH_FALLBACK_MODEL to override (e.g. "opus" if the
+        # PANEL_CLAUDE_OAUTH_FALLBACK_MODEL to override (e.g. "opus" if the
         # operator has explicitly opted into paid-Opus fallback).
         oauth_fallback_model=os.environ.get(
-            "PAL_CLAUDE_OAUTH_FALLBACK_MODEL", "claude-sonnet-4-6"
+            "PANEL_CLAUDE_OAUTH_FALLBACK_MODEL", "claude-sonnet-4-6"
         ),
     ),
 }

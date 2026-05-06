@@ -1,10 +1,10 @@
-"""SQLite-backed execution graph — durable record of every PAL tool dispatch.
+"""SQLite-backed execution graph — durable record of every Panel tool dispatch.
 
 Why this exists
 ---------------
 Pre-graph, every multi-agent run was ephemeral: panel results lived in
 TaskManager._tasks (in-memory), conversation history in conversation_memory
-(in-memory). PAL restart wiped everything. There was no way to:
+(in-memory). Panel restart wiped everything. There was no way to:
 
   - resume a panel after process death
   - replay a prior debate to compare model behaviour over time
@@ -22,7 +22,7 @@ Design choices
 --------------
 - **SQLite, not external DB.** Zero ops, lives in $HOME, fits a single-user
   developer tool. WAL mode enables concurrent reads while a writer is
-  active. Path tunable via PAL_GRAPH_DB; default ~/.pal/execution_graph.db.
+  active. Path tunable via PANEL_GRAPH_DB; default ~/.panel/execution_graph.db.
 
 - **Append-only events; mutable runs.** Events are an immutable timeline
   (start, progress, complete, error). Runs carry summary fields that update
@@ -39,7 +39,7 @@ Design choices
   pick it up as their parent.
 
 - **Optional, never load-bearing.** If the DB is unavailable (read-only FS,
-  bad path, locked) PAL keeps working — graph emissions are logged and
+  bad path, locked) Panel keeps working — graph emissions are logged and
   swallowed. The graph is observability + replay, never a hard dependency.
 """
 
@@ -63,24 +63,24 @@ logger = logging.getLogger(__name__)
 def _default_db_path() -> Path:
     """Where to put the execution graph by default.
 
-    Per-repo isolation: drops in `<cwd>/.pal/execution_graph.db` so each
-    project Claude Code opens gets its own memory of PAL runs. The web
-    viewer attached to that PAL instance then shows only that repo's
+    Per-repo isolation: drops in `<cwd>/.panel/execution_graph.db` so each
+    project Claude Code opens gets its own memory of Panel runs. The web
+    viewer attached to that Panel instance then shows only that repo's
     debate history — no cross-contamination from other projects running
-    PAL at the same time.
+    Panel at the same time.
 
     Override semantics:
-      - `PAL_GRAPH_DB=<absolute path>` — pin to a specific file (e.g.
-        the legacy `~/.pal/execution_graph.db` for users who liked the
+      - `PANEL_GRAPH_DB=<absolute path>` — pin to a specific file (e.g.
+        the legacy `~/.panel/execution_graph.db` for users who liked the
         global view).
-      - `PAL_GRAPH_DB=""`              — disable the graph entirely.
+      - `PANEL_GRAPH_DB=""`              — disable the graph entirely.
     """
-    override = os.environ.get("PAL_GRAPH_DB")
+    override = os.environ.get("PANEL_GRAPH_DB")
     if override is not None:
         # Empty string means "disabled" — handled by get_graph(); for path
         # resolution just pass through whatever the user set.
         return Path(override)
-    return Path.cwd() / ".pal" / "execution_graph.db"
+    return Path.cwd() / ".panel" / "execution_graph.db"
 
 
 # ---------------------------------------------------------------------------
@@ -147,7 +147,7 @@ CREATE INDEX IF NOT EXISTS idx_edges_parent ON edges(parent_run_id);
 
 -- Background-task lifecycle persistence. TaskManager._tasks is in-memory
 -- (dies with the process); this table lets task_result(task_id) work
--- across PAL restart for COMPLETED tasks. In-flight tasks aren't
+-- across Panel restart for COMPLETED tasks. In-flight tasks aren't
 -- recovered — their worker thread is gone — but the final output is.
 CREATE TABLE IF NOT EXISTS tasks (
     task_id TEXT PRIMARY KEY,
@@ -166,11 +166,11 @@ CREATE INDEX IF NOT EXISTS idx_tasks_completed ON tasks(completed_at DESC);
 """
 
 # Cap stored arg/result snapshots so a 50MB attachment doesn't bloat the DB.
-_SNAPSHOT_CAP = int(os.environ.get("PAL_GRAPH_SNAPSHOT_CAP", "16384"))
+_SNAPSHOT_CAP = int(os.environ.get("PANEL_GRAPH_SNAPSHOT_CAP", "16384"))
 # Cap on individual event messages. Must accommodate full panel transcript
 # bodies (panelist answers run ~5-8KB; default cap holds two of those
-# end-to-end). Override via PAL_GRAPH_EVENT_CAP for tighter or looser caps.
-_EVENT_MESSAGE_CAP = int(os.environ.get("PAL_GRAPH_EVENT_CAP", "32768"))
+# end-to-end). Override via PANEL_GRAPH_EVENT_CAP for tighter or looser caps.
+_EVENT_MESSAGE_CAP = int(os.environ.get("PANEL_GRAPH_EVENT_CAP", "32768"))
 
 
 def _redact_arguments(args: dict[str, Any]) -> dict[str, Any]:
@@ -237,7 +237,7 @@ class ExecutionGraph:
         )
         self._conn.execute("PRAGMA journal_mode = WAL")
         self._conn.execute("PRAGMA synchronous = NORMAL")
-        # busy_timeout: when two PAL instances launched from the same repo
+        # busy_timeout: when two Panel instances launched from the same repo
         # contend on a write, wait up to 5s for the lock instead of failing
         # immediately and dropping the best-effort graph write. Audit panel
         # finding (Codex narrowed Gemini's 'no WAL' to this real risk).
@@ -376,7 +376,7 @@ class ExecutionGraph:
         result_json: Optional[str] = None,
         error: Optional[str] = None,
     ) -> None:
-        """Persist task lifecycle so task_result survives PAL restart.
+        """Persist task lifecycle so task_result survives Panel restart.
         Idempotent on task_id — call on every status change."""
         with self._lock:
             self._conn.execute(
@@ -538,7 +538,7 @@ def get_graph() -> Optional[ExecutionGraph]:
     """Return the process-wide ExecutionGraph instance, or None if disabled.
 
     Disabled when:
-      - PAL_GRAPH_DB="" (explicit opt-out)
+      - PANEL_GRAPH_DB="" (explicit opt-out)
       - The first init attempt failed (file-system / permission). We don't
         retry — the graph is observability, never load-bearing.
     """
@@ -550,9 +550,9 @@ def get_graph() -> Optional[ExecutionGraph]:
     with _GRAPH_LOCK:
         if _GRAPH is not None:
             return _GRAPH
-        if os.environ.get("PAL_GRAPH_DB") == "":
+        if os.environ.get("PANEL_GRAPH_DB") == "":
             _GRAPH_DISABLED = True
-            logger.info("ExecutionGraph disabled (PAL_GRAPH_DB='')")
+            logger.info("ExecutionGraph disabled (PANEL_GRAPH_DB='')")
             return None
         try:
             _GRAPH = ExecutionGraph()

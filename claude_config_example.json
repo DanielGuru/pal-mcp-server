@@ -1,11 +1,11 @@
 {
-  "comment": "Example Claude Desktop configuration for PAL MCP Server",
+  "comment": "Example Claude Desktop configuration for Panel MCP Server",
   "comment2": "Run './run-server.sh -c' to get the exact configuration for your system",
   "comment3": "For platform-specific examples, see the examples/ directory",
   "mcpServers": {
-    "pal": {
-      "command": "/path/to/pal-mcp-server/.pal_venv/bin/python",
-      "args": ["/path/to/pal-mcp-server/server.py"]
+    "panel": {
+      "command": "/path/to/panel-mcp-server/.panel_venv/bin/python",
+      "args": ["/path/to/panel-mcp-server/server.py"]
     }
   }
 }

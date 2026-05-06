@@ -1,0 +1,19 @@
+Panel MCP Server
+Copyright 2026 Daniel Treisman
+
+This product includes software originally derived from PAL MCP Server,
+developed by BeehiveInnovations:
+
+    https://github.com/BeehiveInnovations/pal-mcp-server
+
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+The Panel MCP Server has been substantially rewritten and extended:
+factory-pattern tool registry, central validated dispatch, async
+background tasks with durable state, parallel panel orchestration with
+adversarial debate, OAuth-to-API fallback, observable streaming via
+SQLite execution graph + live web viewer, and Anthropic provider
+integration.
+
+For the full list of changes relative to upstream, see the git log
+since the fork point at commit f54ff97.

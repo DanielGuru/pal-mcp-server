@@ -1,5 +1,5 @@
 """
-Tool implementations for PAL MCP Server
+Tool implementations for Panel MCP Server
 """
 
 from .analyze import AnalyzeTool

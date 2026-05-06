@@ -1,6 +1,6 @@
 """web_url MCP tool — return the live execution-graph viewer URL.
 
-PAL boots a tiny HTTP server alongside the MCP stdio loop (see
+Panel boots a tiny HTTP server alongside the MCP stdio loop (see
 utils/web_viewer.py). This tool exposes the URL so Claude Code can hand
 it to the user on demand: ``"open the panel viewer"`` → tool call →
 ``http://127.0.0.1:8765/``.
@@ -27,7 +27,7 @@ class WebUrlTool(BaseTool):
 
     def get_description(self) -> str:
         return (
-            "Return the URL of the local PAL execution-graph viewer. Use this "
+            "Return the URL of the local Panel execution-graph viewer. Use this "
             "to give the user a live view of an in-flight panel/audit run. The "
             "viewer is a single web page that auto-refreshes — they can watch "
             "panelists complete, see the debate tree, drill into individual "
@@ -68,7 +68,7 @@ class WebUrlTool(BaseTool):
                 "status": "disabled",
                 "message": (
                     "Web viewer is not running. It's disabled when "
-                    "PAL_WEB_DISABLE is set, or it failed to bind a port at "
+                    "PANEL_WEB_DISABLE is set, or it failed to bind a port at "
                     "startup. Check logs/mcp_server.log for the reason."
                 ),
             }

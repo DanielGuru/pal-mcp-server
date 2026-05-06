@@ -1,18 +1,18 @@
 services:
-  pal-mcp:
+  panel-mcp:
     build:
       context: .
       dockerfile: Dockerfile
       target: runtime
-    image: pal-mcp-server:latest
-    container_name: pal-mcp-server
+    image: panel-mcp-server:latest
+    container_name: panel-mcp-server
     
     # Container labels for traceability
     labels:
-      - "com.pal-mcp.service=pal-mcp-server"
-      - "com.pal-mcp.version=1.0.0"
-      - "com.pal-mcp.environment=production"
-      - "com.pal-mcp.description=AI-powered Model Context Protocol server"
+      - "com.panel-mcp.service=panel-mcp-server"
+      - "com.panel-mcp.version=1.0.0"
+      - "com.panel-mcp.environment=production"
+      - "com.panel-mcp.description=AI-powered Model Context Protocol server"
     
     # Environment variables
     environment:
@@ -51,12 +51,12 @@ services:
     # Volumes for persistent data
     volumes:
       - ./logs:/app/logs
-      - pal-mcp-config:/app/conf
+      - panel-mcp-config:/app/conf
       - /etc/localtime:/etc/localtime:ro
     
     # Network configuration
     networks:
-      - pal-network
+      - panel-network
     
     # Resource limits
     deploy:
@@ -89,12 +89,12 @@ services:
 
 # Named volumes
 volumes:
-  pal-mcp-config:
+  panel-mcp-config:
     driver: local
 
 # Networks
 networks:
-  pal-network:
+  panel-network:
     driver: bridge
     ipam:
       config:

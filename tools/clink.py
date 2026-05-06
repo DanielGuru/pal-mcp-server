@@ -1,4 +1,4 @@
-"""clink tool - bridge PAL MCP requests to external AI CLIs."""
+"""clink tool - bridge Panel MCP requests to external AI CLIs."""
 
 from __future__ import annotations
 
@@ -36,8 +36,8 @@ SUMMARY_PATTERN = re.compile(r"<SUMMARY>(.*?)</SUMMARY>", re.IGNORECASE | re.DOT
 # enough to keep useful debug detail but bounded enough that a misbehaving
 # CLI can't fill MCP transport with megabytes of internal state. Override
 # via env for one-off forensics without redeploying.
-_CLI_METADATA_TEXT_CAP = int(os.environ.get("PAL_CLINK_METADATA_CAP", "2048"))
-_CLI_RAW_OUTPUT_CAP = int(os.environ.get("PAL_CLINK_RAW_OUTPUT_CAP", "8192"))
+_CLI_METADATA_TEXT_CAP = int(os.environ.get("PANEL_CLINK_METADATA_CAP", "2048"))
+_CLI_RAW_OUTPUT_CAP = int(os.environ.get("PANEL_CLINK_RAW_OUTPUT_CAP", "8192"))
 
 # Pattern -> redaction-token. Matched against stderr/stdout/raw_output_file
 # AND CLI content before forwarding to MCP. Conservative: real provider errors
@@ -83,7 +83,7 @@ _REDACTION_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = _build_redaction_
 def _redact_only(text: str) -> str:
     """Strip secret/path patterns without truncating. Use on CLI content where
     we want the full answer but still don't want credentials leaking through."""
-    if not text or os.environ.get("PAL_DEBUG_CLI_OUTPUT"):
+    if not text or os.environ.get("PANEL_DEBUG_CLI_OUTPUT"):
         return text
     redacted = text
     for pattern, replacement in _REDACTION_PATTERNS:
@@ -95,7 +95,7 @@ def _redact_and_cap(text: str, *, cap: int) -> str:
     """Bound + redact a CLI output string for safe inclusion in MCP metadata."""
     if not text:
         return text
-    if os.environ.get("PAL_DEBUG_CLI_OUTPUT"):
+    if os.environ.get("PANEL_DEBUG_CLI_OUTPUT"):
         # Opt-in escape hatch for local debugging. Keeps full text and skips
         # secret redaction. Never leak this in logs of real user calls.
         return text
@@ -167,7 +167,7 @@ OAUTH_FAILURE_PATTERNS: tuple[str, ...] = (
     "unauthenticated",
 )
 
-# Opt-in: when PAL_FALLBACK_ON_TIMEOUT=1, a clink subprocess that hangs past
+# Opt-in: when PANEL_FALLBACK_ON_TIMEOUT=1, a clink subprocess that hangs past
 # its timeout (vs. failing with a quota signal) ALSO triggers the OAuth-to-API
 # fallback. Off by default because timeout is ambiguous — could be a stuck
 # CLI (where you'd want to fall back) or a legitimately long-running request
@@ -181,11 +181,11 @@ _TIMEOUT_FALLBACK_PATTERNS: tuple[str, ...] = (
 
 def _looks_like_recoverable_failure(exc: CLIAgentError) -> bool:
     """OAuth signals always trigger fallback. Timeouts trigger only when
-    PAL_FALLBACK_ON_TIMEOUT is set."""
+    PANEL_FALLBACK_ON_TIMEOUT is set."""
     haystack = " ".join(filter(None, [str(exc), exc.stdout or "", exc.stderr or ""])).lower()
     if any(p in haystack for p in OAUTH_FAILURE_PATTERNS):
         return True
-    if os.environ.get("PAL_FALLBACK_ON_TIMEOUT", "").strip().lower() in ("1", "true", "yes", "on"):
+    if os.environ.get("PANEL_FALLBACK_ON_TIMEOUT", "").strip().lower() in ("1", "true", "yes", "on"):
         if any(p in haystack for p in _TIMEOUT_FALLBACK_PATTERNS):
             return True
     return False
@@ -264,7 +264,7 @@ class CLinkTool(SimpleTool):
 
     def get_description(self) -> str:
         return (
-            "Link a request to an external AI CLI (Gemini CLI, Qwen CLI, etc.) through PAL MCP to reuse "
+            "Link a request to an external AI CLI (Gemini CLI, Qwen CLI, etc.) through Panel MCP to reuse "
             "their capabilities inside existing workflows."
         )
 
@@ -737,7 +737,7 @@ class CLinkTool(SimpleTool):
         try:
             # The fallback prompt_text already has the user's files inlined
             # (clink builds it that way). Mark internal so the chat tool's
-            # MCP-transport size check bypasses — the content is PAL-built,
+            # MCP-transport size check bypasses — the content is Panel-built,
             # not raw user input crossing the boundary.
             from tools.shared.base_tool import mark_internal_payload
             with mark_internal_payload():
@@ -832,7 +832,7 @@ class CLinkTool(SimpleTool):
             "You are operating through the Gemini CLI agent. You have access to your full suite of "
             "CLI capabilities—including launching web searches, reading files, and using any other "
             "available tools. Gather current information yourself and deliver the final answer without "
-            "asking the PAL MCP host to perform searches or file reads."
+            "asking the Panel MCP host to perform searches or file reads."
         )
 
     def _format_file_references(self, files: list[str]) -> str:

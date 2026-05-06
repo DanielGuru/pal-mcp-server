@@ -38,7 +38,7 @@ async def test_chat_auto_mode_with_openai(monkeypatch, tmp_path):
         m.setenv("OPENAI_ALLOWED_MODELS", "gpt-5")
         # Cassette fixtures were recorded against the non-streaming request
         # shape; opt out of streaming v2 so the request body hash matches.
-        m.setenv("PAL_OPENAI_STREAM", "0")
+        m.setenv("PANEL_OPENAI_STREAM", "0")
         if env_updates["OPENAI_API_KEY"]:
             m.setenv("OPENAI_API_KEY", env_updates["OPENAI_API_KEY"])
         for key in keys_to_clear:
@@ -114,7 +114,7 @@ async def test_chat_openai_continuation(monkeypatch, tmp_path):
         m.setenv("OPENAI_ALLOWED_MODELS", "gpt-5")
         # Cassette fixtures were recorded against the non-streaming request
         # shape; opt out of streaming v2 so the request body hash matches.
-        m.setenv("PAL_OPENAI_STREAM", "0")
+        m.setenv("PANEL_OPENAI_STREAM", "0")
         if recording_mode:
             m.setenv("OPENAI_API_KEY", env_updates["OPENAI_API_KEY"])
         else:

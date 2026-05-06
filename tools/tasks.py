@@ -1,18 +1,18 @@
-"""Async background-task pattern for PAL.
+"""Async background-task pattern for Panel.
 
-Long-running PAL tools (audits, multi-model consensus, large code reviews) are
+Long-running Panel tools (audits, multi-model consensus, large code reviews) are
 synchronous from Claude Code's perspective: while they run, the conversation
-turn is blocked. The four tools in this module wrap any other PAL tool and
+turn is blocked. The four tools in this module wrap any other Panel tool and
 return immediately with a `task_id`, letting Claude continue interacting while
 work happens in the background.
 
 Public tools registered with the server:
-  start_task  — fire any other PAL tool, return task_id instantly
+  start_task  — fire any other Panel tool, return task_id instantly
   task_status — peek at status + recent progress events (instant)
   task_result — fetch finished result; optionally wait briefly for completion
   cancel_task — stop a running task
 
-Tasks live in memory of the PAL process; if PAL restarts, in-flight tasks are
+Tasks live in memory of the Panel process; if Panel restarts, in-flight tasks are
 lost. Completed records are retained for a bounded TTL **and** a bounded count
 so callers can fetch results late without unbounded memory growth.
 
@@ -47,12 +47,12 @@ from tools.models import ToolModelCategory
 from tools.shared.base_models import ToolRequest
 from tools.shared.base_tool import BaseTool
 
-logger = logging.getLogger("pal.tasks")
+logger = logging.getLogger("panel.tasks")
 
 
 def _persist_task(record: "TaskRecord") -> None:
     """Best-effort write of task lifecycle to the execution graph DB.
-    Survives PAL restart so task_result(task_id) keeps working for
+    Survives Panel restart so task_result(task_id) keeps working for
     completed tasks. In-flight tasks die with the process — we don't
     pretend otherwise — but final outputs persist.
 
@@ -130,10 +130,10 @@ PROGRESS_BUFFER_SIZE = 200
 # task_result call can block the host LLM's turn. 30s default keeps the
 # conversation channel responsive to user input even mid-audit (the host can't
 # receive new messages while a tool call is in-flight). Override via
-# PAL_TASK_WAIT_CAP_S only when running headless / non-interactive.
+# PANEL_TASK_WAIT_CAP_S only when running headless / non-interactive.
 import os as _os
 try:
-    MAX_WAIT_SECONDS = max(1.0, float(_os.environ.get("PAL_TASK_WAIT_CAP_S", "30")))
+    MAX_WAIT_SECONDS = max(1.0, float(_os.environ.get("PANEL_TASK_WAIT_CAP_S", "30")))
 except (TypeError, ValueError):
     MAX_WAIT_SECONDS = 30.0
 # Bound on cancel_task awaiting teardown before responding.
@@ -250,7 +250,7 @@ class TaskRecord:
 
 
 class TaskManager:
-    """Process-wide registry of background PAL tasks.
+    """Process-wide registry of background Panel tasks.
 
     Single-asyncio-thread access only — asyncio runs cooperatively in one
     thread and dict ops are atomic, so no lock is needed.
@@ -275,7 +275,7 @@ class TaskManager:
 
     def _ensure_gc_loop(self) -> None:
         if self._gc_task is None or self._gc_task.done():
-            self._gc_task = asyncio.create_task(self._gc_loop(), name="pal-task-gc")
+            self._gc_task = asyncio.create_task(self._gc_loop(), name="panel-task-gc")
 
     async def _gc_loop(self) -> None:
         try:
@@ -323,7 +323,7 @@ class TaskManager:
         _persist_task(record)  # status=pending on creation
         record.asyncio_task = asyncio.create_task(
             self._run(record),
-            name=f"pal-task-{task_id}",
+            name=f"panel-task-{task_id}",
         )
         self._ensure_gc_loop()
         self._gc()  # opportunistic eviction
@@ -496,7 +496,7 @@ class TaskManager:
                 else None
             )
             payload = {
-                "event": "pal.task.finished",
+                "event": "panel.task.finished",
                 "task_id": record.task_id,
                 "tool": record.tool_name,
                 "label": record.label,
@@ -512,7 +512,7 @@ class TaskManager:
                     method="notifications/message",
                     params=LoggingMessageNotificationParams(
                         level=level,
-                        logger="pal.tasks",
+                        logger="panel.tasks",
                         data=payload,
                     ),
                 )
@@ -575,14 +575,14 @@ _META_TOOLS = frozenset({"start_task", "task_status", "task_result", "cancel_tas
 
 
 class StartTaskTool(BaseTool):
-    """Fire any other PAL tool in the background, return a task_id immediately."""
+    """Fire any other Panel tool in the background, return a task_id immediately."""
 
     def get_name(self) -> str:
         return "start_task"
 
     def get_description(self) -> str:
         return (
-            "Run any other PAL tool in the background and return immediately with a "
+            "Run any other Panel tool in the background and return immediately with a "
             "task_id. Use for long calls (audits, consensus across models, code "
             "reviews) so the conversation is not blocked. The host receives a "
             "notifications/message push when the task finishes; you can also poll "
@@ -595,7 +595,7 @@ class StartTaskTool(BaseTool):
             "properties": {
                 "tool": {
                     "type": "string",
-                    "description": "Name of the PAL tool to execute (e.g. 'clink', 'chat', 'consensus', 'codereview').",
+                    "description": "Name of the Panel tool to execute (e.g. 'clink', 'chat', 'consensus', 'codereview').",
                 },
                 "arguments": {
                     "type": "object",
@@ -791,7 +791,7 @@ class TaskResultTool(BaseTool):
             "many seconds for it to complete. Returns the wrapped tool's output verbatim. "
             f"NOTE: wait_seconds is capped at {int(MAX_WAIT_SECONDS)}s. Long blocks freeze the "
             "user out of the conversation; prefer short polls or wait for the push-completion "
-            "notification PAL emits when the task finishes."
+            "notification Panel emits when the task finishes."
         )
 
     def get_input_schema(self) -> dict[str, Any]:
@@ -850,7 +850,7 @@ class TaskResultTool(BaseTool):
         record = TaskManager.get().get_record(task_id, session=_capture_session(), require_session=True)
         if record is None:
             # Memory miss — fall back to the graph DB for tasks that
-            # completed before a PAL restart. In-flight tasks die with
+            # completed before a Panel restart. In-flight tasks die with
             # the process and aren't recoverable; only terminal records
             # survive (we won't lie about a task being still running).
             try:
@@ -884,9 +884,9 @@ class TaskResultTool(BaseTool):
                                     # session object died with the
                                     # process. A task_id is therefore
                                     # effectively a bearer secret after
-                                    # restart. PAL is local-only by
+                                    # restart. Panel is local-only by
                                     # default (viewer bound to 127.0.0.1
-                                    # without PAL_WEB_ALLOW_REMOTE) so
+                                    # without PANEL_WEB_ALLOW_REMOTE) so
                                     # the practical exposure is the
                                     # local user; we surface the
                                     # restart-recovered marker on the
@@ -908,7 +908,7 @@ class TaskResultTool(BaseTool):
                         return _json_response({
                             "status": "error",
                             "error": (
-                                f"task {task_id!r} was interrupted by PAL restart "
+                                f"task {task_id!r} was interrupted by Panel restart "
                                 f"(last state: {status}). In-flight tasks aren't recoverable."
                             ),
                         })

@@ -1,5 +1,5 @@
 [project]
-name = "pal-mcp-server"
+name = "panel-mcp-server"
 version = "9.8.2"
 description = "AI-powered MCP server with multiple model providers"
 requires-python = ">=3.10"
@@ -38,7 +38,7 @@ py-modules = ["server", "config"]
 ]
 
 [project.scripts]
-pal-mcp-server = "server:run"
+panel-mcp-server = "server:run"
 
 [tool.black]
 line-length = 120

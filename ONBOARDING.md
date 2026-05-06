@@ -1,8 +1,8 @@
-# Onboarding — PAL MCP Server (DanielGuru fork)
+# Onboarding — Panel MCP Server (DanielGuru fork)
 
 Get from `git clone` to a working `multiaudit` in under 10 minutes.
 
-This is a **fork** of `BeehiveInnovations/pal-mcp-server`. Upstream stalled in
+This is a **fork** of `BeehiveInnovations/pal-mcp-server` (formerly PAL MCP), substantially rewritten. Upstream stalled in
 December 2025; this fork ships fixes plus orchestration features (background
 tasks, parallel panels, adversarial debate, observable streaming, OAuth-to-API
 fallback, central validated dispatch, bounded provider concurrency, durable
@@ -14,11 +14,11 @@ execution graph + live web viewer). Don't assume upstream parity — read
 ## 1. Clone and install (editable)
 
 ```bash
-git clone https://github.com/DanielGuru/pal-mcp-server ~/Projects/pal-mcp-server
-cd ~/Projects/pal-mcp-server
+git clone https://github.com/DanielGuru/panel-mcp-server ~/Projects/panel-mcp-server
+cd ~/Projects/panel-mcp-server
 
 uv tool install --editable .
-which pal-mcp-server   # → ~/.local/bin/pal-mcp-server
+which panel-mcp-server   # → ~/.local/bin/panel-mcp-server
 ```
 
 **Do NOT use `uvx --from /local/path`.** uv caches built wheels and reuses
@@ -32,14 +32,14 @@ Python 3.10+ is required.
 
 ## 2. Configure `~/.claude.json`
 
-PAL is launched as an MCP server by Claude Code. Add this block under
+Panel is launched as an MCP server by Claude Code. Add this block under
 `mcpServers` in `~/.claude.json`:
 
 ```json
 {
   "mcpServers": {
-    "pal": {
-      "command": "/Users/YOU/.local/bin/pal-mcp-server",
+    "panel": {
+      "command": "/Users/YOU/.local/bin/panel-mcp-server",
       "args": [],
       "env": {
         "OPENAI_API_KEY": "sk-...",
@@ -49,8 +49,8 @@ PAL is launched as an MCP server by Claude Code. Add this block under
 
         "DEFAULT_MODEL": "auto",
         "DISABLED_TOOLS": "",
-        "PAL_TASK_WAIT_CAP_S": "30",
-        "PAL_CLAUDE_OAUTH_FALLBACK_MODEL": "claude-sonnet-4-6"
+        "PANEL_TASK_WAIT_CAP_S": "30",
+        "PANEL_CLAUDE_OAUTH_FALLBACK_MODEL": "claude-sonnet-4-6"
       }
     }
   }
@@ -58,7 +58,7 @@ PAL is launched as an MCP server by Claude Code. Add this block under
 ```
 
 Replace `/Users/YOU` with your actual home path (output of `which
-pal-mcp-server`).
+panel-mcp-server`).
 
 ### Lock down the file
 
@@ -89,20 +89,20 @@ will be skipped at startup.
 |---|---|---|
 | `DEFAULT_MODEL` | `auto` | Model used when a tool call doesn't name one. `auto` = Claude picks. Concrete values like `claude-sonnet-4-6`, `gpt-5.5`, `gemini-3.1-pro-preview`, `grok-4.3` pin a default. |
 | `DISABLED_TOOLS` | _unset_ | Comma-separated tool names to disable (e.g. `consensus,thinkdeep`). |
-| `PAL_TASK_WAIT_CAP_S` | `30` | Hard cap on `task_result(wait_seconds=…)`. Don't raise unless you know why — it keeps the conversation channel responsive. |
-| `PAL_CLAUDE_OAUTH_FALLBACK_MODEL` | `claude-sonnet-4-6` | When the `claude` OAuth CLI 401s / quotas out, the API fallback uses this model. Set to `claude-opus-4-7` if you'd rather pay for opus. |
-| `PAL_OPENAI_STREAM` | `1` | Stream OpenAI / xAI responses (gpt-5.x, grok-4.3) so per-chunk deltas land in the live viewer as they're written. Set to `0` to opt out (only useful for the cassette-replay integration tests). Anthropic streams unconditionally. |
-| `PAL_GEMINI_STREAM` | `1` | Stream Gemini responses (gemini-3.x) the same way. Set to `0` to opt out. |
-| `PAL_MULTIAUDIT_JUDGE` | `codex` | Default judge agent for `multiaudit`. Override with `claude`, `gemini`, `grok-4.3`, or any model id. Per-call `judge=` arg always wins. |
-| `PAL_MULTIAUDIT_PANELISTS` | `codex,gemini,claude,grok-4.3` | Comma-separated default panelist list. Per-call `panelists=` arg always wins. |
-| `PAL_GRAPH_DB` | `<cwd>/.pal/execution_graph.db` | Per-repo SQLite store. Set to an absolute path to share across repos; `""` to disable. |
-| `PAL_WEB_PORT` | `8765` | Viewer port. Walks +20 if taken. |
-| `PAL_WEB_HOST` | `127.0.0.1` | Local-only by default. The viewer has no auth, so non-localhost binds also require `PAL_WEB_ALLOW_REMOTE=1` to start. |
-| `PAL_WEB_ALLOW_REMOTE` | _unset_ | Opt-in gate — set to `1` to allow `PAL_WEB_HOST=0.0.0.0` (or any non-localhost bind) to start. Without it the viewer refuses to expose the unauthenticated execution graph. |
-| `PAL_WEB_AUTO_OPEN` | `1` | Auto-open the viewer in your browser on first PAL tool call. `0` disables. |
-| `PAL_WEB_DISABLE` | _unset_ | Skip the viewer entirely. |
-| `PAL_MAX_CONCURRENT_API` | `16` | Global cap on concurrent paid API calls. |
-| `PAL_API_TIMEOUT_S` | `600` | Per-call SDK timeout. |
+| `PANEL_TASK_WAIT_CAP_S` | `30` | Hard cap on `task_result(wait_seconds=…)`. Don't raise unless you know why — it keeps the conversation channel responsive. |
+| `PANEL_CLAUDE_OAUTH_FALLBACK_MODEL` | `claude-sonnet-4-6` | When the `claude` OAuth CLI 401s / quotas out, the API fallback uses this model. Set to `claude-opus-4-7` if you'd rather pay for opus. |
+| `PANEL_OPENAI_STREAM` | `1` | Stream OpenAI / xAI responses (gpt-5.x, grok-4.3) so per-chunk deltas land in the live viewer as they're written. Set to `0` to opt out (only useful for the cassette-replay integration tests). Anthropic streams unconditionally. |
+| `PANEL_GEMINI_STREAM` | `1` | Stream Gemini responses (gemini-3.x) the same way. Set to `0` to opt out. |
+| `PANEL_MULTIAUDIT_JUDGE` | `codex` | Default judge agent for `multiaudit`. Override with `claude`, `gemini`, `grok-4.3`, or any model id. Per-call `judge=` arg always wins. |
+| `PANEL_MULTIAUDIT_PANELISTS` | `codex,gemini,claude,grok-4.3` | Comma-separated default panelist list. Per-call `panelists=` arg always wins. |
+| `PANEL_GRAPH_DB` | `<cwd>/.panel/execution_graph.db` | Per-repo SQLite store. Set to an absolute path to share across repos; `""` to disable. |
+| `PANEL_WEB_PORT` | `8765` | Viewer port. Walks +20 if taken. |
+| `PANEL_WEB_HOST` | `127.0.0.1` | Local-only by default. The viewer has no auth, so non-localhost binds also require `PANEL_WEB_ALLOW_REMOTE=1` to start. |
+| `PANEL_WEB_ALLOW_REMOTE` | _unset_ | Opt-in gate — set to `1` to allow `PANEL_WEB_HOST=0.0.0.0` (or any non-localhost bind) to start. Without it the viewer refuses to expose the unauthenticated execution graph. |
+| `PANEL_WEB_AUTO_OPEN` | `1` | Auto-open the viewer in your browser on first Panel tool call. `0` disables. |
+| `PANEL_WEB_DISABLE` | _unset_ | Skip the viewer entirely. |
+| `PANEL_MAX_CONCURRENT_API` | `16` | Global cap on concurrent paid API calls. |
+| `PANEL_API_TIMEOUT_S` | `600` | Per-call SDK timeout. |
 
 Full list in `CLAUDE.md`.
 
@@ -141,16 +141,16 @@ Grok has no OAuth path — it always uses `XAI_API_KEY`.
 
 ```
 # In Claude Code, after restarting:
-use pal:listmodels
+use panel:listmodels
 ```
 
 Expected output: four configured providers (openai, anthropic, gemini, xai),
 each with their flagship aliases. If a provider is missing, its API key isn't
 loaded — recheck the env block in `~/.claude.json`.
 
-If `pal:` doesn't autocomplete in Claude Code, the MCP server isn't registered.
+If `panel:` doesn't autocomplete in Claude Code, the MCP server isn't registered.
 Re-check `~/.claude.json` syntax (it's strict JSON — no trailing commas) and
-that the `command` path matches `which pal-mcp-server`.
+that the `command` path matches `which panel-mcp-server`.
 
 ---
 
@@ -160,7 +160,7 @@ Make any small change in a git repo, then in Claude Code:
 
 > multiaudit it
 
-Claude will fire `pal:multiaudit`, which:
+Claude will fire `panel:multiaudit`, which:
 
 1. Reads the current branch's `git diff` vs `main`.
 2. Packages it with intent context (recent commits + a structured rubric:
@@ -193,7 +193,7 @@ push.
 
 The viewer has a **settings** button next to the run picker. It shows:
 
-- Live env vars you can change without restarting (streaming flags, `PAL_MULTIAUDIT_JUDGE`, `PAL_MULTIAUDIT_PANELISTS`). Edit the value, click `save` — the next provider/multiaudit call picks it up immediately.
+- Live env vars you can change without restarting (streaming flags, `PANEL_MULTIAUDIT_JUDGE`, `PANEL_MULTIAUDIT_PANELISTS`). Edit the value, click `save` — the next provider/multiaudit call picks it up immediately.
 - Provider key presence (which API keys are loaded).
 - OAuth-CLI login status (codex / gemini / claude).
 - Viewer host/port/URL + execution-graph DB path + version + tools registered.
@@ -205,15 +205,15 @@ Useful for: flipping streaming off when debugging cassette tests, swapping the m
 
 ## 7. The viewer — what to expect
 
-- **Lazy-started.** No tab on Claude Code boot. The first PAL tool call pops
+- **Lazy-started.** No tab on Claude Code boot. The first Panel tool call pops
   the viewer and keeps it for the rest of the process. Process exit kills it.
 - **URL appears in every multiaudit / panel response** — `web_viewer_url`
   field. Open it once; it auto-refreshes.
 - **Picker filter.** The run picker hides observation tools
   (`task_status`, `list_runs`, etc.) so the list is signal, not poll noise.
 - **Stale-port indicator.** The port number in the viewer header turns **red**
-  if you're looking at a stale tab from a previous PAL process. Refresh — the
-  current PAL has a new port (PAL_WEB_PORT walks +20 if taken).
+  if you're looking at a stale tab from a previous Panel process. Refresh — the
+  current Panel has a new port (PANEL_WEB_PORT walks +20 if taken).
 - **Live activity feed.** Running runs render their progress events
   (file_read / tool_use / text_chunk for clink CLIs; per-token streaming is
   on the roadmap for direct-API providers). Completed runs collapse the feed
@@ -235,7 +235,7 @@ Concrete examples:
 "DEFAULT_MODEL": "grok-4.3"                   # xAI flagship
 ```
 
-`pal:listmodels` shows everything available; aliases work too
+`panel:listmodels` shows everything available; aliases work too
 (`opus`, `sonnet`, `gpt-5`, `pro`, `flash`, etc.).
 
 ---
@@ -262,8 +262,8 @@ this in the viewer per-run.
 
 ```
 # In Claude Code:
-use pal:chat with prompt "say hello in one word" using model auto
-use pal:listmodels
+use panel:chat with prompt "say hello in one word" using model auto
+use panel:listmodels
 ```
 
 If both succeed and `listmodels` reports four providers, you're done.
@@ -281,10 +281,10 @@ viewer URL while it runs.
   design.
 - **"my edit didn't take effect".** You're on a `uvx --from /path` install,
   not editable. Reinstall via `uv tool install --editable .`.
-- **Viewer doesn't open.** Set `PAL_WEB_AUTO_OPEN=0` and open the URL from
-  the multiaudit response manually. If port `8765` is in use, PAL walks +20 —
+- **Viewer doesn't open.** Set `PANEL_WEB_AUTO_OPEN=0` and open the URL from
+  the multiaudit response manually. If port `8765` is in use, Panel walks +20 —
   check the response for the actual port.
-- **`pal:listmodels` shows fewer than four providers.** The missing
+- **`panel:listmodels` shows fewer than four providers.** The missing
   provider's API key isn't being read. Re-check JSON syntax in
   `~/.claude.json`, then restart Claude Code.
 - **Codex/Gemini/Claude OAuth keeps falling back to paid.** Quota's exhausted

@@ -419,7 +419,7 @@ class OpenAICompatibleProvider(ModelProvider):
 
         # Per-call SDK timeout bounds the worker-thread lifetime — asyncio
         # cannot cancel an in-flight to_thread call, so we lean on the SDK
-        # to terminate stuck requests. Tuned via PAL_API_TIMEOUT_S.
+        # to terminate stuck requests. Tuned via PANEL_API_TIMEOUT_S.
         from providers.base import get_default_api_timeout
 
         completion_params = {
@@ -596,10 +596,10 @@ class OpenAICompatibleProvider(ModelProvider):
         # Streaming v2: ON by default so per-chunk deltas flow into the
         # live viewer (the operator watches text accumulate in real time
         # instead of staring at a "RUNNING" badge until the call returns).
-        # Opt OUT with PAL_OPENAI_STREAM=0 — the integration cassette tests
+        # Opt OUT with PANEL_OPENAI_STREAM=0 — the integration cassette tests
         # need this because the recorded fixtures hash a non-streaming
         # request body. Re-recording cassettes lifts that constraint.
-        _stream_enabled = (get_env("PAL_OPENAI_STREAM", "1") or "1").strip().lower() not in (
+        _stream_enabled = (get_env("PANEL_OPENAI_STREAM", "1") or "1").strip().lower() not in (
             "0", "false", "no", "off",
         )
         completion_params = {

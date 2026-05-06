@@ -1,8 +1,8 @@
-"""MCP progress notification helper for PAL.
+"""MCP progress notification helper for Panel.
 
 When an MCP client sends a tool call with a `progressToken` in the request
 metadata, the server may emit `notifications/progress` while the call is in
-flight. PAL uses this to surface live status from long-running tools (clink
+flight. Panel uses this to surface live status from long-running tools (clink
 subprocesses, streaming provider calls, multi-model orchestration).
 
 This helper is a no-op when there is no active request context or the client
@@ -20,7 +20,7 @@ import logging
 from contextvars import ContextVar, Token
 from typing import Awaitable, Callable, Optional
 
-logger = logging.getLogger("pal.progress")
+logger = logging.getLogger("panel.progress")
 
 # Awaitable callback that consumes a single progress event.
 ProgressSink = Callable[[str, float, Optional[float]], Awaitable[None]]

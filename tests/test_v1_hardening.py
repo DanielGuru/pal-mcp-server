@@ -238,10 +238,10 @@ def test_pal_debug_cli_output_disables_redaction(monkeypatch):
     """Opt-in escape hatch must skip both redaction and truncation."""
     from tools.clink import _redact_and_cap
 
-    monkeypatch.setenv("PAL_DEBUG_CLI_OUTPUT", "1")
+    monkeypatch.setenv("PANEL_DEBUG_CLI_OUTPUT", "1")
     raw = "sk-proj-secret " + "X" * 5000
     out = _redact_and_cap(raw, cap=1000)
-    assert out == raw, "PAL_DEBUG_CLI_OUTPUT must passthrough untouched"
+    assert out == raw, "PANEL_DEBUG_CLI_OUTPUT must passthrough untouched"
 
 
 # ---------------------------------------------------------------------------
@@ -360,7 +360,7 @@ def test_legacy_dispatch_aliases_still_resolve():
 
 def test_timeout_does_not_trigger_fallback_by_default():
     """A 'timed out' clink failure must NOT auto-fallback unless the operator
-    opts in via PAL_FALLBACK_ON_TIMEOUT — timeout could mean a legitimately
+    opts in via PANEL_FALLBACK_ON_TIMEOUT — timeout could mean a legitimately
     long-thinking model and falling back would double-charge."""
     import os
 
@@ -368,7 +368,7 @@ def test_timeout_does_not_trigger_fallback_by_default():
     from tools.clink import _looks_like_recoverable_failure
 
     # Ensure the env var is unset / falsy
-    prior = os.environ.pop("PAL_FALLBACK_ON_TIMEOUT", None)
+    prior = os.environ.pop("PANEL_FALLBACK_ON_TIMEOUT", None)
     try:
         exc = CLIAgentError(
             "CLI 'gemini' timed out after 1800 seconds",
@@ -377,16 +377,16 @@ def test_timeout_does_not_trigger_fallback_by_default():
         assert _looks_like_recoverable_failure(exc) is False
     finally:
         if prior is not None:
-            os.environ["PAL_FALLBACK_ON_TIMEOUT"] = prior
+            os.environ["PANEL_FALLBACK_ON_TIMEOUT"] = prior
 
 
 def test_timeout_triggers_fallback_when_env_opt_in(monkeypatch):
-    """With PAL_FALLBACK_ON_TIMEOUT=1, timeout is treated like an OAuth failure
+    """With PANEL_FALLBACK_ON_TIMEOUT=1, timeout is treated like an OAuth failure
     and triggers the paid-API fallback."""
     from clink.agents import CLIAgentError
     from tools.clink import _looks_like_recoverable_failure
 
-    monkeypatch.setenv("PAL_FALLBACK_ON_TIMEOUT", "1")
+    monkeypatch.setenv("PANEL_FALLBACK_ON_TIMEOUT", "1")
     exc = CLIAgentError(
         "CLI 'gemini' timed out after 1800 seconds",
         returncode=None, stdout="", stderr="",
@@ -418,7 +418,7 @@ def test_oauth_fallback_models_wired_for_each_cli():
         "codex": "gpt-5.5",
         # Sonnet, not Opus — flagship-as-default OAuth fallback was a
         # financial-DoS path. Operators can override with
-        # PAL_CLAUDE_OAUTH_FALLBACK_MODEL=opus.
+        # PANEL_CLAUDE_OAUTH_FALLBACK_MODEL=opus.
         "claude": "claude-sonnet-4-6",
     }
     for cli_name, want in expected.items():
@@ -503,11 +503,11 @@ def test_panel_cost_tier_handles_multi_chunk_response():
 
 
 def test_provider_executor_honors_env_cap(monkeypatch):
-    """PAL_MAX_PROVIDER_THREADS must be respected at first init."""
+    """PANEL_MAX_PROVIDER_THREADS must be respected at first init."""
     import providers.base as base
 
     monkeypatch.setattr(base, "_PROVIDER_EXECUTOR", None)
-    monkeypatch.setenv("PAL_MAX_PROVIDER_THREADS", "7")
+    monkeypatch.setenv("PANEL_MAX_PROVIDER_THREADS", "7")
     ex = base._get_provider_executor()
     assert ex._max_workers == 7
     # Reset so other tests don't see the 7-thread pool
@@ -515,12 +515,12 @@ def test_provider_executor_honors_env_cap(monkeypatch):
 
 
 def test_provider_semaphore_honors_env_cap(monkeypatch):
-    """PAL_MAX_CONCURRENT_API must be respected at first init."""
+    """PANEL_MAX_CONCURRENT_API must be respected at first init."""
     import providers.base as base
 
     async def go():
         monkeypatch.setattr(base, "_API_SEMAPHORE", None)
-        monkeypatch.setenv("PAL_MAX_CONCURRENT_API", "3")
+        monkeypatch.setenv("PANEL_MAX_CONCURRENT_API", "3")
         sem = base._get_api_semaphore()
         assert sem._value == 3
         monkeypatch.setattr(base, "_API_SEMAPHORE", None)
@@ -533,7 +533,7 @@ def test_get_default_api_timeout_default():
 
     # No env set → 600s default
     with patch.dict(os.environ, {}, clear=False):
-        os.environ.pop("PAL_API_TIMEOUT_S", None)
+        os.environ.pop("PANEL_API_TIMEOUT_S", None)
         assert get_default_api_timeout() == 600.0
 
 
@@ -624,7 +624,7 @@ def test_provider_executor_no_duplicate_under_concurrent_first_burst(monkeypatch
 
 def test_provider_executor_shutdown_resets_global(monkeypatch):
     """The atexit handler must null out the global so it can be recreated
-    cleanly if PAL is reloaded inside a long-lived host process."""
+    cleanly if Panel is reloaded inside a long-lived host process."""
     import providers.base as base
 
     monkeypatch.setattr(base, "_PROVIDER_EXECUTOR", None)
@@ -636,7 +636,7 @@ def test_provider_executor_shutdown_resets_global(monkeypatch):
 
 def test_openai_streaming_v2_default_on_opt_out_via_env(monkeypatch):
     """Streaming v2 is ON by default — operators see the model write live
-    in the viewer. PAL_OPENAI_STREAM=0 opts back to .create() shape so the
+    in the viewer. PANEL_OPENAI_STREAM=0 opts back to .create() shape so the
     cassette-replay integration tests can hash a stable request body."""
     from unittest.mock import MagicMock, patch
 
@@ -676,7 +676,7 @@ def test_openai_streaming_v2_default_on_opt_out_via_env(monkeypatch):
         return resp
 
     # Default (env unset) → streaming on
-    monkeypatch.delenv("PAL_OPENAI_STREAM", raising=False)
+    monkeypatch.delenv("PANEL_OPENAI_STREAM", raising=False)
     provider = OpenAIModelProvider("test-key")
     with patch.object(type(provider), "client", new_callable=lambda: property(lambda _: MagicMock(chat=MagicMock(completions=MagicMock(create=fake_create))))):
         provider.generate_content(prompt="hi", model_name="gpt-5")
@@ -685,7 +685,7 @@ def test_openai_streaming_v2_default_on_opt_out_via_env(monkeypatch):
 
     # Explicit opt-out → legacy non-streaming shape
     captured.clear()
-    monkeypatch.setenv("PAL_OPENAI_STREAM", "0")
+    monkeypatch.setenv("PANEL_OPENAI_STREAM", "0")
     with patch.object(type(provider), "client", new_callable=lambda: property(lambda _: MagicMock(chat=MagicMock(completions=MagicMock(create=fake_create))))):
         provider.generate_content(prompt="hi", model_name="gpt-5")
     assert captured.get("stream") is False
@@ -859,7 +859,7 @@ def test_gemini_streaming_handles_safety_block_valueerror(monkeypatch):
         yield _SafetyBlockedPartial()
         yield _NormalPartial()
 
-    monkeypatch.setenv("PAL_GEMINI_STREAM", "1")
+    monkeypatch.setenv("PANEL_GEMINI_STREAM", "1")
     monkeypatch.setenv("GEMINI_API_KEY", "k")
 
     provider = GeminiModelProvider("k")
@@ -880,7 +880,7 @@ def test_gemini_streaming_zero_chunks_raises_clear_error(monkeypatch):
     def fake_stream(*args, **kwargs):
         return iter([])
 
-    monkeypatch.setenv("PAL_GEMINI_STREAM", "1")
+    monkeypatch.setenv("PANEL_GEMINI_STREAM", "1")
     monkeypatch.setenv("GEMINI_API_KEY", "k")
     provider = GeminiModelProvider("k")
     import pytest
@@ -894,10 +894,10 @@ def test_gemini_streaming_zero_chunks_raises_clear_error(monkeypatch):
 
 
 def test_multiaudit_judge_configurable_via_env(monkeypatch):
-    """``PAL_MULTIAUDIT_JUDGE`` env var must override the default
+    """``PANEL_MULTIAUDIT_JUDGE`` env var must override the default
     'codex' judge, so operators can swap the synthesiser without
     editing code."""
-    monkeypatch.setenv("PAL_MULTIAUDIT_JUDGE", "claude")
+    monkeypatch.setenv("PANEL_MULTIAUDIT_JUDGE", "claude")
     # Re-import to pick up env at module load.
     import importlib
     import tools.multiaudit as m
@@ -906,10 +906,10 @@ def test_multiaudit_judge_configurable_via_env(monkeypatch):
 
 
 def test_multiaudit_panelists_configurable_via_env(monkeypatch):
-    """``PAL_MULTIAUDIT_PANELISTS`` env var (comma-separated) overrides
+    """``PANEL_MULTIAUDIT_PANELISTS`` env var (comma-separated) overrides
     the default panelist list. Whitespace tolerated, empty entries
     dropped."""
-    monkeypatch.setenv("PAL_MULTIAUDIT_PANELISTS", "claude, grok-4.3 , gemini")
+    monkeypatch.setenv("PANEL_MULTIAUDIT_PANELISTS", "claude, grok-4.3 , gemini")
     import importlib
     import tools.multiaudit as m
     importlib.reload(m)
@@ -917,7 +917,7 @@ def test_multiaudit_panelists_configurable_via_env(monkeypatch):
 
 
 def test_multiaudit_judge_resolves_env_at_execute_not_import(tmp_path, monkeypatch):
-    """The settings tab claims live mutation of PAL_MULTIAUDIT_JUDGE.
+    """The settings tab claims live mutation of PANEL_MULTIAUDIT_JUDGE.
     Round-3 audit caught that the value was frozen at module import via
     DEFAULT_JUDGE; setting the env var AFTER multiaudit was already
     imported had no effect on the next dispatch. Resolve env vars
@@ -954,13 +954,13 @@ def test_multiaudit_judge_resolves_env_at_execute_not_import(tmp_path, monkeypat
 
     # First import locks DEFAULT_JUDGE='codex' (env unset). Then mutate
     # env and dispatch — the live judge must be 'claude', not 'codex'.
-    monkeypatch.delenv("PAL_MULTIAUDIT_JUDGE", raising=False)
+    monkeypatch.delenv("PANEL_MULTIAUDIT_JUDGE", raising=False)
     import importlib
     import tools.multiaudit as m
     importlib.reload(m)
     assert m.DEFAULT_JUDGE == "codex"
 
-    monkeypatch.setenv("PAL_MULTIAUDIT_JUDGE", "claude")
+    monkeypatch.setenv("PANEL_MULTIAUDIT_JUDGE", "claude")
 
     async def go():
         return await m.MultiauditTool().execute(
@@ -976,7 +976,7 @@ def test_multiaudit_judge_resolves_env_at_execute_not_import(tmp_path, monkeypat
 def test_agenerate_content_holds_semaphore_until_thread_completes_on_cancel(monkeypatch):
     """Cancel-aware semaphore release. The asyncio task may be cancelled
     mid-flight, but the worker thread keeps running its blocking SDK
-    call until PAL_API_TIMEOUT_S. The semaphore must NOT be released the
+    call until PANEL_API_TIMEOUT_S. The semaphore must NOT be released the
     instant cancellation happens — it has to wait for the thread to
     actually finish, otherwise a flurry of cancellations exhausts the
     thread pool while the semaphore reports plenty of capacity, blocking
@@ -995,7 +995,7 @@ def test_agenerate_content_holds_semaphore_until_thread_completes_on_cancel(monk
     # double-release would raise ValueError (plain asyncio.Semaphore
     # silently over-releases, hiding double-fire bugs in the done
     # callback). Reset the lazy singleton + inject our test sem.
-    monkeypatch.setenv("PAL_MAX_CONCURRENT_API", "1")
+    monkeypatch.setenv("PANEL_MAX_CONCURRENT_API", "1")
     monkeypatch.setattr(base, "_API_SEMAPHORE", asyncio.BoundedSemaphore(1))
 
     thread_done = threading.Event()
@@ -1070,7 +1070,7 @@ def test_agenerate_content_releases_semaphore_on_submit_failure(monkeypatch):
     from providers.base import ModelProvider, _get_api_semaphore
     import providers.base as base
 
-    monkeypatch.setenv("PAL_MAX_CONCURRENT_API", "1")
+    monkeypatch.setenv("PANEL_MAX_CONCURRENT_API", "1")
     monkeypatch.setattr(base, "_API_SEMAPHORE", asyncio.BoundedSemaphore(1))
 
     class _DummyExecutor:
@@ -1141,7 +1141,7 @@ def test_task_result_falls_back_to_graph_for_terminal_states(tmp_path, monkeypat
 
 def test_task_result_surfaces_interrupted_for_non_terminal_persisted(tmp_path, monkeypatch):
     """A persisted task with status='running' represents a process
-    that died mid-flight. Surface a clear "interrupted by PAL restart"
+    that died mid-flight. Surface a clear "interrupted by Panel restart"
     error rather than the misleading "unknown task_id"."""
     import asyncio
     import json as _json
@@ -1174,15 +1174,15 @@ def test_task_result_surfaces_interrupted_for_non_terminal_persisted(tmp_path, m
 def test_web_viewer_refuses_non_localhost_bind_without_opt_in(monkeypatch):
     """Non-localhost binds expose the unauthenticated execution graph
     to anyone on the network. Refuse to start unless the operator has
-    consciously opted in via PAL_WEB_ALLOW_REMOTE=1."""
+    consciously opted in via PANEL_WEB_ALLOW_REMOTE=1."""
     import importlib
     import utils.web_viewer as wv
 
-    monkeypatch.setenv("PAL_WEB_HOST", "0.0.0.0")
-    monkeypatch.delenv("PAL_WEB_ALLOW_REMOTE", raising=False)
+    monkeypatch.setenv("PANEL_WEB_HOST", "0.0.0.0")
+    monkeypatch.delenv("PANEL_WEB_ALLOW_REMOTE", raising=False)
     importlib.reload(wv)
     assert wv.start_web_viewer() is None, (
-        "viewer must refuse 0.0.0.0 binds without PAL_WEB_ALLOW_REMOTE=1"
+        "viewer must refuse 0.0.0.0 binds without PANEL_WEB_ALLOW_REMOTE=1"
     )
 
 
@@ -1191,9 +1191,9 @@ def test_web_viewer_localhost_bind_starts_normally(monkeypatch):
     import importlib
     import utils.web_viewer as wv
 
-    monkeypatch.setenv("PAL_WEB_HOST", "127.0.0.1")
-    monkeypatch.setenv("PAL_WEB_AUTO_OPEN", "0")  # no browser pop in tests
-    monkeypatch.delenv("PAL_WEB_DISABLE", raising=False)
+    monkeypatch.setenv("PANEL_WEB_HOST", "127.0.0.1")
+    monkeypatch.setenv("PANEL_WEB_AUTO_OPEN", "0")  # no browser pop in tests
+    monkeypatch.delenv("PANEL_WEB_DISABLE", raising=False)
     importlib.reload(wv)
     url = wv.start_web_viewer()
     try:
@@ -1225,7 +1225,7 @@ def test_execution_graph_version_bumps_on_writes(tmp_path):
 
 def test_task_persistence_round_trip(tmp_path, monkeypatch):
     """upsert_task → get_task returns the same record. Powers the
-    task_result fallback path after PAL restart."""
+    task_result fallback path after Panel restart."""
     from utils.execution_graph import ExecutionGraph
 
     g = ExecutionGraph(db_path=tmp_path / "t.db")

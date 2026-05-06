@@ -1,17 +1,17 @@
 # AGENTS.md
 
-This is a customized fork of `BeehiveInnovations/pal-mcp-server`. Upstream is stalled; this fork ships ongoing improvements (background tasks, parallel panels, adversarial debate, streaming progress, push notifications) that don't exist upstream.
+This is a customized fork of `BeehiveInnovations/panel-mcp-server`. Upstream is stalled; this fork ships ongoing improvements (background tasks, parallel panels, adversarial debate, streaming progress, push notifications) that don't exist upstream.
 
 **Read [`CLAUDE.md`](./CLAUDE.md) first.** It is the canonical guide for any AI agent working on this codebase. This file is a thin pointer + the rules that matter most.
 
 ## Hard rules
 
-- **Editable install only.** Do not use `uvx --from /local/path`; uv caches built wheels and reuses them, breaking iterative dev. Install once with `uv tool install --editable ~/Projects/pal-mcp-server`.
-- **Restart Claude Code after source edits.** PAL caches config at process startup; the editable install ensures next launch sees new code without reinstall.
+- **Editable install only.** Do not use `uvx --from /local/path`; uv caches built wheels and reuses them, breaking iterative dev. Install once with `uv tool install --editable ~/Projects/panel-mcp-server`.
+- **Restart Claude Code after source edits.** Panel caches config at process startup; the editable install ensures next launch sees new code without reinstall.
 - **Never re-add `--dangerously-bypass-approvals-and-sandbox` (codex) or `--yolo` (gemini)** to clink configs. Those allow sub-agents to silently mutate the filesystem.
 - **Never commit API keys.** They live in `~/.claude.json`, never in repo. Don't `cat .env`-style debug outputs into chat either.
 - **Conventional commits, push to `origin main`.** No PR workflow on this fork.
-- **Validate before committing.** `python3 -c "import ast; ast.parse(open('FILE').read())"` for any non-trivial edit; full import via `~/.local/share/uv/tools/pal-mcp-server/bin/python3 -c "import server"` after architectural changes.
+- **Validate before committing.** `python3 -c "import ast; ast.parse(open('FILE').read())"` for any non-trivial edit; full import via `~/.local/share/uv/tools/panel-mcp-server/bin/python3 -c "import server"` after architectural changes.
 
 ## Project structure (one line)
 

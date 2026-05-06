@@ -1,5 +1,5 @@
 """
-Core Tool Infrastructure for PAL MCP Tools
+Core Tool Infrastructure for Panel MCP Tools
 
 This module provides the fundamental base class for all tools:
 - BaseTool: Abstract base class defining the tool interface
@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING, Any, Optional
 # on user content. Audit panel found this as the v1.1 blocker.
 #
 # Correct approach: bypass requires PROVENANCE, not nesting. Only code paths
-# that build internal payloads from PAL-controlled sources (multiaudit's diff
+# that build internal payloads from Panel-controlled sources (multiaudit's diff
 # package, panel's debate-round / judge prompts, clink's OAuth-fallback
 # prompt with files inlined) wrap their dispatch in mark_internal_payload().
 # The marker propagates via Python ContextVar inheritance:
@@ -44,7 +44,7 @@ _INTERNAL_PAYLOAD: contextvars.ContextVar[bool] = contextvars.ContextVar(
 
 
 class mark_internal_payload:  # noqa: N801 (intentional lowercase — it's used as a context manager)
-    """Mark the current async context as carrying a PAL-generated payload.
+    """Mark the current async context as carrying a Panel-generated payload.
 
     Usage:
         with mark_internal_payload():
@@ -77,7 +77,7 @@ class mark_internal_payload:  # noqa: N801 (intentional lowercase — it's used 
 
 def is_internal_payload() -> bool:
     """True when the current context was explicitly marked by trusted code
-    as carrying a PAL-generated payload (multiaudit, panel debate/judge,
+    as carrying a Panel-generated payload (multiaudit, panel debate/judge,
     clink OAuth fallback). Used by size-check gates to bypass the MCP
     transport limit."""
     return _INTERNAL_PAYLOAD.get()
@@ -136,7 +136,7 @@ logger = logging.getLogger(__name__)
 
 class BaseTool(ABC):
     """
-    Abstract base class for all PAL MCP tools.
+    Abstract base class for all Panel MCP tools.
 
     This class defines the interface that all tools must implement and provides
     common functionality for request handling, model creation, and response formatting.

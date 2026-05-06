@@ -1,11 +1,11 @@
-# PAL MCP: Many Workflows. One Context.
+# Panel MCP: Many Models, One Decision.
 
 <div align="center">
 
-  <em>Your AI's PAL – a Provider Abstraction Layer</em><br />
-  <sub><a href="docs/name-change.md">Formerly known as Zen MCP</a></sub>
+  <em>Convene a panel of AI models from inside your CLI — fan-out, debate, judge.</em><br />
+  <sub><a href="docs/name-change.md">Formerly Zen MCP, then Panel MCP</a></sub>
 
-  [PAL in action](https://github.com/user-attachments/assets/0d26061e-5f21-4ab1-b7d0-f883ddc2c3da)
+  [Panel in action](https://github.com/user-attachments/assets/0d26061e-5f21-4ab1-b7d0-f883ddc2c3da)
 
 👉 **[Watch more examples](#-watch-tools-in-action)**
 
@@ -47,22 +47,22 @@ Continue with clink gemini - implement the recommended feature
 
 ---
 
-## Why PAL MCP?
+## Why Panel MCP?
 
 **Why rely on one AI model when you can orchestrate them all?**
 
-A Model Context Protocol server that supercharges tools like [Claude Code](https://www.anthropic.com/claude-code), [Codex CLI](https://developers.openai.com/codex/cli), and IDE clients such as [Cursor](https://cursor.com) or the [Claude Dev VS Code extension](https://marketplace.visualstudio.com/items?itemName=Anthropic.claude-vscode). **PAL MCP connects your favorite AI tool to multiple AI models** for enhanced code analysis, problem-solving, and collaborative development.
+A Model Context Protocol server that supercharges tools like [Claude Code](https://www.anthropic.com/claude-code), [Codex CLI](https://developers.openai.com/codex/cli), and IDE clients such as [Cursor](https://cursor.com) or the [Claude Dev VS Code extension](https://marketplace.visualstudio.com/items?itemName=Anthropic.claude-vscode). **Panel MCP connects your favorite AI tool to multiple AI models** for enhanced code analysis, problem-solving, and collaborative development.
 
 ### True AI Collaboration with Conversation Continuity
 
-PAL supports **conversation threading** so your CLI can **discuss ideas with multiple AI models, exchange reasoning, get second opinions, and even run collaborative debates between models** to help you reach deeper insights and better solutions.
+Panel supports **conversation threading** so your CLI can **discuss ideas with multiple AI models, exchange reasoning, get second opinions, and even run collaborative debates between models** to help you reach deeper insights and better solutions.
 
 Your CLI always stays in control but gets perspectives from the best AI for each subtask. Context carries forward seamlessly across tools and models, enabling complex workflows like: code reviews with multiple models → automated planning → implementation → pre-commit validation.
 
 > **You're in control.** Your CLI of choice orchestrates the AI team, but you decide the workflow. Craft powerful prompts that bring in Gemini Pro, GPT-5, Flash, or local offline models exactly when needed.
 
 <details>
-<summary><b>Reasons to Use PAL MCP</b></summary>
+<summary><b>Reasons to Use Panel MCP</b></summary>
 
 A typical workflow with Claude Code as an example:
 
@@ -90,7 +90,7 @@ A typical workflow with Claude Code as an example:
 
 12. **Bypass MCP Token Limits** - Automatically works around MCP's 25K limit for large prompts and responses
 
-13. **SQLite Execution Graph** - Every tool dispatch is recorded in `~/.pal/execution_graph.db`. Resume panels after restart, audit cost attribution, replay prior runs — durable across process restarts.
+13. **SQLite Execution Graph** - Every tool dispatch is recorded in `~/.panel/execution_graph.db`. Resume panels after restart, audit cost attribution, replay prior runs — durable across process restarts.
 
 **The Killer Feature:** When Claude's context resets, just ask to "continue with O3" - the other model's response magically revives Claude's understanding without re-ingesting documents!
 
@@ -113,7 +113,7 @@ All within a single conversation thread! Gemini Pro in step 11 _knows_ what was 
 **Think of it as Claude Code _for_ Claude Code.** This MCP isn't magic. It's just **super-glue**.
 
 > **Remember:** Claude stays in full control — but **YOU** call the shots.
-> PAL is designed to have Claude engage other models only when needed — and to follow through with meaningful back-and-forth.
+> Panel is designed to have Claude engage other models only when needed — and to follow through with meaningful back-and-forth.
 > **You're** the one who crafts the powerful prompt that makes Claude bring in Gemini, Flash, O3 — or fly solo.
 > You're the guide. The prompter. The puppeteer.
 > #### You are the AI - **Actually Intelligent**.
@@ -156,8 +156,8 @@ For best results when using [Codex CLI](https://developers.openai.com/codex/cli)
 
 **Option A: Clone and Automatic Setup** (recommended)
 ```bash
-git clone https://github.com/BeehiveInnovations/pal-mcp-server.git
-cd pal-mcp-server
+git clone https://github.com/DanielGuru/panel-mcp-server.git
+cd panel-mcp-server
 
 # Copy and edit config
 cp .env.example .env
@@ -174,9 +174,9 @@ cp .env.example .env
 // Don't forget to add your API keys under env
 {
   "mcpServers": {
-    "pal": {
+    "panel": {
       "command": "bash",
-      "args": ["-c", "for p in $(which uvx 2>/dev/null) $HOME/.local/bin/uvx /opt/homebrew/bin/uvx /usr/local/bin/uvx uvx; do [ -x \"$p\" ] && exec \"$p\" --from git+https://github.com/BeehiveInnovations/pal-mcp-server.git pal-mcp-server; done; echo 'uvx not found' >&2; exit 1"],
+      "args": ["-c", "for p in $(which uvx 2>/dev/null) $HOME/.local/bin/uvx /opt/homebrew/bin/uvx /usr/local/bin/uvx uvx; do [ -x \"$p\" ] && exec \"$p\" --from git+https://github.com/DanielGuru/panel-mcp-server.git panel-mcp-server; done; echo 'uvx not found' >&2; exit 1"],
       "env": {
         "PATH": "/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin:~/.local/bin",
         "GEMINI_API_KEY": "your-key-here",
@@ -190,9 +190,9 @@ cp .env.example .env
 
 **3. Start Using!**
 ```
-"Use pal to analyze this code for security issues with gemini pro"
+"Use panel to analyze this code for security issues with gemini pro"
 "Debug this error with o3 and then get flash to suggest optimizations"
-"Plan the migration strategy with pal, get consensus from multiple models"
+"Plan the migration strategy with panel, get consensus from multiple models"
 "clink with cli_name=\"gemini\" role=\"planner\" to draft a phased rollout plan"
 ```
 
@@ -202,7 +202,7 @@ cp .env.example .env
 
 ## Provider Configuration
 
-PAL activates any provider that has credentials in your `.env`. Copy `.env.example` to `.env` and add your keys. See `.env.example` for the full list of options.
+Panel activates any provider that has credentials in your `.env`. Copy `.env.example` to `.env` and add your keys. See `.env.example` for the full list of options.
 
 ## Core Tools
 
@@ -259,13 +259,13 @@ PAL activates any provider that has credentials in your `.env`. Copy `.env.examp
 
 Each panelist gets the same prompt, responds independently, and (in debate mode) sees the other responses before giving a revised stance. The judge synthesises the final answer. Results are written to the SQLite execution graph so you can query them later with `get_run` / `run_tree`.
 
-**Special panelist `host`:** PAL routes the agent name `host` through the MCP `sampling/createMessage` primitive, asking the connected MCP client (Claude Code, etc.) to invoke its own LLM as a peer panelist. Means Claude Code can be a true participant in a debate of its own PR, not just the dispatcher. No paid API call — the host's tokens are the host's problem. Cost tier reports as `host_sampling`.
+**Special panelist `host`:** Panel routes the agent name `host` through the MCP `sampling/createMessage` primitive, asking the connected MCP client (Claude Code, etc.) to invoke its own LLM as a peer panelist. Means Claude Code can be a true participant in a debate of its own PR, not just the dispatcher. No paid API call — the host's tokens are the host's problem. Cost tier reports as `host_sampling`.
 
 ---
 
 ## 🚦 multiaudit — magic-phrase PR review
 
-Say one of these to Claude Code (or whatever MCP client you're driving) and PAL fires a 4-way audit panel against the current branch's diff:
+Say one of these to Claude Code (or whatever MCP client you're driving) and Panel fires a 4-way audit panel against the current branch's diff:
 
 > "OK multiaudit it now"
 > "audit this PR"
@@ -289,22 +289,22 @@ multiaudit debate_rounds=2                # deeper pressure-testing
 
 ## 🗄️ SQLite Execution Graph
 
-Every tool dispatch — including nested panel fanouts, clink subagents, async tasks, and OAuth-to-API fallbacks — is recorded in `~/.pal/execution_graph.db`. This gives you:
+Every tool dispatch — including nested panel fanouts, clink subagents, async tasks, and OAuth-to-API fallbacks — is recorded in `~/.panel/execution_graph.db`. This gives you:
 
-- **Restart-safe panels** — if PAL restarts mid-panel, prior results are still readable
+- **Restart-safe panels** — if Panel restarts mid-panel, prior results are still readable
 - **Cost attribution** — `run_tree` returns a cost-tier rollup (`oauth_free` / `api_paid` / `oauth_fallback_paid` / `host_sampling`) so you can see exactly which sub-call drove spend
 - **Audit trail** — replay prior runs, compare model behaviour over time
 - **Run lineage** — `run_tree` shows the full parent→child call graph including `fallback` edges
 
-**Per-repo by default.** Default DB path is `<cwd>/.pal/execution_graph.db` — each project Claude Code opens has its own isolated debate history, so the live web viewer for one repo never shows runs from another. The `.pal/` directory is gitignored.
+**Per-repo by default.** Default DB path is `<cwd>/.panel/execution_graph.db` — each project Claude Code opens has its own isolated debate history, so the live web viewer for one repo never shows runs from another. The `.panel/` directory is gitignored.
 
-Override with `PAL_GRAPH_DB=<absolute path>` for a shared / global view (e.g. the legacy `~/.pal/execution_graph.db`). Set to empty string to disable the graph entirely.
+Override with `PANEL_GRAPH_DB=<absolute path>` for a shared / global view (e.g. the legacy `~/.panel/execution_graph.db`). Set to empty string to disable the graph entirely.
 
 ---
 
 ## 🪟 Live Web Viewer
 
-PAL serves a tiny local HTTP server (default `http://127.0.0.1:8765/`) that **lazy-starts on the first PAL tool call** — no tab pops if you never use PAL this session. Browser opens automatically when it does start.
+Panel serves a tiny local HTTP server (default `http://127.0.0.1:8765/`) that **lazy-starts on the first Panel tool call** — no tab pops if you never use Panel this session. Browser opens automatically when it does start.
 
 Single page renders the execution graph live:
 - Every panel run, panelist sub-call, OAuth fallback edge, judge synthesis
@@ -317,10 +317,10 @@ Polls every 2s for the run list and 1.5s for the selected run-tree. Direct-API p
 
 | Env var | Default | Effect |
 |---|---|---|
-| `PAL_WEB_PORT` | `8765` | Port to bind. Walks forward up to +20 if taken. |
-| `PAL_WEB_HOST` | `127.0.0.1` | Local-only by default. Set `0.0.0.0` to expose (you opt in). |
-| `PAL_WEB_AUTO_OPEN` | `1` | Auto-open browser tab on PAL boot. Set `0` to disable. |
-| `PAL_WEB_DISABLE` | unset | Set to skip the web server entirely. |
+| `PANEL_WEB_PORT` | `8765` | Port to bind. Walks forward up to +20 if taken. |
+| `PANEL_WEB_HOST` | `127.0.0.1` | Local-only by default. Set `0.0.0.0` to expose (you opt in). |
+| `PANEL_WEB_AUTO_OPEN` | `1` | Auto-open browser tab on Panel boot. Set `0` to disable. |
+| `PANEL_WEB_DISABLE` | unset | Set to skip the web server entirely. |
 
 The MCP tool `web_url` returns the live URL on demand so Claude Code can hand it to the user mid-conversation.
 
@@ -367,7 +367,7 @@ DISABLED_TOOLS=
 ```json
 {
   "mcpServers": {
-    "pal": {
+    "panel": {
       "env": {
         "DISABLED_TOOLS": "refactor,testgen,secaudit,docgen,tracer",
         "DEFAULT_MODEL": "pro",
@@ -388,7 +388,7 @@ DISABLED_TOOLS=
 ```json
 {
   "mcpServers": {
-    "pal": {
+    "panel": {
       "env": {
         "DISABLED_TOOLS": ""
       }
@@ -411,14 +411,14 @@ These variables are not shown by default but control important behaviour:
 
 | Variable | Default | Description |
 |---|---|---|
-| `PAL_MAX_CONCURRENT_API` | `16` | Max parallel API calls to model providers |
-| `PAL_MAX_PROVIDER_THREADS` | `32` | Thread pool size for provider workers |
-| `PAL_API_TIMEOUT_S` | `600` | Per-call SDK timeout in seconds |
-| `PAL_GRAPH_DB` | `~/.pal/execution_graph.db` | SQLite execution graph path. Set to `""` to disable |
-| `PAL_CLINK_METADATA_CAP` | *(internal)* | Max chars of clink metadata injected into prompts |
-| `PAL_CLINK_RAW_OUTPUT_CAP` | *(internal)* | Max chars of raw CLI output returned to MCP client |
-| `PAL_DEBUG_CLI_OUTPUT` | unset | **⚠️ Disables all secret redaction in clink output. Never set in shared environments.** |
-| `PAL_MCP_FORCE_ENV_OVERRIDE` | unset | Force env vars to override `.env` file values |
+| `PANEL_MAX_CONCURRENT_API` | `16` | Max parallel API calls to model providers |
+| `PANEL_MAX_PROVIDER_THREADS` | `32` | Thread pool size for provider workers |
+| `PANEL_API_TIMEOUT_S` | `600` | Per-call SDK timeout in seconds |
+| `PANEL_GRAPH_DB` | `~/.panel/execution_graph.db` | SQLite execution graph path. Set to `""` to disable |
+| `PANEL_CLINK_METADATA_CAP` | *(internal)* | Max chars of clink metadata injected into prompts |
+| `PANEL_CLINK_RAW_OUTPUT_CAP` | *(internal)* | Max chars of raw CLI output returned to MCP client |
+| `PANEL_DEBUG_CLI_OUTPUT` | unset | **⚠️ Disables all secret redaction in clink output. Never set in shared environments.** |
+| `PANEL_MCP_FORCE_ENV_OVERRIDE` | unset | Force env vars to override `.env` file values |
 | `CONVERSATION_TIMEOUT_HOURS` | `3` | Hours before a conversation thread expires |
 | `MAX_CONVERSATION_TURNS` | `50` | Max turns per thread (50 turns = 25 exchanges) |
 
@@ -444,7 +444,7 @@ These variables are not shown by default but control important behaviour:
 
 **Multi-model consensus debate:**
 
-[PAL Consensus Debate](https://github.com/user-attachments/assets/76a23dd5-887a-4382-9cf0-642f5cf6219e)
+[Panel Consensus Debate](https://github.com/user-attachments/assets/76a23dd5-887a-4382-9cf0-642f5cf6219e)
 
 </details>
 
@@ -462,24 +462,24 @@ These variables are not shown by default but control important behaviour:
 <details>
 <summary><b>API Lookup Tool</b> - Current vs outdated API documentation</summary>
 
-**Without PAL - outdated APIs:**
+**Without Panel - outdated APIs:**
 
-[API without PAL](https://github.com/user-attachments/assets/01a79dc9-ad16-4264-9ce1-76a56c3580ee)
+[API without Panel](https://github.com/user-attachments/assets/01a79dc9-ad16-4264-9ce1-76a56c3580ee)
 
-**With PAL - current APIs:**
+**With Panel - current APIs:**
 
-[API with PAL](https://github.com/user-attachments/assets/5c847326-4b66-41f7-8f30-f380453dce22)
+[API with Panel](https://github.com/user-attachments/assets/5c847326-4b66-41f7-8f30-f380453dce22)
 
 </details>
 
 <details>
 <summary><b>Challenge Tool</b> - Critical thinking vs reflexive agreement</summary>
 
-**Without PAL:**
+**Without Panel:**
 
 ![without_pal@2x](https://github.com/user-attachments/assets/64f3c9fb-7ca9-4876-b687-25e847edfd87)
 
-**With PAL:**
+**With Panel:**
 
 ![with_pal@2x](https://github.com/user-attachments/assets/9d72f444-ba53-4ab1-83e5-250062c6ee70)
 
@@ -506,7 +506,7 @@ These variables are not shown by default but control important behaviour:
 - **Smart file handling** - Auto-expand directories, manage token limits
 - **Web search integration** - Access current documentation and best practices
 - **[Large prompt support](docs/advanced-usage.md#working-with-large-prompts)** - Bypass MCP's 25K token limit
-- **SQLite execution graph** - Durable audit trail at `~/.pal/execution_graph.db`
+- **SQLite execution graph** - Durable audit trail at `~/.panel/execution_graph.db`
 
 ## Example Workflows
 
@@ -577,4 +577,4 @@ Built with the power of **Multi-Model AI** collaboration 🤝
 
 ### Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=BeehiveInnovations/pal-mcp-server&type=Date)](https://www.star-history.com/#BeehiveInnovations/pal-mcp-server&Date)
+[![Star History Chart](https://api.star-history.com/svg?repos=DanielGuru/panel-mcp-server&type=Date)](https://www.star-history.com/#DanielGuru/panel-mcp-server&Date)

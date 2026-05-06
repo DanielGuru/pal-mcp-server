@@ -18,12 +18,12 @@ The user-facing flow we want
 Why a dedicated tool, not "just call panel"
 -------------------------------------------
 - Reading the diff + building the right prompt every time is mechanical;
-  delegating it to PAL keeps Claude Code's workflow tight ("multiaudit"
+  delegating it to Panel keeps Claude Code's workflow tight ("multiaudit"
   → one tool call → here's the URL).
 - The audit rubric is opinionated and consistent across runs — bugs,
   security, perf, design, missing tests. Lets the panel actually compare
   apples to apples between runs.
-- Passing the diff through PAL means the audit is captured in the
+- Passing the diff through Panel means the audit is captured in the
   execution graph against a real run_id the user can replay later.
 - Composes cleanly with all the existing infrastructure: panel,
   start_task, OAuth fallback, redaction, the web viewer.
@@ -59,19 +59,19 @@ logger = logging.getLogger(__name__)
 # 'host' is intentionally NOT in the defaults: Claude Code (the typical
 # host) does not advertise the MCP sampling capability today, so 'host'
 # always fails immediately. Including it in the defaults polluted every
-# multiaudit with a "host failed" row. Operators who run PAL under a
+# multiaudit with a "host failed" row. Operators who run Panel under a
 # host that DOES support sampling (or want to invite the host explicitly)
 # can pass panelists=["host", "codex", ...] manually.
 DEFAULT_PANELISTS = ["codex", "gemini", "claude", "grok-4.3"]
 # The judge synthesises the panel's final headline. Default is codex
 # (free OAuth) but anyone can be the judge. Override precedence:
 #   1. ``judge=`` arg on the multiaudit call
-#   2. ``PAL_MULTIAUDIT_JUDGE`` env var (e.g. set in ~/.claude.json env
+#   2. ``PANEL_MULTIAUDIT_JUDGE`` env var (e.g. set in ~/.claude.json env
 #      block to make a global default like "claude" or "grok-4.3")
 #   3. Hardcoded "codex"
-DEFAULT_JUDGE = os.environ.get("PAL_MULTIAUDIT_JUDGE", "").strip() or "codex"
+DEFAULT_JUDGE = os.environ.get("PANEL_MULTIAUDIT_JUDGE", "").strip() or "codex"
 # Same env-var-overridable pattern for panelists. Comma-separated list.
-_panelists_env = (os.environ.get("PAL_MULTIAUDIT_PANELISTS") or "").strip()
+_panelists_env = (os.environ.get("PANEL_MULTIAUDIT_PANELISTS") or "").strip()
 if _panelists_env:
     DEFAULT_PANELISTS = [p.strip() for p in _panelists_env.split(",") if p.strip()]
 DEFAULT_DEBATE_ROUNDS = 1
@@ -139,7 +139,7 @@ class MultiauditTool(BaseTool):
                 },
                 "judge": {
                     "type": "string",
-                    "description": "Agent that synthesises the final headline. Defaults to PAL_MULTIAUDIT_JUDGE env var, else 'codex'. Use any panelist name (e.g. 'claude', 'gemini', 'grok-4.3', 'codex') or any valid model id.",
+                    "description": "Agent that synthesises the final headline. Defaults to PANEL_MULTIAUDIT_JUDGE env var, else 'codex'. Use any panelist name (e.g. 'claude', 'gemini', 'grok-4.3', 'codex') or any valid model id.",
                 },
                 "debate_rounds": {
                     "type": "integer",
@@ -161,7 +161,7 @@ class MultiauditTool(BaseTool):
                     "type": "string",
                     "description": (
                         "Absolute path to the git repo to audit. Defaults to "
-                        "the server's CWD; override when running PAL from a "
+                        "the server's CWD; override when running Panel from a "
                         "different working directory than the project."
                     ),
                 },
@@ -226,8 +226,8 @@ class MultiauditTool(BaseTool):
         # settings tab mutates os.environ live; freezing these at module
         # load made the live-judge / live-panelists toggles a lie.
         # Round-3 panel-flagged.
-        env_judge = (os.environ.get("PAL_MULTIAUDIT_JUDGE") or "").strip()
-        env_panelists = (os.environ.get("PAL_MULTIAUDIT_PANELISTS") or "").strip()
+        env_judge = (os.environ.get("PANEL_MULTIAUDIT_JUDGE") or "").strip()
+        env_panelists = (os.environ.get("PANEL_MULTIAUDIT_PANELISTS") or "").strip()
         live_default_judge = env_judge or "codex"
         live_default_panelists = (
             [p.strip() for p in env_panelists.split(",") if p.strip()]
@@ -298,7 +298,7 @@ class MultiauditTool(BaseTool):
         }
         try:
             # mark_internal_payload signals to size-check gates that this
-            # prompt is PAL-generated (the diff package + audit rubric we
+            # prompt is Panel-generated (the diff package + audit rubric we
             # just built), not raw user input. ContextVar inheritance
             # propagates the marker through start_task → TaskManager._run →
             # panel → panelists, so all nested size checks bypass cleanly.
@@ -358,8 +358,8 @@ class MultiauditTool(BaseTool):
         else:
             payload["web_viewer_url"] = None
             payload["web_viewer_note"] = (
-                "Web viewer not running. Set PAL_WEB_DISABLE='' (default) and restart "
-                "PAL to get a live URL, or use task_status / run_tree to follow progress."
+                "Web viewer not running. Set PANEL_WEB_DISABLE='' (default) and restart "
+                "Panel to get a live URL, or use task_status / run_tree to follow progress."
             )
 
         return [TextContent(type="text", text=json.dumps(payload, indent=2))]

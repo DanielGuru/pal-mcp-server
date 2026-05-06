@@ -32,7 +32,7 @@ from tools.shared.base_models import ToolRequest
 from tools.shared.base_tool import BaseTool
 from utils.progress import emit_progress
 
-logger = logging.getLogger("pal.panel")
+logger = logging.getLogger("panel.panel")
 
 DEFAULT_TIMEOUT_S = 600
 MAX_PANELISTS = 8
@@ -48,7 +48,7 @@ DEBATE_PER_PEER_CHAR_CAP = 4000
 
 
 # Reserved panelist name that means "the MCP host's own LLM" — i.e. Claude
-# Code itself when PAL is running under it. Routed through MCP sampling
+# Code itself when Panel is running under it. Routed through MCP sampling
 # (mcp/createMessage), not clink and not chat. Counts as a peer panelist
 # in the debate; the host model sees the prompt and answers like any other.
 HOST_AGENT_NAME = "host"
@@ -169,7 +169,7 @@ async def _run_host_panelist(
             "duration_s": round(time.monotonic() - started, 2),
             "error": (
                 "host sampling unavailable: no MCP session is reachable in this "
-                "context. This usually means PAL was invoked outside a real MCP "
+                "context. This usually means Panel was invoked outside a real MCP "
                 "client request, or the captured session was torn down before "
                 "the panel ran."
             ),
@@ -194,7 +194,7 @@ async def _run_host_panelist(
 
     # MCP createMessage takes a list of SamplingMessages. We pass the panel
     # prompt as a single user turn. include_context='thisServer' lets the
-    # host see PAL's tools/resources during sampling — usually wanted for
+    # host see Panel's tools/resources during sampling — usually wanted for
     # PR-shaped audits where the host might want to peek at the diff.
     try:
         from mcp.types import SamplingMessage, TextContent as MCPTextContent
@@ -347,7 +347,7 @@ async def _run_panelist(
         # Host-LLM panelist: route through MCP sampling instead of clink/chat.
         # Lets Claude Code (or any MCP host with sampling support) be a true
         # peer in the debate without spawning a subprocess or hitting a paid
-        # API. The host's tokens + cost are the host's problem; PAL just
+        # API. The host's tokens + cost are the host's problem; Panel just
         # routes the prompt through mcp/createMessage.
         if is_host:
             return await _run_host_panelist(
@@ -443,7 +443,7 @@ def _truncate(text: str, *, cap: int) -> str:
 # Cap on the answer body streamed to the viewer per panelist. Set high
 # enough that real panelist responses (~5-8KB) survive intact — the user
 # wants the FULL conversation, not summaries. The graph layer's event-row
-# cap (PAL_GRAPH_EVENT_CAP, default 32KB) is the real ceiling; this is
+# cap (PANEL_GRAPH_EVENT_CAP, default 32KB) is the real ceiling; this is
 # just a defensive upper bound against pathological essays.
 TRANSCRIPT_BODY_CAP = 24000
 
@@ -584,7 +584,7 @@ SUMMARY_RESPONSE_EXCERPT_CHARS = 600
 # We require the panelist to emit this exact sentinel before any tag block;
 # parsing only considers text after the LAST occurrence so even a panelist
 # who quotes the schema mid-prose gets the right answer.
-_TAIL_SENTINEL = "<<<PAL_STRUCTURED_TAIL_v1>>>"
+_TAIL_SENTINEL = "<<<PANEL_STRUCTURED_TAIL_v1>>>"
 
 _PANELIST_SCHEMA_SUFFIX = (
     "\n\n---\n"
@@ -1066,7 +1066,7 @@ class PanelTool(BaseTool):
                     f"panel 'prompt' too large: {len(prompt):,} characters "
                     f"(limit {MCP_PROMPT_SIZE_LIMIT:,}). Save the long content to "
                     "a file and pass via absolute_file_paths, or invoke panel "
-                    "from an internal tool that marks its payload as PAL-generated."
+                    "from an internal tool that marks its payload as Panel-generated."
                 )
 
         raw_panelists = arguments.get("panelists")

@@ -1,5 +1,5 @@
 """
-PAL MCP Server - Main server implementation
+Panel MCP Server - Main server implementation
 
 This module implements the core MCP (Model Context Protocol) server that provides
 AI-powered tools for code analysis, review, and assistance using multiple AI models.
@@ -152,17 +152,17 @@ except Exception as e:
 
 logger = logging.getLogger(__name__)
 
-# Log PAL_MCP_FORCE_ENV_OVERRIDE configuration for transparency
+# Log PANEL_MCP_FORCE_ENV_OVERRIDE configuration for transparency
 if env_override_enabled():
-    logger.info("PAL_MCP_FORCE_ENV_OVERRIDE enabled - .env file values will override system environment variables")
+    logger.info("PANEL_MCP_FORCE_ENV_OVERRIDE enabled - .env file values will override system environment variables")
     logger.debug("Environment override prevents conflicts between different AI tools passing cached API keys")
 else:
-    logger.debug("PAL_MCP_FORCE_ENV_OVERRIDE disabled - system environment variables take precedence")
+    logger.debug("PANEL_MCP_FORCE_ENV_OVERRIDE disabled - system environment variables take precedence")
 
 
 # Create the MCP server instance with a unique name identifier
 # This name is used by MCP clients to identify and connect to this specific server
-server: Server = Server("pal-server")
+server: Server = Server("panel-server")
 
 
 # Constants for tool filtering
@@ -257,7 +257,7 @@ def filter_disabled_tools(all_tools: dict[str, Any]) -> dict[str, Any]:
 
 # Tool registry — maps name → tool *class* (factory).
 #
-# Why classes, not instances: PAL tools mutate per-call state on `self` during
+# Why classes, not instances: Panel tools mutate per-call state on `self` during
 # execute() (`_current_arguments`, `_current_model_name`, `_model_context`).
 # Sharing one instance across concurrent requests — including parallel panel
 # fan-out — corrupts that state. Calling the class produces a fresh instance
@@ -277,7 +277,7 @@ from tools.tasks import (  # noqa: E402
     TaskStatusTool,
 )
 
-# Execution graph query tools — read-only, free, survive PAL restart.
+# Execution graph query tools — read-only, free, survive Panel restart.
 from tools.graph_query import (  # noqa: E402
     GetRunTool,
     ListRunsTool,
@@ -427,7 +427,7 @@ PROMPT_TEMPLATES = {
     "version": {
         "name": "version",
         "description": "Show server version and system information",
-        "template": "Show PAL MCP Server version",
+        "template": "Show Panel MCP Server version",
     },
 }
 
@@ -876,8 +876,8 @@ async def execute_tool(name: str, arguments: dict[str, Any]) -> list[TextContent
     if name not in TOOLS:
         raise KeyError(f"Unknown tool: {name!r}")
 
-    # Lazy-start the web viewer on the first PAL tool call this session.
-    # No tab pops if the user never touches PAL. start_web_viewer is
+    # Lazy-start the web viewer on the first Panel tool call this session.
+    # No tab pops if the user never touches Panel. start_web_viewer is
     # idempotent (returns the existing URL if already running) so this is
     # safe to call on every dispatch. Best-effort — viewer boot failures
     # don't break the tool call.
@@ -1470,7 +1470,7 @@ async def handle_list_prompts() -> list[Prompt]:
     """
     List all available prompts for CLI Code shortcuts.
 
-    This handler returns prompts that enable shortcuts like /pal:thinkdeeper.
+    This handler returns prompts that enable shortcuts like /panel:thinkdeeper.
     We automatically generate prompts from all tools (1:1 mapping) plus add
     a few marketing aliases with richer templates for commonly used tools.
 
@@ -1520,7 +1520,7 @@ async def handle_get_prompt(name: str, arguments: dict[str, Any] = None) -> GetP
     """
     Get prompt details and generate the actual prompt text.
 
-    This handler is called when a user invokes a prompt (e.g., /pal:thinkdeeper or /pal:chat:gpt5).
+    This handler is called when a user invokes a prompt (e.g., /panel:thinkdeeper or /panel:chat:gpt5).
     It generates the appropriate text that CLI will then use to call the
     underlying tool.
 
@@ -1542,14 +1542,14 @@ async def handle_get_prompt(name: str, arguments: dict[str, Any] = None) -> GetP
 
     # Handle special "continue" case
     if name.lower() == "continue":
-        # This is "/pal:continue" - use chat tool as default for continuation
+        # This is "/panel:continue" - use chat tool as default for continuation
         tool_name = "chat"
         template_info = {
             "name": "continue",
             "description": "Continue the previous conversation",
             "template": "Continue the conversation",
         }
-        logger.debug("Using /pal:continue - defaulting to chat tool")
+        logger.debug("Using /panel:continue - defaulting to chat tool")
     else:
         # Find the corresponding tool by checking prompt names
         tool_name = None
@@ -1597,7 +1597,7 @@ async def handle_get_prompt(name: str, arguments: dict[str, Any] = None) -> GetP
 
     # Generate tool call instruction
     if name.lower() == "continue":
-        # "/pal:continue" case
+        # "/panel:continue" case
         tool_instruction = (
             f"Continue the previous conversation using the {tool_name} tool. "
             "CRITICAL: You MUST provide the continuation_id from the previous response to maintain conversation context. "
@@ -1637,9 +1637,9 @@ async def main():
     # Validate and configure providers based on available API keys
     configure_providers()
 
-    # Touch the execution graph early so users see exactly which DB this PAL
-    # instance is using. Per-repo by default (<cwd>/.pal/execution_graph.db);
-    # PAL_GRAPH_DB overrides. Keeping this log line surfaces accidental
+    # Touch the execution graph early so users see exactly which DB this Panel
+    # instance is using. Per-repo by default (<cwd>/.panel/execution_graph.db);
+    # PANEL_GRAPH_DB overrides. Keeping this log line surfaces accidental
     # cross-repo contamination from a bad override and makes "where is my
     # debate history?" a non-question.
     try:
@@ -1652,19 +1652,19 @@ async def main():
             except Exception:  # noqa: BLE001
                 pass
         else:
-            logger.info("Execution graph: disabled (PAL_GRAPH_DB='' or init failed)")
+            logger.info("Execution graph: disabled (PANEL_GRAPH_DB='' or init failed)")
     except Exception as exc:  # noqa: BLE001
         logger.warning("Execution graph startup probe failed (%s); continuing", exc)
 
     # Web viewer is now lazy-started on the first execute_tool call rather
-    # than at MCP server boot. Reasoning: PAL's MCP server boots whenever
-    # Claude Code opens the project, even if the user never calls a PAL
+    # than at MCP server boot. Reasoning: Panel's MCP server boots whenever
+    # Claude Code opens the project, even if the user never calls a Panel
     # tool. Auto-popping a browser tab on every Claude Code launch was
-    # noise. Now: if you never use PAL, no tab. If you trigger any PAL
+    # noise. Now: if you never use Panel, no tab. If you trigger any Panel
     # tool, the tab pops on first use and shows that run live.
 
     # Log startup message
-    logger.info("PAL MCP Server starting up...")
+    logger.info("Panel MCP Server starting up...")
     logger.info(f"Log level: {log_level}")
 
     # Note: MCP client info will be logged during the protocol handshake
@@ -1710,9 +1710,9 @@ async def main():
         "synchronous. Use `cancel_task` to stop a runaway task. "
         "CRITICAL: never call `task_result` with wait_seconds > 30. Long blocks freeze the user out "
         "of the conversation channel — they cannot send messages while a tool call is in flight. "
-        "PAL emits a push-completion notification when a task finishes, so you can fire-and-forget "
+        "Panel emits a push-completion notification when a task finishes, so you can fire-and-forget "
         "and resume on notification, or poll with short waits (wait_seconds=10–30 in a loop). The "
-        "wait_seconds field is hard-capped at the PAL_TASK_WAIT_CAP_S env (default 30)."
+        "wait_seconds field is hard-capped at the PANEL_TASK_WAIT_CAP_S env (default 30)."
     )
     panel_routing = (
         " Panel routing: the `panel` tool fans out one prompt to multiple models in parallel and "
@@ -1732,7 +1732,7 @@ async def main():
     if IS_AUTO_MODE:
         handshake_instructions = (
             "When the user names a specific model (e.g. 'use chat with gpt5'), send that exact model in the tool call. "
-            "When no model is mentioned, first use the `listmodels` tool from PAL to obtain available models to choose the best one from."
+            "When no model is mentioned, first use the `listmodels` tool from Panel to obtain available models to choose the best one from."
             + cost_routing
             + async_routing
             + panel_routing
@@ -1753,7 +1753,7 @@ async def main():
             read_stream,
             write_stream,
             InitializationOptions(
-                server_name="PAL",
+                server_name="Panel",
                 server_version=__version__,
                 instructions=handshake_instructions,
                 capabilities=ServerCapabilities(
@@ -1765,7 +1765,7 @@ async def main():
 
 
 def run():
-    """Console script entry point for pal-mcp-server."""
+    """Console script entry point for panel-mcp-server."""
     try:
         asyncio.run(main())
     except KeyboardInterrupt:

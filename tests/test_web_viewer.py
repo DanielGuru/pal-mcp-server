@@ -52,7 +52,7 @@ def test_index_page_served(graph_with_data):
     url, _ = graph_with_data
     status, body = _read(url)
     assert status == 200
-    assert "<title>PAL Execution Graph" in body
+    assert "<title>Panel Execution Graph" in body
 
 
 def test_health_endpoint(graph_with_data):
@@ -213,7 +213,7 @@ def test_web_url_tool_returns_running_url(graph_with_data):
 
 def test_viewer_lazy_starts_on_first_tool_call(tmp_path, monkeypatch):
     """Pre-fix: viewer started in main() at MCP server boot — popped a tab
-    on every Claude Code launch even if the user never used PAL.
+    on every Claude Code launch even if the user never used Panel.
     Now: viewer starts only when execute_tool fires its first dispatch.
     """
     import utils.execution_graph as eg
@@ -253,11 +253,11 @@ def test_settings_endpoint_returns_snapshot(graph_with_data):
     assert payload["status"] == "ok"
     s = payload["settings"]
     assert "live" in s and "live_keys" in s
-    assert "PAL_OPENAI_STREAM" in s["live"]
-    assert "PAL_GEMINI_STREAM" in s["live"]
-    assert "PAL_MULTIAUDIT_JUDGE" in s["live"]
+    assert "PANEL_OPENAI_STREAM" in s["live"]
+    assert "PANEL_GEMINI_STREAM" in s["live"]
+    assert "PANEL_MULTIAUDIT_JUDGE" in s["live"]
     assert "restart_required" in s
-    assert "PAL_MAX_CONCURRENT_API" in s["restart_required"]
+    assert "PANEL_MAX_CONCURRENT_API" in s["restart_required"]
     assert "provider_keys" in s
     assert "oauth_clis" in s
     assert "viewer" in s and s["viewer"]["url"] == url.rstrip("/") + "/"
@@ -271,15 +271,15 @@ def test_settings_post_mutates_whitelist(graph_with_data):
     from urllib.request import Request, urlopen
 
     url, _ = graph_with_data
-    body = json.dumps({"key": "PAL_MULTIAUDIT_JUDGE", "value": "claude"}).encode()
+    body = json.dumps({"key": "PANEL_MULTIAUDIT_JUDGE", "value": "claude"}).encode()
     req = Request(url + "api/settings", data=body, method="POST",
                   headers={"Content-Type": "application/json"})
     with urlopen(req, timeout=2.0) as r:
         out = json.loads(r.read())
     assert out["status"] == "ok"
-    assert os.environ.get("PAL_MULTIAUDIT_JUDGE") == "claude"
+    assert os.environ.get("PANEL_MULTIAUDIT_JUDGE") == "claude"
     # Cleanup so other tests don't see the mutation.
-    os.environ.pop("PAL_MULTIAUDIT_JUDGE", None)
+    os.environ.pop("PANEL_MULTIAUDIT_JUDGE", None)
 
 
 def test_settings_post_rejects_off_whitelist(graph_with_data):
@@ -313,7 +313,7 @@ def test_settings_post_rejects_non_json_content_type(graph_with_data):
     from urllib.request import Request, urlopen
 
     url, _ = graph_with_data
-    body = _json.dumps({"key": "PAL_MULTIAUDIT_JUDGE", "value": "claude"}).encode()
+    body = _json.dumps({"key": "PANEL_MULTIAUDIT_JUDGE", "value": "claude"}).encode()
     req = Request(url + "api/settings", data=body, method="POST",
                   headers={"Content-Type": "text/plain"})
     try:

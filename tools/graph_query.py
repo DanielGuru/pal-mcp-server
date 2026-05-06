@@ -1,7 +1,7 @@
 """MCP tools to query the SQLite-backed execution graph.
 
 Three tools: list_runs, get_run, run_tree. They read from the same
-ExecutionGraph singleton populated by server.execute_tool. Survives PAL
+ExecutionGraph singleton populated by server.execute_tool. Survives Panel
 restart — the original use case the audit panel called out: "restart-safe
 panels, replay, auditing, cost attribution."
 
@@ -38,7 +38,7 @@ def _check_graph() -> tuple[Any, Optional[list[TextContent]]]:
 
     graph = get_graph()
     if graph is None:
-        return None, _err("Execution graph is disabled (PAL_GRAPH_DB='') or unavailable.")
+        return None, _err("Execution graph is disabled (PANEL_GRAPH_DB='') or unavailable.")
     return graph, None
 
 
@@ -200,7 +200,7 @@ class RunTreeTool(BaseTool):
             "Fetch a run and recursively all its descendants (children, edges, "
             "events). The full replay surface for a panel: lets you see every "
             "panelist sub-call, any OAuth fallback that fired, the judge run, "
-            "and per-leaf cost_tier — all from one query, even after PAL restart."
+            "and per-leaf cost_tier — all from one query, even after Panel restart."
         )
 
     def get_input_schema(self) -> dict[str, Any]:

@@ -62,7 +62,7 @@ passing, it went ahead with an initial review with O3; came back clean - all goo
 Then it shared the changes and relevant code with Gemini 3.0 Pro - the following is the outcome:
 
 ```
-⏺ pal:precommit (MCP)(step: "FINAL VALIDATION COMPLETE. All changes have been thoroughly analyzed and are ready for
+⏺ panel:precommit (MCP)(step: "FINAL VALIDATION COMPLETE. All changes have been thoroughly analyzed and are ready for
                      commit. The modifications successfully fix 4 GitHub CI test failures with high-quality, defensive
                      implementations that maintain architectural integrity and coding standards. No issues or regressions
                       detected.", step_number: 4, total_steps: 4, next_step_required: false, findings: "COMMIT
@@ -101,12 +101,12 @@ Then it shared the changes and relevant code with Gemini 3.0 Pro - the following
   - Fix Required: Apply the same defensive pattern to the missed location
 ```
 
-A subtle but critical issue spotted by Gemini that both Claude + O3 missed. This is the power of running these workflows with PAL.
+A subtle but critical issue spotted by Gemini that both Claude + O3 missed. This is the power of running these workflows with Panel.
 
 ## Example Prompts
 
 ```
-Use pal and perform a thorough precommit ensuring there aren't any new regressions or bugs introduced
+Use panel and perform a thorough precommit ensuring there aren't any new regressions or bugs introduced
 ```
 
 ## Key Features
@@ -155,7 +155,7 @@ Use pal and perform a thorough precommit ensuring there aren't any new regressio
 
 **Basic Pre-commit Validation:**
 ```
-"Use pal precommit to validate my changes before committing"
+"Use panel precommit to validate my changes before committing"
 ```
 
 **Security-Focused Validation:**

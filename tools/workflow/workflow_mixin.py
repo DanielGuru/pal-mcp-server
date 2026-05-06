@@ -1,5 +1,5 @@
 """
-Workflow Mixin for PAL MCP Tools
+Workflow Mixin for Panel MCP Tools
 
 This module provides a sophisticated workflow-based pattern that enables tools to
 perform multi-step work with structured findings and expert analysis.
@@ -623,7 +623,7 @@ class BaseWorkflowMixin(ABC):
             # Validate step field size (basic validation for workflow instructions)
             # If step is too large, user should use shorter instructions and put details in files.
             # Skip on internal dispatches (panel debate-round prompts, multiaudit
-            # diff packages, etc.) — those are PAL-generated and never crossed
+            # diff packages, etc.) — those are Panel-generated and never crossed
             # the MCP transport as raw user input. Same rationale as
             # check_prompt_size / _validate_token_limit in base_tool.py.
             from tools.shared.base_tool import is_internal_dispatch

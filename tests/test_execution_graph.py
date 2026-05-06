@@ -196,17 +196,17 @@ def test_default_db_path_is_per_repo_under_cwd(tmp_path, monkeypatch):
     import utils.execution_graph as eg
 
     monkeypatch.chdir(tmp_path)
-    monkeypatch.delenv("PAL_GRAPH_DB", raising=False)
+    monkeypatch.delenv("PANEL_GRAPH_DB", raising=False)
     p = eg._default_db_path()
-    assert p == tmp_path / ".pal" / "execution_graph.db"
+    assert p == tmp_path / ".panel" / "execution_graph.db"
 
 
 def test_default_db_path_respects_explicit_override(tmp_path, monkeypatch):
-    """PAL_GRAPH_DB still wins for users who want a global / shared graph."""
+    """PANEL_GRAPH_DB still wins for users who want a global / shared graph."""
     import utils.execution_graph as eg
 
     custom = tmp_path / "shared" / "graph.db"
-    monkeypatch.setenv("PAL_GRAPH_DB", str(custom))
+    monkeypatch.setenv("PANEL_GRAPH_DB", str(custom))
     assert eg._default_db_path() == custom
 
 
@@ -219,7 +219,7 @@ def test_two_repos_get_isolated_graphs(tmp_path, monkeypatch):
     repo_b = tmp_path / "repoB"
     repo_a.mkdir()
     repo_b.mkdir()
-    monkeypatch.delenv("PAL_GRAPH_DB", raising=False)
+    monkeypatch.delenv("PANEL_GRAPH_DB", raising=False)
 
     monkeypatch.chdir(repo_a)
     g_a = eg.ExecutionGraph(eg._default_db_path())
@@ -239,17 +239,17 @@ def test_two_repos_get_isolated_graphs(tmp_path, monkeypatch):
     g_b.close()
 
     # And the two DB files are physically separate
-    assert (repo_a / ".pal" / "execution_graph.db").exists()
-    assert (repo_b / ".pal" / "execution_graph.db").exists()
+    assert (repo_a / ".panel" / "execution_graph.db").exists()
+    assert (repo_b / ".panel" / "execution_graph.db").exists()
 
 
 def test_get_graph_returns_none_when_disabled(monkeypatch):
-    """PAL_GRAPH_DB='' is the explicit opt-out."""
+    """PANEL_GRAPH_DB='' is the explicit opt-out."""
     import utils.execution_graph as eg
 
     monkeypatch.setattr(eg, "_GRAPH", None)
     monkeypatch.setattr(eg, "_GRAPH_DISABLED", False)
-    monkeypatch.setenv("PAL_GRAPH_DB", "")
+    monkeypatch.setenv("PANEL_GRAPH_DB", "")
     assert eg.get_graph() is None
     monkeypatch.setattr(eg, "_GRAPH_DISABLED", False)
 
@@ -519,7 +519,7 @@ def test_run_tree_tool_with_cost_rollup(tmp_path, monkeypatch):
 
 
 def test_query_tools_when_graph_disabled(monkeypatch):
-    """When PAL_GRAPH_DB='' the query tools must report disabled gracefully."""
+    """When PANEL_GRAPH_DB='' the query tools must report disabled gracefully."""
     import json
 
     import utils.execution_graph as eg

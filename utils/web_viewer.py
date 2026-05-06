@@ -2,7 +2,7 @@
 
 Why this exists
 ---------------
-PAL runs over MCP stdio, so a long panel call is opaque to the operator —
+Panel runs over MCP stdio, so a long panel call is opaque to the operator —
 all you see is "task started" and a wall of JSON when it finishes. The
 execution graph captures everything as it happens; this module just exposes
 it over HTTP so you can watch a debate unfold in a browser.
@@ -18,7 +18,7 @@ Design choices
   multi-minute panel runs.
 - **Single self-contained HTML file.** Embedded as a string below — no
   asset directory, no template engine, one round-trip to load.
-- **Optional, never load-bearing.** PAL_WEB_DISABLE=1 to skip startup;
+- **Optional, never load-bearing.** PANEL_WEB_DISABLE=1 to skip startup;
   any boot failure logs and is swallowed (graph viewer is observability,
   not a hard dep — same posture as the graph itself).
 """
@@ -37,28 +37,28 @@ from urllib.parse import urlparse
 logger = logging.getLogger(__name__)
 
 
-_DEFAULT_PORT = int(os.environ.get("PAL_WEB_PORT", "8765"))
-_BIND_HOST = os.environ.get("PAL_WEB_HOST", "127.0.0.1")  # local-only by default
-_DISABLED = bool(os.environ.get("PAL_WEB_DISABLE"))
+_DEFAULT_PORT = int(os.environ.get("PANEL_WEB_PORT", "8765"))
+_BIND_HOST = os.environ.get("PANEL_WEB_HOST", "127.0.0.1")  # local-only by default
+_DISABLED = bool(os.environ.get("PANEL_WEB_DISABLE"))
 
 # Opt-in gate for non-localhost binds. The viewer has no auth — anyone
 # on the network with access to the bound interface can read every
 # prompt, response, diff, and file snippet from the execution graph.
 # That's safe by default (127.0.0.1 → only the local user) but the
 # operator MUST consciously opt in before exposing it. Anything that
-# isn't localhost requires PAL_WEB_ALLOW_REMOTE=1, otherwise we refuse
+# isn't localhost requires PANEL_WEB_ALLOW_REMOTE=1, otherwise we refuse
 # to start. This blocks accidental exposure (e.g. someone setting
-# PAL_WEB_HOST=0.0.0.0 because they're tunnelling and forgetting that
+# PANEL_WEB_HOST=0.0.0.0 because they're tunnelling and forgetting that
 # anyone on the LAN can hit it). Full token auth is on the open queue
 # for when someone actually needs remote.
 _LOCALHOST_BINDS = {"127.0.0.1", "::1", "localhost"}
-_ALLOW_REMOTE = (os.environ.get("PAL_WEB_ALLOW_REMOTE", "") or "").strip().lower() in (
+_ALLOW_REMOTE = (os.environ.get("PANEL_WEB_ALLOW_REMOTE", "") or "").strip().lower() in (
     "1", "true", "yes", "on",
 )
-# Default ON so the operator gets zero-effort visibility on every PAL launch.
-# Set PAL_WEB_AUTO_OPEN=0 (or any falsy value) if you don't want the browser
+# Default ON so the operator gets zero-effort visibility on every Panel launch.
+# Set PANEL_WEB_AUTO_OPEN=0 (or any falsy value) if you don't want the browser
 # tab popped each time Claude Code restarts the MCP server.
-_AUTO_OPEN = os.environ.get("PAL_WEB_AUTO_OPEN", "1").strip().lower() not in (
+_AUTO_OPEN = os.environ.get("PANEL_WEB_AUTO_OPEN", "1").strip().lower() not in (
     "0", "false", "no", "off", "",
 )
 
@@ -94,7 +94,7 @@ _INDEX_HTML = r"""<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8" />
-<title>PAL Execution Graph</title>
+<title>Panel Execution Graph</title>
 <style>
   :root {
     --bg: #0e0f12; --fg: #e7e9ee; --muted: #8b8fa1; --accent: #7aa2f7;
@@ -207,10 +207,10 @@ _INDEX_HTML = r"""<!doctype html>
 </head>
 <body>
 <header>
-  <h1>PAL · panel transcript</h1>
+  <h1>Panel · panel transcript</h1>
   <span class="dot" id="dot">●</span>
   <span class="conn" id="conn">connecting…</span>
-  <span class="port" id="port" title="Viewer port. Each PAL process owns its own; orphan instances may listen on prior ports.">port —</span>
+  <span class="port" id="port" title="Viewer port. Each Panel process owns its own; orphan instances may listen on prior ports.">port —</span>
   <div class="controls">
     <select id="run-picker"><option>loading runs…</option></select>
     <button id="tab-transcript" class="active" title="Live panel transcript">transcript</button>
@@ -220,7 +220,7 @@ _INDEX_HTML = r"""<!doctype html>
 </header>
 <main id="content">
   <div class="empty">waiting for a panel run…
-    <div class="hint">fire <code>multiaudit</code> or <code>panel</code> from PAL and the conversation will appear here</div>
+    <div class="hint">fire <code>multiaudit</code> or <code>panel</code> from Panel and the conversation will appear here</div>
   </div>
 </main>
 <main id="settings-pane" style="display:none;">
@@ -228,7 +228,7 @@ _INDEX_HTML = r"""<!doctype html>
 </main>
 <script>
 // =============================================================================
-// PAL panel transcript viewer
+// Panel panel transcript viewer
 // Walks the run tree, flattens transcript events from every panelist, sorts
 // by timestamp, renders as colour-coded blockquotes. Status pings are hidden
 // behind the "raw" toggle. Auto-scrolls the latest message into view.
@@ -238,7 +238,7 @@ let SELECTED = null;
 // MANUAL_PICK locks SELECTED once the user explicitly chooses a run from the
 // picker (or a deep-link via ?run=<id> sets one). While false, every refresh
 // of the picker re-evaluates and switches to the newest running root — so a
-// freshly-fired multiaudit overtakes a stale run from the previous PAL session
+// freshly-fired multiaudit overtakes a stale run from the previous Panel session
 // without the user having to click. Without this, SELECTED was set the FIRST
 // time the picker rendered (often before the new run was registered) and then
 // stuck on the older row forever.
@@ -265,11 +265,11 @@ async function fetchRuns() {
   return body.runs || [];
 }
 
-// Show the port we're actually serving on. Each PAL process picks its own
-// (PAL_WEB_PORT walks +20 if taken), so users with multiple PAL sessions
+// Show the port we're actually serving on. Each Panel process picks its own
+// (PANEL_WEB_PORT walks +20 if taken), so users with multiple Panel sessions
 // may have several viewers running on different ports. When THIS viewer's
 // graph shows no recent activity, flag the port red so the user notices
-// they're probably on a stale tab from an older PAL session.
+// they're probably on a stale tab from an older Panel session.
 function updatePortIndicator(runs) {
   const portEl = $('#port');
   if (!portEl) return;
@@ -281,11 +281,11 @@ function updatePortIndicator(runs) {
   if (!recent) {
     portEl.classList.add('orphan');
     portEl.textContent = `port ${port} · stale?`;
-    portEl.title = `No runs in the last 10 minutes on this viewer. Check the PAL boot log for the active port — orphan viewers from previous sessions may still be listening on this one.`;
+    portEl.title = `No runs in the last 10 minutes on this viewer. Check the Panel boot log for the active port — orphan viewers from previous sessions may still be listening on this one.`;
   } else {
     portEl.classList.remove('orphan');
     portEl.textContent = `port ${port}`;
-    portEl.title = `Viewer port ${port} (PAL_WEB_PORT walks +20 if taken).`;
+    portEl.title = `Viewer port ${port} (PANEL_WEB_PORT walks +20 if taken).`;
   }
 }
 
@@ -780,7 +780,7 @@ async function renderSettings() {
         <thead><tr><th>env var</th><th>value</th><th></th></tr></thead>
         <tbody>${restartRows}</tbody>
       </table>
-      <div class="settings-hint">Change these in your <code>~/.claude.json</code> mcpServers.pal.env block, then restart Claude Code.</div>
+      <div class="settings-hint">Change these in your <code>~/.claude.json</code> mcpServers.panel.env block, then restart Claude Code.</div>
     `;
 
     pane.querySelectorAll('.settings-save').forEach(btn => {
@@ -872,7 +872,7 @@ class _Handler(BaseHTTPRequestHandler):
 
     Everything is read-only and unauthenticated. Bound to 127.0.0.1 by
     default so it's not exposed beyond the operator's machine. If anyone
-    flips PAL_WEB_HOST to 0.0.0.0 they're opting into that themselves.
+    flips PANEL_WEB_HOST to 0.0.0.0 they're opting into that themselves.
     """
 
     # Quiet the default per-request stderr log line; we have our own logger.
@@ -908,7 +908,7 @@ class _Handler(BaseHTTPRequestHandler):
     def _is_localhost_request(self) -> bool:
         """Settings endpoints expose env vars (provider key presence,
         OAuth-CLI status) and accept os.environ mutation. Even when
-        PAL_WEB_ALLOW_REMOTE=1 lets the rest of the viewer bind to a
+        PANEL_WEB_ALLOW_REMOTE=1 lets the rest of the viewer bind to a
         non-localhost interface, /api/settings stays localhost-only as
         defense-in-depth — a remote operator should not be able to flip
         the multiaudit judge or probe credential file presence. Round-3
@@ -973,34 +973,34 @@ class _Handler(BaseHTTPRequestHandler):
     # Whitelist of env vars the operator can flip live from the settings
     # tab. These are looked up per-call inside the relevant providers
     # (see providers/openai_compatible.py, providers/gemini.py, and
-    # tools/multiaudit.py PAL_MULTIAUDIT_JUDGE), so mutating them takes
-    # effect on the next provider/multiaudit dispatch — no PAL restart
+    # tools/multiaudit.py PANEL_MULTIAUDIT_JUDGE), so mutating them takes
+    # effect on the next provider/multiaudit dispatch — no Panel restart
     # needed. Anything NOT on this list requires a restart and is shown
     # read-only.
     _SETTINGS_LIVE_WHITELIST = (
-        "PAL_OPENAI_STREAM",
-        "PAL_GEMINI_STREAM",
-        "PAL_MULTIAUDIT_JUDGE",
-        "PAL_MULTIAUDIT_PANELISTS",
+        "PANEL_OPENAI_STREAM",
+        "PANEL_GEMINI_STREAM",
+        "PANEL_MULTIAUDIT_JUDGE",
+        "PANEL_MULTIAUDIT_PANELISTS",
     )
 
-    # Read-only settings exposed to the UI. These DO need a PAL restart
+    # Read-only settings exposed to the UI. These DO need a Panel restart
     # to take effect, so the settings tab shows them with a "needs
     # restart" hint rather than letting the operator edit them in-place.
     _SETTINGS_RESTART_REQUIRED = (
         "DEFAULT_MODEL",
         "DISABLED_TOOLS",
-        "PAL_TASK_WAIT_CAP_S",
-        "PAL_CLAUDE_OAUTH_FALLBACK_MODEL",
-        "PAL_MAX_CONCURRENT_API",
-        "PAL_MAX_PROVIDER_THREADS",
-        "PAL_API_TIMEOUT_S",
-        "PAL_GRAPH_DB",
-        "PAL_WEB_PORT",
-        "PAL_WEB_HOST",
-        "PAL_WEB_AUTO_OPEN",
-        "PAL_WEB_DISABLE",
-        "PAL_WEB_ALLOW_REMOTE",
+        "PANEL_TASK_WAIT_CAP_S",
+        "PANEL_CLAUDE_OAUTH_FALLBACK_MODEL",
+        "PANEL_MAX_CONCURRENT_API",
+        "PANEL_MAX_PROVIDER_THREADS",
+        "PANEL_API_TIMEOUT_S",
+        "PANEL_GRAPH_DB",
+        "PANEL_WEB_PORT",
+        "PANEL_WEB_HOST",
+        "PANEL_WEB_AUTO_OPEN",
+        "PANEL_WEB_DISABLE",
+        "PANEL_WEB_ALLOW_REMOTE",
     )
 
     def _serve_settings_get(self) -> None:
@@ -1047,7 +1047,7 @@ class _Handler(BaseHTTPRequestHandler):
         self._send_json({"status": "ok", "settings": snapshot})
 
     def _serve_settings_post(self) -> None:
-        """Mutate whitelisted env vars. Body: {"key": "PAL_X", "value": "..."}.
+        """Mutate whitelisted env vars. Body: {"key": "PANEL_X", "value": "..."}.
         Returns the new snapshot. Anything off-whitelist is rejected.
 
         CSRF defense: require an explicit ``application/json`` content
@@ -1156,7 +1156,7 @@ class _Handler(BaseHTTPRequestHandler):
         # The settings tab is the operator's "control plane" — most env
         # vars are read at module load and need a restart to take effect,
         # but the streaming/judge knobs are looked up per-call so they
-        # mutate live. Localhost-only even with PAL_WEB_ALLOW_REMOTE.
+        # mutate live. Localhost-only even with PANEL_WEB_ALLOW_REMOTE.
         if path == "/api/settings":
             if not self._is_localhost_request():
                 self._send_json(
@@ -1265,7 +1265,7 @@ def start_web_viewer() -> Optional[str]:
     global _SERVER, _SERVER_THREAD, _SERVER_PORT
 
     if _DISABLED:
-        logger.info("web viewer disabled (PAL_WEB_DISABLE)")
+        logger.info("web viewer disabled (PANEL_WEB_DISABLE)")
         return None
 
     # Opt-in gate for non-localhost binds. See _ALLOW_REMOTE comment up
@@ -1275,7 +1275,7 @@ def start_web_viewer() -> Optional[str]:
         logger.warning(
             "Refusing to start web viewer on %s — non-localhost binds expose "
             "the full execution graph (prompts, responses, diffs) without "
-            "auth. Set PAL_WEB_ALLOW_REMOTE=1 to override.",
+            "auth. Set PANEL_WEB_ALLOW_REMOTE=1 to override.",
             _BIND_HOST,
         )
         return None
@@ -1297,7 +1297,7 @@ def start_web_viewer() -> Optional[str]:
             return None
         thread = threading.Thread(
             target=server.serve_forever,
-            name="pal-web-viewer",
+            name="panel-web-viewer",
             daemon=True,
         )
         thread.start()
@@ -1316,24 +1316,24 @@ def _try_open_browser(url: str) -> None:
     headless / SSH / container environments return False without raising.
 
     Runs in a separate thread because some platforms block briefly while
-    spawning the browser process; we don't want PAL startup to wait."""
+    spawning the browser process; we don't want Panel startup to wait."""
     import webbrowser
 
     def _go():
         try:
             # new=0: reuse an existing browser tab/window when possible.
-            # new=2 (force-new-tab) caused proliferation across PAL
+            # new=2 (force-new-tab) caused proliferation across Panel
             # restarts — every Claude Code restart spawned another tab
             # the user had to hunt down. With new=0 the browser brings
             # an existing localhost:<port> tab to the foreground and
             # refreshes it, so the operator keeps a single canonical
-            # viewer tab for as long as PAL grabs the same port.
+            # viewer tab for as long as Panel grabs the same port.
             opened = webbrowser.open(url, new=0, autoraise=False)
             logger.info("auto-opened browser tab: opened=%s url=%s", opened, url)
         except Exception as exc:  # noqa: BLE001
             logger.debug("auto-open failed (%s); user can navigate manually", exc)
 
-    threading.Thread(target=_go, name="pal-web-autoopen", daemon=True).start()
+    threading.Thread(target=_go, name="panel-web-autoopen", daemon=True).start()
 
 
 def stop_web_viewer() -> None:

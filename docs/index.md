@@ -1,6 +1,6 @@
-# PAL MCP Server Documentation
+# Panel MCP Server Documentation
 
-_Formerly known as PAL MCP. See the short [name change note](name-change.md) for context._
+_Formerly known as Panel MCP. See the short [name change note](name-change.md) for context._
 
 | Document | Description |
 |----------|-------------|

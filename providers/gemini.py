@@ -207,12 +207,12 @@ class GeminiModelProvider(RegistryBackedProviderMixin, ModelProvider):
         attempt_counter = {"value": 0}
 
         # Streaming v2: ON by default so per-chunk text lands in the live
-        # viewer. Opt out with PAL_GEMINI_STREAM=0. The google-genai SDK
+        # viewer. Opt out with PANEL_GEMINI_STREAM=0. The google-genai SDK
         # exposes generate_content_stream() returning an iterable of
         # partial responses; the LAST partial carries the final usage,
         # candidates, prompt_feedback. Earlier partials carry incremental
         # .text deltas (already concatenated for us by the SDK).
-        _stream_enabled = (get_env("PAL_GEMINI_STREAM", "1") or "1").strip().lower() not in (
+        _stream_enabled = (get_env("PANEL_GEMINI_STREAM", "1") or "1").strip().lower() not in (
             "0", "false", "no", "off",
         )
 

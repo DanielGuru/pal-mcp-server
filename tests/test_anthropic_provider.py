@@ -133,7 +133,7 @@ class AnthropicRequestShapeTest(unittest.TestCase):
         self.assertNotIn("budget_tokens", str(kwargs.get("thinking", {})))
 
     def test_thinking_effort_mapping(self):
-        """PAL thinking_mode → Anthropic effort: minimal/low → low,
+        """Panel thinking_mode → Anthropic effort: minimal/low → low,
         medium → medium, high/max → high."""
         for mode, expected_effort in [
             ("minimal", "low"),
@@ -256,12 +256,12 @@ class ClinkClaudeFallbackTest(unittest.TestCase):
 
     def test_fallback_default_is_not_flagship(self):
         """Default must be a cheaper SKU. Operators can override with
-        PAL_CLAUDE_OAUTH_FALLBACK_MODEL=opus to opt back into Opus."""
+        PANEL_CLAUDE_OAUTH_FALLBACK_MODEL=opus to opt back into Opus."""
         import os
         from importlib import reload
 
         # Ensure we test with no override env var set.
-        prior = os.environ.pop("PAL_CLAUDE_OAUTH_FALLBACK_MODEL", None)
+        prior = os.environ.pop("PANEL_CLAUDE_OAUTH_FALLBACK_MODEL", None)
         try:
             from clink import constants as clink_constants
             reload(clink_constants)
@@ -273,7 +273,7 @@ class ClinkClaudeFallbackTest(unittest.TestCase):
             )
         finally:
             if prior is not None:
-                os.environ["PAL_CLAUDE_OAUTH_FALLBACK_MODEL"] = prior
+                os.environ["PANEL_CLAUDE_OAUTH_FALLBACK_MODEL"] = prior
 
 
 class AnthropicRestrictionWiringTest(unittest.TestCase):

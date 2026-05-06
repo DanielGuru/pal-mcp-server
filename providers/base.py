@@ -32,11 +32,11 @@ logger = logging.getLogger(__name__)
 #
 # Three layers of defence, from outermost to innermost:
 #   1. _API_SEMAPHORE caps concurrent paid API calls. Defaults to 16; tune
-#      via PAL_MAX_CONCURRENT_API. Acquired *before* the to_thread dispatch.
+#      via PANEL_MAX_CONCURRENT_API. Acquired *before* the to_thread dispatch.
 #   2. _PROVIDER_EXECUTOR caps the worker-thread pool. Even if the
 #      semaphore were lifted, threads can't grow past this. Defaults to 32;
-#      tune via PAL_MAX_PROVIDER_THREADS.
-#   3. PAL_API_TIMEOUT_S (default 600) is forwarded to SDK clients so the
+#      tune via PANEL_MAX_PROVIDER_THREADS.
+#   3. PANEL_API_TIMEOUT_S (default 600) is forwarded to SDK clients so the
 #      thread always self-terminates within bound — see openai_compatible.py.
 #
 # Lazy-init on first use so unit tests that don't import asyncio still work.
@@ -47,7 +47,7 @@ _API_SEMAPHORE: Optional[asyncio.Semaphore] = None
 # Locks guard the lazy-init double-check below. Without them, two concurrent
 # first-burst callers race the `if X is None` check and both construct fresh
 # executors / semaphores. Duplicate executors leak threads past
-# PAL_MAX_PROVIDER_THREADS; duplicate semaphores temporarily defeat the
+# PANEL_MAX_PROVIDER_THREADS; duplicate semaphores temporarily defeat the
 # global API cap. Audit panel finding (Grok flagged, judge endorsed as the
 # top first-burst production bug from commit 4979cf7).
 _PROVIDER_EXECUTOR_LOCK = threading.Lock()
@@ -61,10 +61,10 @@ def _get_provider_executor() -> ThreadPoolExecutor:
     if _PROVIDER_EXECUTOR is None:
         with _PROVIDER_EXECUTOR_LOCK:
             if _PROVIDER_EXECUTOR is None:
-                max_workers = int(os.environ.get("PAL_MAX_PROVIDER_THREADS", "32"))
+                max_workers = int(os.environ.get("PANEL_MAX_PROVIDER_THREADS", "32"))
                 _PROVIDER_EXECUTOR = ThreadPoolExecutor(
                     max_workers=max_workers,
-                    thread_name_prefix="pal-provider",
+                    thread_name_prefix="panel-provider",
                 )
                 logger.info("Provider thread pool initialised: max_workers=%s", max_workers)
     return _PROVIDER_EXECUTOR
@@ -84,7 +84,7 @@ def _get_api_semaphore() -> asyncio.Semaphore:
     if _API_SEMAPHORE is None:
         with _API_SEMAPHORE_LOCK:
             if _API_SEMAPHORE is None:
-                cap = int(os.environ.get("PAL_MAX_CONCURRENT_API", "16"))
+                cap = int(os.environ.get("PANEL_MAX_CONCURRENT_API", "16"))
                 _API_SEMAPHORE = asyncio.Semaphore(cap)
                 logger.info("Provider API semaphore initialised: cap=%s", cap)
     return _API_SEMAPHORE
@@ -92,7 +92,7 @@ def _get_api_semaphore() -> asyncio.Semaphore:
 
 def get_default_api_timeout() -> float:
     """Per-call SDK timeout, in seconds. Bounds the worker-thread lifetime."""
-    return float(os.environ.get("PAL_API_TIMEOUT_S", "600"))
+    return float(os.environ.get("PANEL_API_TIMEOUT_S", "600"))
 
 
 def _shutdown_provider_executor() -> None:
@@ -303,7 +303,7 @@ class ModelProvider(ABC):
         setup work until they return.
 
         We dispatch the existing sync stack to a worker thread via
-        ``loop.run_in_executor`` (using PAL's bounded executor — see
+        ``loop.run_in_executor`` (using Panel's bounded executor — see
         ``_PROVIDER_EXECUTOR``). Each call captures the caller's
         ``contextvars`` and runs the worker via ``ctx.run(...)`` so the
         active ``run_id`` ContextVar reaches provider code; without that,
@@ -347,7 +347,7 @@ class ModelProvider(ABC):
         # Cancel-aware semaphore release. The naive `async with sem:` form
         # releases the slot when the asyncio task is cancelled, but Python
         # cannot cancel a running thread — the worker is still in the
-        # SDK's blocking .create()/.stream() call until PAL_API_TIMEOUT_S
+        # SDK's blocking .create()/.stream() call until PANEL_API_TIMEOUT_S
         # forces the SDK to bail. Result: 16 simultaneous cancellations
         # would free 16 semaphore slots while leaving 16 threads occupied
         # (default pool 32). New agenerate_content calls would acquire a

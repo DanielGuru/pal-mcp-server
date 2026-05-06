@@ -14,7 +14,7 @@ def test_issue_245_custom_openai_temperature_ignored(monkeypatch):
 
     # The mock returns a single non-iterable response; opt out of streaming
     # v2 so the legacy .create() shape is used.
-    monkeypatch.setenv("PAL_OPENAI_STREAM", "0")
+    monkeypatch.setenv("PANEL_OPENAI_STREAM", "0")
 
     with patch("utils.model_restrictions.get_restriction_service") as mock_restriction:
         with patch("providers.openai_compatible.OpenAI") as mock_openai:

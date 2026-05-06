@@ -26,7 +26,7 @@ if TYPE_CHECKING:
     from tools.models import ToolModelCategory
 
 # Soft import. Configure_providers() only registers AnthropicModelProvider
-# when ANTHROPIC_API_KEY is set, but the *module* still loads on every PAL
+# when ANTHROPIC_API_KEY is set, but the *module* still loads on every Panel
 # boot (server.py imports it inside configure_providers, which still
 # executes module-level code). A missing `anthropic` SDK on a machine that
 # only uses other providers would otherwise crash the entire MCP server.
@@ -67,7 +67,7 @@ class AnthropicModelProvider(RegistryBackedProviderMixin, ModelProvider):
     # but the Anthropic API for Opus 4.7 / Sonnet 4.6 no longer accepts the
     # old `thinking.type=enabled, budget_tokens=N` schema. The provider now
     # sends `thinking.type=adaptive` plus `output_config.effort`, mapped from
-    # PAL's thinking_mode via THINKING_EFFORT below.
+    # Panel's thinking_mode via THINKING_EFFORT below.
     THINKING_BUDGETS = {
         "minimal": 0.005,
         "low": 0.08,
@@ -76,9 +76,9 @@ class AnthropicModelProvider(RegistryBackedProviderMixin, ModelProvider):
         "max": 1.0,
     }
 
-    # PAL thinking_mode → Anthropic output_config.effort. The new schema
+    # Panel thinking_mode → Anthropic output_config.effort. The new schema
     # accepts low/medium/high; "minimal" maps to low (effort=none disables
-    # thinking entirely, but PAL's "minimal" is conceptually still on),
+    # thinking entirely, but Panel's "minimal" is conceptually still on),
     # "max" maps to high (no "max" effort in the API).
     THINKING_EFFORT = {
         "minimal": "low",
@@ -233,7 +233,7 @@ class AnthropicModelProvider(RegistryBackedProviderMixin, ModelProvider):
         # control thinking behavior'.
         #
         # We send `thinking.type=adaptive` and let Anthropic decide the
-        # actual budget; PAL's thinking_mode (minimal/low/medium/high/max)
+        # actual budget; Panel's thinking_mode (minimal/low/medium/high/max)
         # maps to output_config.effort via THINKING_EFFORT.
         #
         # Temperature is still mutually exclusive with thinking on
