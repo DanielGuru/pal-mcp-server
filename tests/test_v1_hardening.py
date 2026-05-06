@@ -33,7 +33,8 @@ def test_tools_registry_holds_classes_not_instances():
     """server.TOOLS must map name -> class so each call constructs fresh."""
     import server
 
-    assert len(server.TOOLS) == 23, f"expected 23 tools, got {len(server.TOOLS)}"
+    # 23 base tools + 3 graph query tools (list_runs / get_run / run_tree)
+    assert len(server.TOOLS) == 26, f"expected 26 tools, got {len(server.TOOLS)}"
     for name, cls in server.TOOLS.items():
         assert inspect.isclass(cls), f"TOOLS[{name!r}] should be a class, got {type(cls).__name__}"
 

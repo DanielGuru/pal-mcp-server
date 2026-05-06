@@ -277,6 +277,13 @@ from tools.tasks import (  # noqa: E402
     TaskStatusTool,
 )
 
+# Execution graph query tools — read-only, free, survive PAL restart.
+from tools.graph_query import (  # noqa: E402
+    GetRunTool,
+    ListRunsTool,
+    RunTreeTool,
+)
+
 TOOLS: dict[str, type] = {
     "chat": ChatTool,
     "clink": CLinkTool,
@@ -301,6 +308,9 @@ TOOLS: dict[str, type] = {
     "task_result": TaskResultTool,
     "cancel_task": CancelTaskTool,
     "panel": PanelTool,
+    "list_runs": ListRunsTool,
+    "get_run": GetRunTool,
+    "run_tree": RunTreeTool,
 }
 
 TOOLS = filter_disabled_tools(TOOLS)

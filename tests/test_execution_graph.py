@@ -341,3 +341,113 @@ def test_run_context_marks_completed_on_clean_exit(tmp_path, monkeypatch):
         captured["rid"] = rid
     run = g.get_run(captured["rid"])
     assert run["status"] == "completed"
+
+
+# ---------------------------------------------------------------------------
+# Query tools
+# ---------------------------------------------------------------------------
+
+
+def test_list_runs_tool_returns_recorded_runs(tmp_path, monkeypatch):
+    import json
+
+    import utils.execution_graph as eg
+
+    monkeypatch.setattr(eg, "_GRAPH", eg.ExecutionGraph(tmp_path / "g.db"))
+    monkeypatch.setattr(eg, "_GRAPH_DISABLED", False)
+    # Seed two runs
+    g = eg.get_graph()
+    a = g.start_run("chat", args={})
+    g.complete_run(a)
+    b = g.start_run("clink", args={})
+    g.fail_run(b, error="boom")
+
+    from tools.graph_query import ListRunsTool
+
+    async def go():
+        return await ListRunsTool().execute({"limit": 10})
+
+    result = asyncio.run(go())
+    body = json.loads(result[0].text)
+    assert body["status"] == "ok"
+    assert body["count"] == 2
+    # Filter by status
+    async def filtered():
+        return await ListRunsTool().execute({"status": "failed"})
+    body2 = json.loads(asyncio.run(filtered())[0].text)
+    assert body2["count"] == 1
+    assert body2["runs"][0]["error"] == "boom"
+
+
+def test_get_run_tool_returns_run_with_events(tmp_path, monkeypatch):
+    import json
+
+    import utils.execution_graph as eg
+
+    monkeypatch.setattr(eg, "_GRAPH", eg.ExecutionGraph(tmp_path / "g.db"))
+    monkeypatch.setattr(eg, "_GRAPH_DISABLED", False)
+    g = eg.get_graph()
+    rid = g.start_run("chat", args={"prompt": "hi"})
+    g.add_event(rid, event_type="progress", message="halfway", progress=0.5)
+    g.complete_run(rid)
+
+    from tools.graph_query import GetRunTool
+
+    async def go():
+        return await GetRunTool().execute({"run_id": rid})
+
+    body = json.loads(asyncio.run(go())[0].text)
+    assert body["status"] == "ok"
+    assert body["run"]["run_id"] == rid
+    assert any(e["event_type"] == "progress" for e in body["run"]["events"])
+
+
+def test_run_tree_tool_with_cost_rollup(tmp_path, monkeypatch):
+    import json
+
+    import utils.execution_graph as eg
+
+    monkeypatch.setattr(eg, "_GRAPH", eg.ExecutionGraph(tmp_path / "g.db"))
+    monkeypatch.setattr(eg, "_GRAPH_DISABLED", False)
+    g = eg.get_graph()
+    panel_run = g.start_run("panel", args={})
+    p1 = g.start_run("clink", parent_run_id=panel_run, args={})
+    g.complete_run(p1, cost_tier="oauth_free")
+    p2 = g.start_run("clink", parent_run_id=panel_run, args={})
+    fb = g.start_run("chat", parent_run_id=p2, args={}, edge_kind="fallback")
+    g.complete_run(fb, cost_tier="oauth_fallback_paid")
+    g.complete_run(p2, cost_tier="oauth_fallback_paid")
+    g.complete_run(panel_run)
+
+    from tools.graph_query import RunTreeTool
+
+    async def go():
+        return await RunTreeTool().execute({"run_id": panel_run})
+
+    body = json.loads(asyncio.run(go())[0].text)
+    assert body["status"] == "ok"
+    assert body["tree"]["run_id"] == panel_run
+    assert len(body["tree"]["children"]) == 2
+    rollup = body["cost_tier_rollup"]
+    assert rollup.get("oauth_free") == 1
+    assert rollup.get("oauth_fallback_paid") == 2  # p2 + its fallback chat
+    assert rollup.get("untagged") == 1  # panel itself
+
+
+def test_query_tools_when_graph_disabled(monkeypatch):
+    """When PAL_GRAPH_DB='' the query tools must report disabled gracefully."""
+    import json
+
+    import utils.execution_graph as eg
+
+    monkeypatch.setattr(eg, "_GRAPH", None)
+    monkeypatch.setattr(eg, "_GRAPH_DISABLED", True)
+
+    from tools.graph_query import GetRunTool, ListRunsTool, RunTreeTool
+
+    for tool_cls, args in [(ListRunsTool, {}), (GetRunTool, {"run_id": "deadbeef"}), (RunTreeTool, {"run_id": "deadbeef"})]:
+        async def go():
+            return await tool_cls().execute(args)
+        body = json.loads(asyncio.run(go())[0].text)
+        assert body["status"] == "error"
+        assert "disabled" in body["error"].lower() or "unavailable" in body["error"].lower()
