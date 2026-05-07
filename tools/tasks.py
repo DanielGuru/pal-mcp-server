@@ -842,6 +842,19 @@ def _capture_session() -> Any:
 
 _META_TOOLS = frozenset({"start_task", "task_status", "task_result", "cancel_task"})
 
+# Tools that are ALREADY async by design — their execute() body dispatches
+# a long-running panel via start_task internally and returns immediately
+# with a task_id pointing at the inner panel run. Wrapping them in another
+# start_task creates a confusing 0s "completed" hook because the OUTER
+# wrapper genuinely completes in 0s (the inner tool body returns fast),
+# while the actual debate runs under a different (inner) task_id that the
+# caller never knows to poll. Reject loudly and tell the caller the right
+# shape, since terse-prompted LLMs default to wrapping defensively.
+#
+# ask_panel is NOT in this list — it's a synchronous fan-out (PanelTool.execute
+# awaits the gather of panelists) that callers SHOULD wrap in start_task.
+_SELF_ASYNC_TOOLS = frozenset({"multiaudit", "bugfind"})
+
 
 class StartTaskTool(BaseTool):
     """Fire any other Panel tool in the background, return a task_id immediately."""
@@ -920,6 +933,25 @@ class StartTaskTool(BaseTool):
                 {
                     "status": "error",
                     "error": f"refusing to wrap meta-tool {tool_name!r} — would create a recursion hazard",
+                }
+            )
+
+        if tool_name in _SELF_ASYNC_TOOLS:
+            return _json_response(
+                {
+                    "status": "error",
+                    "error": (
+                        f"{tool_name!r} is already async by design — call it "
+                        "directly, do NOT wrap in start_task. The tool returns "
+                        "immediately with a task_id pointing at the inner panel "
+                        "run; poll that task_id (not start_task's). Wrapping "
+                        "creates a 0s 'completed' hook that masks the real run."
+                    ),
+                    "correct_invocation": {
+                        "tool": tool_name,
+                        "arguments": forward_args,
+                    },
+                    "self_async_tools": sorted(_SELF_ASYNC_TOOLS),
                 }
             )
 

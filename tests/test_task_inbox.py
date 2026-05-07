@@ -1460,3 +1460,54 @@ def test_owner_pid_field_present_in_written_marker(tmp_path, monkeypatch):
     assert out is not None
     body = json.loads(out.read_text())
     assert body.get("claude_pid") == 5678
+
+
+# ---------------------------------------------------------------------------
+# start_task admission: refuse to double-wrap already-async tools.
+# Real failure: an LLM defensively wrapped multiaudit in start_task. The
+# inner multiaudit body finishes in ~90ms (it dispatches its OWN start_task
+# internally), so the outer wrapper completed in 0s and fired a bogus
+# "completed in 0s" hook — while the actual panel debate ran under an inner
+# task_id the caller never saw.
+# ---------------------------------------------------------------------------
+
+
+def test_start_task_refuses_to_wrap_multiaudit():
+    """multiaudit is already async — wrapping in start_task is a real
+    LLM trap that produces a confusing 0s 'completed' hook."""
+    import asyncio
+    from tools.tasks import StartTaskTool
+
+    tool = StartTaskTool()
+    result = asyncio.run(tool.execute({"tool": "multiaudit", "arguments": {}}))
+    body = json.loads(result[0].text)
+    assert body["status"] == "error"
+    assert "already async" in body["error"]
+    assert "do NOT wrap in start_task" in body["error"]
+    # Echoes the right shape so the LLM knows how to retry.
+    assert body["correct_invocation"]["tool"] == "multiaudit"
+    assert "multiaudit" in body["self_async_tools"]
+    assert "bugfind" in body["self_async_tools"]
+
+
+def test_start_task_refuses_to_wrap_bugfind():
+    """Same trap for bugfind — same fix."""
+    import asyncio
+    from tools.tasks import StartTaskTool
+
+    tool = StartTaskTool()
+    result = asyncio.run(tool.execute({"tool": "bugfind", "arguments": {}}))
+    body = json.loads(result[0].text)
+    assert body["status"] == "error"
+    assert "already async" in body["error"]
+
+
+def test_start_task_still_accepts_synchronous_panel_tools():
+    """ask_panel and direct panel ARE long-running synchronous tools that
+    SHOULD be wrapped — make sure the new check didn't over-fire and
+    block legitimate use."""
+    from tools.tasks import _SELF_ASYNC_TOOLS
+
+    assert "ask_panel" not in _SELF_ASYNC_TOOLS
+    assert "panel" not in _SELF_ASYNC_TOOLS
+    assert "chat" not in _SELF_ASYNC_TOOLS
