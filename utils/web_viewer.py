@@ -389,13 +389,24 @@ async function renderRunPicker() {
           return `<option value="${escapeAttr(r.run_id)}">${escapeHtml(label)} · ${escapeHtml(elapsed)}${live}</option>`;
         }).join('');
       }
-      // Auto-select the newest running root (or newest root) and keep
-      // following the head of the list until the user picks something
-      // manually. MANUAL_PICK locks the choice so we never yank the user
-      // away from what they were reading mid-debate.
+      // Selection rules:
+      //   1. !MANUAL_PICK → auto-select newest live run (or newest root).
+      //      Default behaviour for a fresh tab.
+      //   2. MANUAL_PICK + selected run is RUNNING → keep. User is
+      //      actively watching this debate, never yank them off it.
+      //   3. MANUAL_PICK + selected run is COMPLETED + a new live run
+      //      appeared → auto-yield to the live one and clear the lock.
+      //      User parked on a finished run; new work just started; the
+      //      live one is what they want to see now. Reclaim happens
+      //      cleanly because the user's interest is "the most recent
+      //      running thing", not specifically the run they last clicked.
+      //      This was the actual bug: previously MANUAL_PICK stuck
+      //      forever, so the auto-opened viewer for a new task landed
+      //      on the user's previous selection.
+      const selectedRun = SELECTED ? roots.find(r => r.run_id === SELECTED) : null;
+      const liveRun = roots.find(r => r.status === 'running');
       if (!MANUAL_PICK && roots.length) {
-        const live = roots.find(r => r.status === 'running');
-        const target = (live || roots[0]).run_id;
+        const target = (liveRun || roots[0]).run_id;
         if (target !== SELECTED) {
           SELECTED = target;
           picker.value = SELECTED;
@@ -403,6 +414,17 @@ async function renderRunPicker() {
         } else {
           picker.value = SELECTED;
         }
+      } else if (
+        MANUAL_PICK &&
+        liveRun &&
+        liveRun.run_id !== SELECTED &&
+        (!selectedRun || selectedRun.status !== 'running')
+      ) {
+        // Yield: parked on a completed run, new live run appeared.
+        SELECTED = liveRun.run_id;
+        MANUAL_PICK = false;
+        picker.value = SELECTED;
+        renderConversation();
       } else if (SELECTED) {
         // Keep the picker's selected option in sync. If the user's
         // SELECTED run scrolled off the head of the list (limit=100),
