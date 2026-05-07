@@ -195,7 +195,7 @@ After source edits, **restart Claude Code** so Panel re-reads the source. The ed
 |---|---|---|
 | `PANEL_MAX_CONCURRENT_API` | 16 | Global cap on concurrent paid API calls |
 | `PANEL_MAX_PROVIDER_THREADS` | 32 | Worker thread pool for sync SDK calls |
-| `PANEL_API_TIMEOUT_S` | 600 | Per-call SDK timeout (bounds thread lifetime) |
+| `PANEL_API_TIMEOUT_S` | 1200 | Per-call SDK timeout (bounds thread lifetime). Matches panelist defaults so OAuth-fallback API calls don't get killed by the SDK while the panelist budget still has room. |
 | `PANEL_CLINK_METADATA_CAP` | 2048 | Cap on stderr/stdout in clink metadata |
 | `PANEL_CLINK_RAW_OUTPUT_CAP` | 8192 | Cap on raw_output_file in clink metadata |
 | `PANEL_DEBUG_CLI_OUTPUT` | unset | If set, skip clink metadata redaction + truncation |

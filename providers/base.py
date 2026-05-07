@@ -36,8 +36,11 @@ logger = logging.getLogger(__name__)
 #   2. _PROVIDER_EXECUTOR caps the worker-thread pool. Even if the
 #      semaphore were lifted, threads can't grow past this. Defaults to 32;
 #      tune via PANEL_MAX_PROVIDER_THREADS.
-#   3. PANEL_API_TIMEOUT_S (default 600) is forwarded to SDK clients so the
+#   3. PANEL_API_TIMEOUT_S (default 1200) is forwarded to SDK clients so the
 #      thread always self-terminates within bound — see openai_compatible.py.
+#      Default matches the panel/multiaudit/bugfind panelist timeout so an
+#      OAuth-fallback path (CLI quota exhausted → paid Anthropic API) doesn't
+#      get killed by the SDK timeout while the panelist budget still has room.
 #
 # Lazy-init on first use so unit tests that don't import asyncio still work.
 # ---------------------------------------------------------------------------
@@ -92,7 +95,7 @@ def _get_api_semaphore() -> asyncio.Semaphore:
 
 def get_default_api_timeout() -> float:
     """Per-call SDK timeout, in seconds. Bounds the worker-thread lifetime."""
-    return float(os.environ.get("PANEL_API_TIMEOUT_S", "600"))
+    return float(os.environ.get("PANEL_API_TIMEOUT_S", "1200"))
 
 
 def _shutdown_provider_executor() -> None:

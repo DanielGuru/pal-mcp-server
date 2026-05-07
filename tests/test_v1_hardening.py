@@ -531,10 +531,11 @@ def test_provider_semaphore_honors_env_cap(monkeypatch):
 def test_get_default_api_timeout_default():
     from providers.base import get_default_api_timeout
 
-    # No env set → 600s default
+    # No env set → 1200s default (matches panelist timeouts so OAuth-fallback
+    # paid-API calls don't get killed before the panelist budget runs out).
     with patch.dict(os.environ, {}, clear=False):
         os.environ.pop("PANEL_API_TIMEOUT_S", None)
-        assert get_default_api_timeout() == 600.0
+        assert get_default_api_timeout() == 1200.0
 
 
 def test_execute_tool_does_not_mutate_caller_arguments():

@@ -171,7 +171,7 @@ class MultiauditTool(BaseTool):
                     "type": "number",
                     "minimum": 30,
                     "maximum": 1800,
-                    "description": "Per-panelist timeout (default 300s).",
+                    "description": "Per-panelist timeout (default 1200s).",
                 },
                 "working_directory_absolute_path": {
                     "type": "string",

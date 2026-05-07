@@ -35,7 +35,10 @@ from utils.progress import emit_progress
 
 logger = logging.getLogger("panel.panel")
 
-DEFAULT_TIMEOUT_S = 600
+DEFAULT_TIMEOUT_S = 1200  # 20 min — matches multiaudit/bugfind defaults so a
+# panel/ask_panel call with claude on it gets the same room he gets in the
+# magic-phrase tools. Other panelists finish in 30-90s and wait for him via
+# asyncio.gather; the bump only costs wall time on the slowest panelist.
 MAX_PANELISTS = 8
 MAX_DEBATE_ROUNDS = 3  # additional adversarial rounds after the initial parallel fan-out
 
@@ -1125,7 +1128,7 @@ class PanelTool(BaseTool):
                     "type": "number",
                     "minimum": 5,
                     "maximum": 1800,
-                    "description": "Per-panelist timeout in seconds (default 600).",
+                    "description": "Per-panelist timeout in seconds (default 1200).",
                 },
                 "debate_rounds": {
                     "type": "integer",
