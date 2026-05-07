@@ -282,27 +282,56 @@ def _parent_orphaned() -> bool:
 
 
 def _reclaim_stale(inbox: Path) -> None:
-    """Re-rename .processing.<pid> files older than the TTL back to <id>.json."""
+    """Re-rename ``.processing.<pid>`` files older than the TTL back to
+    ``<id>.json``, AND clean up per-session watch locks (``.watch.lock.<pid>``)
+    whose owning Claude Code process is dead. Without the lock cleanup, every
+    Claude session leaves a lock file behind on exit and the inbox dir
+    accumulates them indefinitely (operator-visible litter — observed on a
+    fresh inbox after a few days of use)."""
     if not inbox.exists():
         return
     now = time.time()
     for p in inbox.iterdir():
-        if not p.is_file() or ".processing." not in p.name:
+        if not p.is_file():
             continue
-        try:
-            age = now - p.stat().st_mtime
-        except OSError:
+        # 1. .processing.<pid> reclaim — original behaviour.
+        if ".processing." in p.name:
+            try:
+                age = now - p.stat().st_mtime
+            except OSError:
+                continue
+            if age < PROCESSING_TTL_S:
+                continue
+            idx = p.name.find(".processing.")
+            if idx <= 0:
+                continue
+            target = inbox / p.name[:idx]
+            try:
+                os.replace(p, target)
+            except OSError:
+                pass
             continue
-        if age < PROCESSING_TTL_S:
-            continue
-        idx = p.name.find(".processing.")
-        if idx <= 0:
-            continue
-        target = inbox / p.name[:idx]
-        try:
-            os.replace(p, target)
-        except OSError:
-            pass
+        # 2. Per-session watch lock cleanup — `.watch.lock.<pid>`. Skip the
+        # base `.watch.lock` (no pid suffix; pre-v2 / unowned shape).
+        if p.name.startswith(WATCH_LOCK_BASE + "."):
+            suffix = p.name[len(WATCH_LOCK_BASE) + 1:]
+            # Skip stale-rename leftovers (`.watch.lock.stale.<pid>.<ts>`)
+            # — those are handled by the lock-acquire path itself.
+            if suffix.startswith("stale."):
+                continue
+            # Suffix should be a bare numeric PID; bail otherwise.
+            try:
+                pid = int(suffix)
+            except ValueError:
+                continue
+            if _pid_is_alive(pid):
+                continue
+            # Owner Claude session is gone; remove the lock so the inbox
+            # doesn't grow boundlessly.
+            try:
+                p.unlink()
+            except OSError:
+                pass
 
 
 def _detect_hook_event() -> str:
@@ -459,12 +488,36 @@ def _drain_pending(inbox: Path) -> tuple[list[str], list[str]]:
 def _emit_reminder(messages: list[str], run_ids: list[str]) -> None:
     """Write a single ``<system-reminder>`` block to stdout. Claude Code
     treats this as injectable context when the hook exits with the right
-    code (2 for Stop+asyncRewake, 0 for UserPromptSubmit)."""
+    code (2 for Stop+asyncRewake, 0 for UserPromptSubmit).
+
+    Reminder shape is directive: tell the model the verdict is INLINE,
+    surface it directly, and only fetch more if the user asks for round-
+    by-round detail. Without this nudge, agents tend to (a) treat the
+    bare task_id as "go fetch results", (b) spawn a subagent to call
+    `task_result` even when the digest is right there, (c) blow context
+    on the redundant round-trip. The reminder lands at turn-end /
+    prompt-submit, so it's the model's first context after waking — make
+    the right action obvious.
+    """
     body = "\n".join(messages)
-    if run_ids:
+    has_digest = any("Verdict:" in m or "Panelists:" in m for m in messages)
+    if has_digest:
+        # Digest is inline — tell the model to surface it directly.
+        body = (
+            "The panel just finished. The verdict + per-panelist takes "
+            "are inline below — surface them to the user directly. Do "
+            "NOT spawn a subagent to fetch results, and do NOT call "
+            "task_result / run_tree unless the user asks for the full "
+            "round-by-round transcript. The digest IS the result.\n\n"
+            + body
+        )
+    elif run_ids:
         body += (
-            "\n\nFetch results: task_result(<task_id>) for synthesised output, "
-            "or run_tree('<run_id>', mode='transcript') for panelist verdicts."
+            "\n\nNo digest available (non-panel task or unparseable result). "
+            "If the user wants details, call task_result(<task_id>) for the "
+            "raw output, or run_tree('<run_id>', mode='transcript') for the "
+            "panelist verdicts. Do NOT spawn a subagent for this — call the "
+            "tool directly."
         )
     sys.stdout.write(f"<system-reminder>\n{body}\n</system-reminder>\n")
     sys.stdout.flush()
