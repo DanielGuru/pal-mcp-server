@@ -1477,3 +1477,41 @@ class PanelTool(BaseTool):
 
 def _err(message: str) -> list[TextContent]:
     return [TextContent(type="text", text=json.dumps({"status": "error", "error": message}, indent=2))]
+
+
+class AskPanelTool(PanelTool):
+    """Magic-phrase entry point for the freeform multi-model panel.
+
+    Identical implementation to ``PanelTool`` (same execute, same input
+    schema, same orchestration). The split exists for routing clarity:
+    ``ask_panel`` is the named entry point Claude Code reaches for when the
+    user says "ask the panel", "panel this question", "fan this out", etc.
+    The handshake instructions distinguish:
+
+      - ``multiaudit``  — PR/branch-shaped, rigid rubric, auto-diff
+      - ``bugfind``     — bug-shaped, rigid rubric, auto-context
+      - ``ask_panel``   — freeform, LLM composes the prompt, no rubric
+
+    Internal callers (multiaudit, bugfind, OAuth-first wrapping) keep
+    using ``panel`` directly so existing dispatch chains are unaffected.
+    """
+
+    def get_name(self) -> str:
+        return "ask_panel"
+
+    def get_description(self) -> str:
+        return (
+            "Freeform multi-model panel — YOU compose the prompt. Use this when "
+            "the user says 'ask the panel', 'panel this question', 'fan this "
+            "out', 'ask all four about X', 'what does each model think about X', "
+            "'second opinion from everyone on X' — anywhere the question is "
+            "freestanding (a design call, an architecture question, a 'should "
+            "we build it this way' debate) and NOT a PR review or a bug hunt. "
+            "For PR/branch reviews use `multiaudit`; for bug investigations "
+            "use `bugfind`; for everything else use this. Lift the relevant "
+            "context from the conversation into a tight, well-scoped prompt and "
+            "pass it as `ask_panel(prompt=..., panelists=[...], judge=..., "
+            "debate_rounds=...)`. Don't make the user paste their question "
+            "through; you write the prompt. Always wrap in start_task — "
+            "panels run for several minutes per round."
+        )

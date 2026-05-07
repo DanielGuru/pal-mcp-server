@@ -266,7 +266,7 @@ def filter_disabled_tools(all_tools: dict[str, Any]) -> dict[str, Any]:
 # For read-only metadata (schema, description, requires_model,
 # format_conversation_turn) use TOOL_DESCRIPTORS instead — those instances are
 # built once at startup and never have execute() called on them.
-from tools.panel import PanelTool  # noqa: E402
+from tools.panel import AskPanelTool, PanelTool  # noqa: E402
 
 # Async/background task tools — wrap any of the above so the conversation isn't
 # blocked while a long call (audit, multi-model consensus) runs.
@@ -311,6 +311,7 @@ TOOLS: dict[str, type] = {
     "task_result": TaskResultTool,
     "cancel_task": CancelTaskTool,
     "panel": PanelTool,
+    "ask_panel": AskPanelTool,
     "list_runs": ListRunsTool,
     "get_run": GetRunTool,
     "run_tree": RunTreeTool,
@@ -1743,6 +1744,20 @@ async def main():
     # Validate and configure providers based on available API keys
     configure_providers()
 
+    # Auto-install the Claude Code completion hook so users get push
+    # notifications (a ``<system-reminder>`` injection on Stop /
+    # UserPromptSubmit) when a background panel/multiaudit/bugfind
+    # finishes — instead of having to poll task_result. Idempotent
+    # (no-op when already installed). Failure is non-fatal; a warning
+    # log explains how to install manually. Disable with
+    # ``PANEL_AUTO_INSTALL_HOOKS=0``.
+    try:
+        from panel_cli.install_hooks import ensure_installed
+
+        ensure_installed()
+    except Exception as exc:  # noqa: BLE001 — never fail MCP boot on this
+        logger.debug("ensure_installed boot probe failed (%s); continuing", exc)
+
     # Touch the execution graph early so users see exactly which DB this Panel
     # instance is using. Per-repo by default (<cwd>/.panel/execution_graph.db);
     # PANEL_GRAPH_DB overrides. Keeping this log line surfaces accidental
@@ -1818,31 +1833,47 @@ async def main():
         "of the conversation channel — they cannot send messages while a tool call is in flight. "
         "Panel emits a push-completion notification when a task finishes, so you can fire-and-forget "
         "and resume on notification, or poll with short waits (wait_seconds=10–30 in a loop). The "
-        "wait_seconds field is hard-capped at the PANEL_TASK_WAIT_CAP_S env (default 30)."
+        "wait_seconds field is hard-capped at the PANEL_TASK_WAIT_CAP_S env (default 30). "
+        "Push-completion notifications: Panel auto-installs a Stop/UserPromptSubmit hook in "
+        "~/.claude/settings.json on first boot (PANEL_AUTO_INSTALL_HOOKS=0 to disable). The hook "
+        "drains ~/.panel/inbox/ on Claude turn-end and injects a <system-reminder> with the "
+        "completed task_id + label, exit-code-2 wakes the model. If the user disabled the auto- "
+        "install or asks why a long task didn't notify them, they can run `panel-install-hooks` "
+        "manually (one-time, idempotent, backs up settings.json before modifying). "
+        "`panel-uninstall-hooks` removes only Panel-managed entries."
     )
     panel_routing = (
-        " Panel routing: three tools wrap multi-model fan-out, distinguished by "
-        "WHO writes the prompt and what auto-context is gathered:\n"
+        " Panel routing: three magic-phrase entry points for multi-model "
+        "fan-out, distinguished by WHO writes the prompt and what auto-context "
+        "is gathered. Pick by the SHAPE of the user's request:\n"
         "  - **`multiaudit`** — PR/branch-shaped, RIGID rubric. Tool reads "
-        "`git diff` (or last commit) and applies its own audit rubric. Use when "
-        "the user says 'audit this PR', 'audit this branch', 'multiaudit', "
-        "'panel this PR', 'panel this branch', 'review with all models' "
-        "(in a code-review context), 'what do the models think of this change'. "
-        "User can pass `extra_context` as a directive to narrow scope.\n"
+        "`git diff` (or last commit) and applies its own audit rubric. Use ONLY "
+        "when the user names a code change to review: 'audit this PR', 'audit "
+        "this branch', 'multiaudit', 'panel this PR', 'panel this branch', "
+        "'review with all models' in a code-review context. User can pass "
+        "`extra_context` as a directive to narrow scope.\n"
         "  - **`bugfind`** — bug-shaped, RIGID rubric. Tool auto-attaches recent "
-        "commits + error log tail + optional files. Use when the user says "
-        "'bugfind it', 'find this bug', 'what's breaking', 'panel debug this', "
-        "'diagnose with all models'.\n"
-        "  - **`panel`** — FREEFORM. YOU compose the entire prompt; no rubric, no "
-        "auto-context. Use when the user says 'panel this question', 'fan this "
-        "out', 'ask all four about X', 'what does each model think about X', "
-        "'second opinion from everyone on X' — anywhere the question is "
-        "freestanding (a design call, an architecture question, a 'should we "
-        "build it this way' debate) and NOT a PR review or a bug hunt. Lift "
+        "commits + error log tail + optional files. Use ONLY when the user is "
+        "describing a defect: 'bugfind it', 'find this bug', 'what's breaking', "
+        "'panel debug this', 'diagnose with all models'.\n"
+        "  - **`ask_panel`** — FREEFORM. YOU compose the entire prompt; no "
+        "rubric, no auto-context. This is the DEFAULT for anything that's not "
+        "specifically a PR review or bug investigation. Use when the user says "
+        "'ask the panel', 'panel this' (no PR/branch qualifier), 'panel this "
+        "question', 'fan this out', 'ask all four about X', 'what does each "
+        "model think about X', 'second opinion from everyone on X', 'debate "
+        "this' — anywhere the question is freestanding (design call, "
+        "architecture question, 'should we build it this way' debate). Lift "
         "the relevant context from the conversation into a tight, well-scoped "
-        "prompt and pass it as `panel(prompt=..., panelists=[...], judge=..., "
-        "debate_rounds=...)`. Don't make the user paste their question through; "
-        "you write the prompt.\n"
+        "prompt and pass it as `ask_panel(prompt=..., panelists=[...], "
+        "judge=..., debate_rounds=...)`. Don't make the user paste their "
+        "question through; you write the prompt. NOTE: the legacy `panel` "
+        "tool is still registered (used internally by multiaudit/bugfind and "
+        "for backwards compatibility); prefer `ask_panel` for new direct "
+        "invocations so the user-facing routing stays unambiguous.\n"
+        "When ambiguous between multiaudit and ask_panel, ask the user "
+        "ONCE rather than guessing — code-review intent and design-question "
+        "intent produce very different panel outputs.\n"
         "Other phrasing cues for plain `panel` (when the topic is not PR/bug):\n"
         "  - 'debate' / 'critique' / 'challenge' / 'stress-test' / 'rigorous' / "
         "'argue' / 'pressure-test' → panel with debate_rounds>=1 (adversarial "

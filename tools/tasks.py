@@ -482,9 +482,44 @@ class TaskManager:
             # Free the cached arguments to help bound memory; caller has the
             # task summary already, no need to keep a copy of the input.
             record.arguments = {}
+            # Drop a completion marker into ~/.panel/inbox/ so a Claude Code
+            # ``Stop`` / ``UserPromptSubmit`` hook (installed by
+            # ``panel-install-hooks``) can wake the model with a
+            # ``<system-reminder>`` instead of forcing the agent to poll
+            # ``task_result``. Best-effort: never fails the task path.
+            self._write_inbox_marker(record)
             # Best-effort push notification so the host UI sees the finish
-            # without waiting for a polling task_result call.
+            # without waiting for a polling task_result call. Note: Claude
+            # Code currently strips ``notifications/message`` from the
+            # model's context — this is host telemetry, not a wake-up.
+            # Push notifications to the agent flow through the inbox above.
             await self._push_completion_notification(record)
+
+    def _write_inbox_marker(self, record: TaskRecord) -> None:
+        """Atomic write of a completion marker to ``~/.panel/inbox/``. The
+        Claude Code drain hook (installed via ``panel-install-hooks``) reads
+        these and injects a system reminder when the agent next runs."""
+        try:
+            from utils.task_inbox import write_completion_marker
+
+            elapsed = (
+                round(record.completed_at - record.started_at, 2)
+                if (record.completed_at and record.started_at)
+                else None
+            )
+            write_completion_marker(
+                task_id=record.task_id,
+                tool=record.tool_name,
+                label=record.label,
+                status=record.status,
+                created_at=record.created_at,
+                completed_at=record.completed_at,
+                elapsed_seconds=elapsed,
+                run_id=getattr(record, "run_id", None),
+                error=record.error,
+            )
+        except Exception as exc:  # noqa: BLE001 — best-effort, never fail
+            logger.debug("inbox marker write failed for %s: %s", record.task_id, exc)
 
     async def _push_completion_notification(self, record: TaskRecord) -> None:
         if record.session is None:

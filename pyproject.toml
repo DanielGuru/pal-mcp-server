@@ -19,7 +19,7 @@ Repository = "https://github.com/DanielGuru/panel-mcp-server"
 Issues = "https://github.com/DanielGuru/panel-mcp-server/issues"
 
 [tool.setuptools.packages.find]
-include = ["tools*", "providers*", "systemprompts*", "utils*", "conf*", "clink*"]
+include = ["tools*", "providers*", "systemprompts*", "utils*", "conf*", "clink*", "panel_cli*"]
 
 [tool.setuptools]
 py-modules = ["server", "config"]
@@ -45,6 +45,9 @@ py-modules = ["server", "config"]
 
 [project.scripts]
 panel-mcp-server = "server:run"
+panel-inbox-drain = "panel_cli.inbox_drain:main"
+panel-install-hooks = "panel_cli.install_hooks:install_main"
+panel-uninstall-hooks = "panel_cli.install_hooks:uninstall_main"
 
 [tool.black]
 line-length = 120

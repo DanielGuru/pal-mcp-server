@@ -582,15 +582,42 @@ function renderRawTree(tree) {
 // nothing is hidden — the header is "what was this run actually asked
 // to do," and that should never be invisible.
 function renderPromptHeader(tree) {
-  if (!tree || !tree.args_json) return '';
+  if (!tree) return '';
+
+  // Walk past dispatcher wrappers (start_task / multiaudit / bugfind) to
+  // find the run whose args actually represent the user's intent. Without
+  // this, calling `start_task('panel', {...})` shows the start_task envelope
+  // (`{tool, label, arguments}`) under "other args" with the prompt buried
+  // — exactly the bug from the screenshot. The unwrap mirrors what
+  // ``effectiveToolName`` does for the run header.
+  const dispatcherTools = new Set(['start_task', 'multiaudit', 'bugfind']);
+  function findRealNode(n) {
+    if (!n) return null;
+    if (!dispatcherTools.has((n.tool_name || '').toLowerCase())) return n;
+    for (const c of (n.children || [])) {
+      const found = findRealNode(c);
+      if (found) return found;
+    }
+    return n;  // dispatcher with no children yet — fall back to it
+  }
+  const realNode = findRealNode(tree);
+  if (!realNode || !realNode.args_json) return '';
 
   let args;
   try {
-    args = JSON.parse(tree.args_json);
+    args = JSON.parse(realNode.args_json);
   } catch (_) {
     return '';
   }
   if (!args || typeof args !== 'object') return '';
+
+  // start_task wraps its args one level deep under {tool, label, arguments}.
+  // Even when we picked start_task as the real node (no children yet), pull
+  // the wrapped args up so the prompt is visible.
+  const treeTool = (tree.tool_name || '').toLowerCase();
+  if (treeTool === 'start_task' && realNode === tree && args.arguments && typeof args.arguments === 'object') {
+    args = args.arguments;
+  }
 
   // Strip the internal _graph_* hints — they're routing metadata, not
   // user-facing input, and would clutter the header.
@@ -603,16 +630,20 @@ function renderPromptHeader(tree) {
 
   // Pick the field that best represents "what was asked" for known tools.
   // For the rest we just render the full args dict.
-  const tool = (tree.tool_name || '').toLowerCase();
+  const tool = (realNode.tool_name || '').toLowerCase();
   let primaryLabel = null;
   let primaryText = null;
 
   if (tool === 'multiaudit' && userFacing.extra_context) {
-    primaryLabel = 'extra_context';
+    primaryLabel = 'extra_context (focus directive)';
     primaryText = String(userFacing.extra_context);
-  } else if ((tool === 'panel' || tool === 'chat' || tool === 'consensus' ||
-              tool === 'thinkdeep' || tool === 'planner' || tool === 'challenge')
-             && userFacing.prompt) {
+  } else if (tool === 'bugfind' && userFacing.bug_description) {
+    primaryLabel = 'bug_description';
+    primaryText = String(userFacing.bug_description);
+  } else if (userFacing.prompt) {
+    // Generic fallback: any tool with a `prompt` field gets it surfaced.
+    // Catches panel, chat, consensus, thinkdeep, planner, challenge — and
+    // the unwrapped start_task('panel', ...) case.
     primaryLabel = 'prompt';
     primaryText = String(userFacing.prompt);
   }
