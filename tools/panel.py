@@ -1681,5 +1681,12 @@ class AskPanelTool(PanelTool):
             "rely on `absolute_file_paths`. Absolute paths mentioned in the prompt "
             "are auto-detected and attached too (capped at 10 files / 200KB), but "
             "passing them explicitly is more reliable. Always wrap in start_task "
-            "— panels run for several minutes per round."
+            "— panels run for several minutes per round. "
+            "**FIRE AND FORGET after start_task returns.** Hand the user the web "
+            "viewer URL from the dispatch response, tell them the panel is "
+            "running, and END YOUR TURN. Do NOT silently poll task_status / "
+            "task_result in a loop — the Stop hook delivers the verdict via "
+            "system-reminder automatically when the panel finishes (with the "
+            "digest inline). Polling shows the user nothing while it runs and "
+            "wastes turns. Only check status if the user explicitly asks."
         )
