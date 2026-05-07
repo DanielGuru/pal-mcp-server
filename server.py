@@ -1721,6 +1721,24 @@ async def main():
     The server communicates via standard input/output streams using the
     MCP protocol's JSON-RPC message format.
     """
+    # Merge persisted user preferences (~/.panel/preferences.json) into
+    # os.environ BEFORE configure_providers / viewer boot. Explicit env
+    # vars from the MCP client always win — preferences are the
+    # fallback default, not the override. Lets the settings tab toggle
+    # boot-time behaviour (e.g. PANEL_WEB_AUTO_OPEN) without forcing
+    # users to edit ~/.claude.json.
+    try:
+        from utils.preferences import load_preferences_into_env
+
+        merged = load_preferences_into_env()
+        if merged:
+            logger.info(
+                "Loaded persisted preferences from ~/.panel/preferences.json: %s",
+                ", ".join(merged.keys()),
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("preferences: failed to merge: %s", exc)
+
     # Validate and configure providers based on available API keys
     configure_providers()
 

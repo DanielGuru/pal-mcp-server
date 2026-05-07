@@ -918,6 +918,14 @@ async function renderSettings() {
     const viewer = s.viewer || {};
     const graph = s.graph || {};
     const tools = s.tools || [];
+    // Persistent preferences — keys saveable to ~/.panel/preferences.json.
+    // Effective value comes from os.environ (which the boot-time merger
+    // already populated from the file); the saved-in-file value is shown
+    // alongside so the user can see whether what they're looking at is
+    // their persisted choice or an explicit MCP-config override.
+    const persistentKeys = s.persistent_keys || [];
+    const preferences = s.preferences || {};
+    const prefsPath = s.preferences_path || '~/.panel/preferences.json';
 
     const liveRows = liveKeys.map(k => `
       <tr>
@@ -926,6 +934,38 @@ async function renderSettings() {
                    value="${escapeAttr(live[k] || '')}" /></td>
         <td><button class="settings-save" data-key="${escapeAttr(k)}">save</button></td>
       </tr>`).join('');
+
+    // Persistent settings — boot-time toggles that get written to
+    // preferences.json. Each row has a value input + a "save permanently"
+    // button. For PANEL_WEB_AUTO_OPEN specifically (the killer use case),
+    // also expose a one-click toggle button so users don't need to know
+    // the "0/1" convention.
+    const persistRows = persistentKeys.map(k => {
+      const effective = (k in live ? live[k] : '') || (restart[k] || '');
+      const saved = preferences[k] || '';
+      const isAutoOpen = k === 'PANEL_WEB_AUTO_OPEN';
+      const autoOpenToggle = isAutoOpen
+        ? `<button class="settings-toggle" data-key="${escapeAttr(k)}"
+                   data-target="${effective === '0' ? '1' : '0'}">
+             ${effective === '0' ? 'enable browser auto-open' : 'disable browser auto-open'}
+           </button>`
+        : '';
+      return `
+        <tr>
+          <td><code>${escapeHtml(k)}</code></td>
+          <td><input class="settings-input" data-key="${escapeAttr(k)}"
+                     data-persist="1"
+                     value="${escapeAttr(effective)}" /></td>
+          <td>
+            <button class="settings-save" data-key="${escapeAttr(k)}" data-persist="1">save</button>
+            ${autoOpenToggle}
+          </td>
+          <td><code style="font-size:10px;color:var(--muted);">${
+            saved ? `saved: ${escapeHtml(saved)}` : 'not persisted'
+          }</code></td>
+        </tr>`;
+    }).join('');
+
     const restartRows = Object.keys(restart).sort().map(k => `
       <tr><td><code>${escapeHtml(k)}</code></td>
           <td><code>${escapeHtml(restart[k] || '(unset)')}</code></td>
@@ -943,6 +983,13 @@ async function renderSettings() {
         <thead><tr><th>env var</th><th>value</th><th></th></tr></thead>
         <tbody>${liveRows}</tbody>
       </table>
+
+      <h2 class="settings-h">Persistent settings — saved to ${escapeHtml(prefsPath)}</h2>
+      <table class="settings-table">
+        <thead><tr><th>env var</th><th>value</th><th>action</th><th>persisted</th></tr></thead>
+        <tbody>${persistRows}</tbody>
+      </table>
+      <div class="settings-hint">Saved here → next Panel boot picks it up automatically (no need to edit your MCP client config). Explicit env vars from your <code>~/.claude.json</code> always win over saved values, so this is a safe fallback layer.</div>
 
       <h2 class="settings-h">Provider keys</h2>
       <table class="settings-table"><tbody>${provRows}</tbody></table>
@@ -964,34 +1011,68 @@ async function renderSettings() {
         <tr><td>tools</td><td>${tools.length} registered</td></tr>
       </tbody></table>
 
-      <h2 class="settings-h">Restart required (read-only)</h2>
+      <h2 class="settings-h">Other settings (restart required, edit in MCP config)</h2>
       <table class="settings-table">
         <thead><tr><th>env var</th><th>value</th><th></th></tr></thead>
         <tbody>${restartRows}</tbody>
       </table>
-      <div class="settings-hint">Change these in your <code>~/.claude.json</code> mcpServers.panel.env block, then restart Claude Code.</div>
+      <div class="settings-hint">For these, change in <code>~/.claude.json</code> mcpServers.panel.env block, then restart Claude Code. (For PANEL_WEB_*, prefer the persistent settings section above — same effect, no config-file editing.)</div>
     `;
 
     pane.querySelectorAll('.settings-save').forEach(btn => {
       btn.addEventListener('click', async (e) => {
         const k = e.target.dataset.key;
-        const input = pane.querySelector(`input[data-key="${k}"]`);
+        const persist = e.target.dataset.persist === '1';
+        const input = pane.querySelector(
+          `input[data-key="${k}"]${persist ? '[data-persist="1"]' : ':not([data-persist="1"])'}`
+        ) || pane.querySelector(`input[data-key="${k}"]`);
         const v = input ? input.value : '';
         try {
           const r = await fetch('/api/settings', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({key: k, value: v}),
+            body: JSON.stringify({key: k, value: v, persist: persist}),
           });
           const j = await r.json();
           if (j.status === 'ok') {
-            e.target.textContent = 'saved ✓';
-            setTimeout(() => { e.target.textContent = 'save'; }, 1500);
+            const saved = j.settings && j.settings.persisted;
+            e.target.textContent = saved
+              ? 'saved ✓ (next launch)'
+              : 'saved ✓';
+            setTimeout(() => { e.target.textContent = 'save'; renderSettings(); }, 1500);
           } else {
             e.target.textContent = 'error';
           }
         } catch (err) {
           e.target.textContent = 'error';
+        }
+      });
+    });
+
+    // Auto-open one-click toggle. Calls the same POST endpoint with
+    // persist=true and the inverted value, so a user who wants to
+    // "turn off the browser auto-opening" just clicks once.
+    pane.querySelectorAll('.settings-toggle').forEach(btn => {
+      btn.addEventListener('click', async (e) => {
+        const k = e.target.dataset.key;
+        const target = e.target.dataset.target;
+        const original = e.target.textContent;
+        e.target.textContent = 'saving…';
+        try {
+          const r = await fetch('/api/settings', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({key: k, value: target, persist: true}),
+          });
+          const j = await r.json();
+          if (j.status === 'ok') {
+            e.target.textContent = 'saved ✓ (next launch)';
+            setTimeout(() => renderSettings(), 1200);
+          } else {
+            e.target.textContent = original;
+          }
+        } catch (err) {
+          e.target.textContent = original;
         }
       });
     });
@@ -1197,16 +1278,32 @@ class _Handler(BaseHTTPRequestHandler):
         "PANEL_WEB_ALLOW_REMOTE",
     )
 
-    def _serve_settings_get(self) -> None:
-        """Return env-var snapshot, provider key presence, OAuth status,
-        version, viewer port. Read-only — POST mutates the whitelist."""
+    def _build_settings_snapshot(self) -> dict[str, Any]:
+        """Build the settings snapshot — extracted from _serve_settings_get
+        so the POST handler can return the same shape after mutating."""
         import pathlib
+
+        from utils.preferences import (
+            PERSISTENT_KEY_WHITELIST,
+            read_preferences,
+        )
+
         snapshot: dict[str, Any] = {
             "live": {k: os.environ.get(k, "") for k in self._SETTINGS_LIVE_WHITELIST},
             "live_keys": list(self._SETTINGS_LIVE_WHITELIST),
             "restart_required": {
                 k: os.environ.get(k, "") for k in self._SETTINGS_RESTART_REQUIRED
             },
+            # Persistent preferences: keys the operator can save to
+            # ~/.panel/preferences.json so they survive Panel restart.
+            # Includes boot-time settings like PANEL_WEB_AUTO_OPEN that
+            # can't take effect mid-session but should persist for next
+            # launch with one click.
+            "persistent_keys": list(PERSISTENT_KEY_WHITELIST),
+            "preferences": read_preferences(),
+            "preferences_path": str(
+                pathlib.Path("~/.panel/preferences.json").expanduser()
+            ),
             "provider_keys": {
                 "openai": bool(os.environ.get("OPENAI_API_KEY")),
                 "anthropic": bool(os.environ.get("ANTHROPIC_API_KEY")),
@@ -1238,11 +1335,25 @@ class _Handler(BaseHTTPRequestHandler):
             snapshot["tools"] = sorted(getattr(_server, "TOOLS", {}).keys())
         except Exception:  # noqa: BLE001
             snapshot["tools"] = []
-        self._send_json({"status": "ok", "settings": snapshot})
+        return snapshot
+
+    def _serve_settings_get(self) -> None:
+        """Return env-var snapshot, provider key presence, OAuth status,
+        version, viewer port, persistent preferences. Read-only — POST
+        mutates the whitelist."""
+        self._send_json({"status": "ok", "settings": self._build_settings_snapshot()})
 
     def _serve_settings_post(self) -> None:
-        """Mutate whitelisted env vars. Body: {"key": "PANEL_X", "value": "..."}.
-        Returns the new snapshot. Anything off-whitelist is rejected.
+        """Mutate whitelisted env vars. Body: ``{"key": "PANEL_X", "value":
+        "...", "persist": false}``. Returns the new snapshot. Anything
+        off-whitelist is rejected.
+
+        ``persist`` (default ``false``): when ``true``, also write the
+        value to ``~/.panel/preferences.json`` so the next Panel boot
+        picks it up — the path for boot-time-only settings like
+        ``PANEL_WEB_AUTO_OPEN`` that don't take effect mid-session.
+        Live mutation still happens for completeness, but for boot-only
+        keys it's a no-op until the next launch.
 
         CSRF defense: require an explicit ``application/json`` content
         type. A "simple request" via HTML form (text/plain) or a
@@ -1279,9 +1390,24 @@ class _Handler(BaseHTTPRequestHandler):
             return
         key = body.get("key")
         value = body.get("value")
-        if not isinstance(key, str) or key not in self._SETTINGS_LIVE_WHITELIST:
+        persist = bool(body.get("persist", False))
+
+        # Editable keys = the live whitelist UNION the persistent
+        # whitelist. Live-only keys flip immediately. Persistent keys
+        # (boot-time settings like AUTO_OPEN) get written to the
+        # preferences file when ``persist=true``.
+        from utils.preferences import (
+            PERSISTENT_KEY_WHITELIST,
+            write_preference,
+        )
+
+        editable = set(self._SETTINGS_LIVE_WHITELIST) | set(PERSISTENT_KEY_WHITELIST)
+        if not isinstance(key, str) or key not in editable:
             self._send_json(
-                {"status": "error", "error": f"key not on live whitelist: {key!r}"},
+                {
+                    "status": "error",
+                    "error": f"key not editable (live whitelist + persistent whitelist): {key!r}",
+                },
                 status=400,
             )
             return
@@ -1298,8 +1424,43 @@ class _Handler(BaseHTTPRequestHandler):
                 os.environ.pop(key, None)
             else:
                 os.environ[key] = str(value)
-        logger.info("settings: %s = %r (live)", key, os.environ.get(key, ""))
-        self._serve_settings_get()
+
+        # Persist if requested AND the key is on the persistent
+        # whitelist. Persisting a live-only key is harmless but
+        # confusing — reject explicitly so the UI can show a clear
+        # "this setting can't be persisted" message.
+        persisted = False
+        persist_error: str | None = None
+        if persist:
+            if key not in PERSISTENT_KEY_WHITELIST:
+                persist_error = (
+                    f"{key} is live-only — flips take effect immediately "
+                    "but can't be persisted (no boot-time read for this "
+                    "key). Set it in your MCP client's env block if you "
+                    "want it to stick across restarts."
+                )
+            else:
+                ok, err = write_preference(key, value)
+                persisted = ok
+                persist_error = err
+
+        logger.info(
+            "settings: %s = %r (live)%s",
+            key,
+            os.environ.get(key, ""),
+            " + persisted" if persisted else "",
+        )
+        # Build response — _serve_settings_get returns a snapshot, but
+        # we want the persistence outcome to come back too so the UI
+        # can surface "saved to preferences" or the persist_error.
+        from utils.preferences import read_preferences as _read_prefs
+
+        snapshot = self._build_settings_snapshot()
+        snapshot["persisted"] = persisted
+        if persist_error is not None:
+            snapshot["persist_error"] = persist_error
+        snapshot["preferences"] = _read_prefs()
+        self._send_json({"status": "ok", "settings": snapshot})
 
     # ---- routing ------------------------------------------------------
 
