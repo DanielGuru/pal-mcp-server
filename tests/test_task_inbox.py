@@ -177,8 +177,14 @@ def _run_drain(monkeypatch, stdin_payload: str = ""):
 
 def test_inbox_drain_stop_event_exits_2_to_wake_model(tmp_path, monkeypatch):
     """Stop hook with asyncRewake: exit 2 wakes Claude with stdout as a
-    system reminder. This is the load-bearing wake-up contract."""
+    system reminder. This is the load-bearing wake-up contract.
+
+    Marker is dropped BEFORE the drain runs, so the watch loop's first
+    iteration finds it immediately and exits — proving the fast path.
+    """
     monkeypatch.setenv("PANEL_INBOX_DIR", str(tmp_path))
+    monkeypatch.setenv("PANEL_STOP_WATCH_TIMEOUT_S", "1.0")
+    monkeypatch.setenv("PANEL_STOP_WATCH_POLL_S", "0.05")
     marker = _drop_marker(tmp_path)
 
     rc, out = _run_drain(monkeypatch, stdin_payload=json.dumps({"hook_event_name": "Stop"}))
@@ -188,6 +194,58 @@ def test_inbox_drain_stop_event_exits_2_to_wake_model(tmp_path, monkeypatch):
     assert "task1" in out
     assert "multiaudit:main" in out
     assert not marker.exists()
+
+
+def test_inbox_drain_stop_watches_until_marker_arrives(tmp_path, monkeypatch):
+    """REGRESSION (asyncRewake actually working): Stop hook fires when
+    Claude finishes its turn. The panel is usually still running at that
+    moment, so the inbox is empty. The drain script must POLL/WATCH for
+    a marker to appear (up to STOP_WATCH_TIMEOUT_S) and exit 2 the
+    moment one arrives — that's what gives Claude Code the wake-up
+    signal. Without the watch loop, asyncRewake fires once on an empty
+    inbox, exits 0, and never wakes the model.
+
+    Test: start the drain (with no marker), drop a marker from a
+    background thread after a short delay, confirm the drain returns
+    rc=2 and processed the marker."""
+    import threading
+
+    monkeypatch.setenv("PANEL_INBOX_DIR", str(tmp_path))
+    monkeypatch.setenv("PANEL_STOP_WATCH_TIMEOUT_S", "5.0")
+    monkeypatch.setenv("PANEL_STOP_WATCH_POLL_S", "0.05")
+
+    # Drop a marker shortly after the drain starts watching.
+    def drop_after_delay():
+        import time
+        time.sleep(0.2)
+        _drop_marker(tmp_path, task_id="late-arrival", label="ask_panel:test")
+
+    threading.Thread(target=drop_after_delay, daemon=True).start()
+
+    rc, out = _run_drain(monkeypatch, stdin_payload=json.dumps({"hook_event_name": "Stop"}))
+
+    assert rc == 2
+    assert "late-arrival" in out
+    assert "ask_panel:test" in out
+
+
+def test_inbox_drain_stop_watch_times_out_with_empty_inbox(tmp_path, monkeypatch):
+    """Stop hook with no markers and no marker arriving within the
+    watch window exits 0 cleanly — no spurious wake-ups, no hang."""
+    monkeypatch.setenv("PANEL_INBOX_DIR", str(tmp_path))
+    monkeypatch.setenv("PANEL_STOP_WATCH_TIMEOUT_S", "0.3")
+    monkeypatch.setenv("PANEL_STOP_WATCH_POLL_S", "0.05")
+
+    import time
+    start = time.time()
+    rc, out = _run_drain(monkeypatch, stdin_payload=json.dumps({"hook_event_name": "Stop"}))
+    elapsed = time.time() - start
+
+    assert rc == 0
+    assert out == ""
+    # Should respect the timeout — sanity-check we waited at least the
+    # configured window (and not much longer).
+    assert 0.2 < elapsed < 2.0, f"unexpected elapsed: {elapsed}"
 
 
 def test_inbox_drain_user_prompt_submit_exits_0(tmp_path, monkeypatch):

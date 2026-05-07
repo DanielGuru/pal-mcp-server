@@ -42,6 +42,15 @@ from pathlib import Path
 INBOX_DIR_DEFAULT = Path.home() / ".panel" / "inbox"
 PROCESSING_TTL_S = 120.0
 
+# Stop-hook watch loop: when the hook fires (right after Claude finishes
+# its turn), the panel is usually still running and the inbox is empty.
+# To make ``asyncRewake`` actually wake the model on completion, we poll
+# the inbox for up to ``STOP_WATCH_TIMEOUT_S`` and exit 2 the moment a
+# marker appears. UserPromptSubmit and unknown events drain-once because
+# the user is already here — they don't want a 15-minute hang.
+STOP_WATCH_TIMEOUT_S = float(os.environ.get("PANEL_STOP_WATCH_TIMEOUT_S", "900"))
+STOP_WATCH_POLL_S = float(os.environ.get("PANEL_STOP_WATCH_POLL_S", "1.0"))
+
 
 def _inbox_dir() -> Path:
     env = os.environ.get("PANEL_INBOX_DIR")
@@ -126,73 +135,90 @@ def _exit_code_for(event: str, did_inject: bool) -> int:
     return 0  # UserPromptSubmit, unknown, or no event info
 
 
-def main() -> int:
-    # Read the hook event FIRST so we know how to exit. Claude Code may pass
-    # JSON on stdin even when there's nothing to drain — we still consume it
-    # so future hook protocol additions don't trip on unread bytes.
-    event = _detect_hook_event()
-
-    inbox = _inbox_dir()
-    if not inbox.exists() or not inbox.is_dir():
-        return 0
-
-    # Try to reclaim crashed-hook leftovers BEFORE listing — so a marker
-    # stuck in .processing for >2min comes back into the queue this run.
-    _reclaim_stale(inbox)
-
+def _drain_pending(inbox: Path) -> tuple[list[str], list[str]]:
+    """Claim and process every marker currently in the inbox. Returns
+    ``(messages, run_ids)``. Atomic .processing.<pid> claim so concurrent
+    drain processes don't double-inject the same completion."""
     pid = os.getpid()
     messages: list[str] = []
-    seen_run_ids: list[str] = []
+    run_ids: list[str] = []
 
     for marker in sorted(inbox.glob("*.json")):
-        # Skip our own staging directory's leftovers (shouldn't appear at
-        # the top level but defend against anyone moving things around).
         if marker.name.startswith("."):
             continue
-
-        # Atomic claim via second rename. ``.processing.<pid>`` makes it
-        # unambiguous which drain instance is processing the marker —
-        # lets the stale-reclaim logic above know who owns each file.
         claimed = inbox / f"{marker.name}.processing.{pid}"
         try:
             os.replace(marker, claimed)
         except (OSError, FileNotFoundError):
             # Another hook beat us to it. Move on.
             continue
-
         try:
             text = claimed.read_text(encoding="utf-8")
             payload = json.loads(text)
         except (OSError, json.JSONDecodeError):
-            # Corrupt / unreadable. Leave it as .processing so the
-            # stale-reclaim TTL re-tries later. After enough failures
-            # the file will keep cycling — operator-visible.
+            # Leave the .processing file for the stale-reclaim TTL to
+            # retry — repeated failures stay operator-visible.
             continue
-
         messages.append(_format_marker(payload))
-        run_id = payload.get("run_id")
-        if isinstance(run_id, str) and run_id:
-            seen_run_ids.append(run_id)
-
-        # Successful inject — drop the processing file.
+        rid = payload.get("run_id")
+        if isinstance(rid, str) and rid:
+            run_ids.append(rid)
         try:
             claimed.unlink()
         except OSError:
             pass
+    return messages, run_ids
 
-    if not messages:
-        return 0
 
-    # Build a single system-reminder block. Claude Code's hook contract
-    # turns this into model-visible context when we exit 2.
+def _emit_reminder(messages: list[str], run_ids: list[str]) -> None:
+    """Write a single ``<system-reminder>`` block to stdout. Claude Code
+    treats this as injectable context when the hook exits with the right
+    code (2 for Stop+asyncRewake, 0 for UserPromptSubmit)."""
     body = "\n".join(messages)
-    if seen_run_ids:
+    if run_ids:
         body += (
             "\n\nFetch results: task_result(<task_id>) for synthesised output, "
             "or run_tree('<run_id>', mode='transcript') for panelist verdicts."
         )
     sys.stdout.write(f"<system-reminder>\n{body}\n</system-reminder>\n")
     sys.stdout.flush()
+
+
+def main() -> int:
+    # Read the hook event FIRST so we know how to behave. Claude Code may
+    # pass JSON on stdin even when there's nothing to drain — we still
+    # consume it so future protocol additions don't leave bytes unread.
+    event = _detect_hook_event()
+
+    inbox = _inbox_dir()
+    if not inbox.exists() or not inbox.is_dir():
+        return 0
+
+    # Stop hook with asyncRewake: at hook fire-time the panel is still
+    # running and the inbox is empty. Poll for up to STOP_WATCH_TIMEOUT_S
+    # so we exit 2 the moment the marker drops, waking the model with the
+    # completion reminder instead of forcing the user to type something
+    # to trigger UserPromptSubmit.
+    if event == "Stop":
+        deadline = time.time() + STOP_WATCH_TIMEOUT_S
+        while True:
+            _reclaim_stale(inbox)
+            messages, run_ids = _drain_pending(inbox)
+            if messages:
+                _emit_reminder(messages, run_ids)
+                return 2  # asyncRewake wakes the model
+            if time.time() >= deadline:
+                return 0  # nothing arrived within the watch window
+            time.sleep(STOP_WATCH_POLL_S)
+
+    # UserPromptSubmit / unknown / no event info: drain-once. The user is
+    # actively here — don't hang the prompt waiting for a possible future
+    # marker. If there's nothing now, surface nothing and let them go.
+    _reclaim_stale(inbox)
+    messages, run_ids = _drain_pending(inbox)
+    if not messages:
+        return 0
+    _emit_reminder(messages, run_ids)
     return _exit_code_for(event, did_inject=True)
 
 
