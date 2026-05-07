@@ -47,12 +47,16 @@ def test_write_completion_marker_creates_atomic_file(tmp_path, monkeypatch):
     assert out.name == "abc123.json"
 
     body = json.loads(out.read_text())
-    assert body["schema_version"] == 1
+    assert body["schema_version"] == 2  # bumped when claude_pid was added
     assert body["task_id"] == "abc123"
     assert body["status"] == "completed"
     assert body["elapsed_seconds"] == 1.5
     assert body["run_id"] == "run-xyz"
     assert "result_hint" in body
+    # claude_pid was added in v2 for cross-session ownership filtering.
+    # Field is always present; value can be None when running orphaned
+    # (PPID==1) or when PANEL_OWNER_PID is explicitly opted out.
+    assert "claude_pid" in body
 
     # Staging dir should exist but be empty (tmp file was renamed out)
     staging = tmp_path / ".staging"
@@ -1326,3 +1330,133 @@ def test_install_refuses_corrupt_settings_json(tmp_path, monkeypatch):
 
     with pytest.raises(RuntimeError, match="Cannot parse"):
         install(command="/usr/bin/panel-inbox-drain")
+
+
+# ---------------------------------------------------------------------------
+# Cross-session ownership: a marker tagged with Claude A's PID must not be
+# claimed by Claude B's hook. The inbox is a single global directory shared
+# across every Claude Code on the box; without this filter the first hook to
+# fire injects every pending verdict into the wrong conversation. Regression
+# for a real failure where a multiaudit fired from repo A surfaced its
+# completion notification in an unrelated Claude session running in repo B.
+# ---------------------------------------------------------------------------
+
+
+def test_drain_skips_markers_owned_by_a_different_claude(tmp_path, monkeypatch):
+    """Marker tagged with claude_pid=A is invisible to a drain process whose
+    own owner pid is B; B leaves the file in place for A's hook."""
+    monkeypatch.setenv("PANEL_INBOX_DIR", str(tmp_path))
+    monkeypatch.setenv("PANEL_OWNER_PID", "9999")  # pretend we're Claude B
+    from panel_cli.inbox_drain import _drain_pending
+
+    other = tmp_path / "task-from-claude-A.json"
+    other.write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "task_id": "task-from-claude-A",
+                "tool": "panel",
+                "label": "multiaudit:repoA",
+                "status": "completed",
+                "claude_pid": 1234,  # Claude A
+            }
+        )
+    )
+
+    messages, run_ids = _drain_pending(tmp_path)
+    assert messages == []
+    assert run_ids == []
+    # CRITICAL: marker remains in place for Claude A's hook to claim.
+    assert other.exists(), "Claude B must NOT consume Claude A's marker"
+
+
+def test_drain_claims_markers_matching_owner_pid(tmp_path, monkeypatch):
+    """Marker with claude_pid matching the drain owner is claimed and
+    consumed normally — the standard case."""
+    monkeypatch.setenv("PANEL_INBOX_DIR", str(tmp_path))
+    monkeypatch.setenv("PANEL_OWNER_PID", "1234")
+    from panel_cli.inbox_drain import _drain_pending
+
+    mine = tmp_path / "task-mine.json"
+    mine.write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "task_id": "task-mine",
+                "tool": "panel",
+                "label": "multiaudit:my-repo",
+                "status": "completed",
+                "claude_pid": 1234,  # me
+                "elapsed_seconds": 30.0,
+            }
+        )
+    )
+
+    messages, _ = _drain_pending(tmp_path)
+    assert len(messages) == 1
+    assert "task-mine" in messages[0]
+    assert not mine.exists(), "claimed marker should be deleted"
+
+
+def test_drain_claims_legacy_markers_without_claude_pid(tmp_path, monkeypatch):
+    """Markers written by a pre-v2 Panel (no claude_pid field) stay
+    drainable by any Claude Code so old deployments don't strand."""
+    monkeypatch.setenv("PANEL_INBOX_DIR", str(tmp_path))
+    monkeypatch.setenv("PANEL_OWNER_PID", "1234")
+    from panel_cli.inbox_drain import _drain_pending
+
+    legacy = tmp_path / "legacy.json"
+    legacy.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "task_id": "legacy",
+                "tool": "panel",
+                "label": "old",
+                "status": "completed",
+                # No claude_pid field at all
+            }
+        )
+    )
+
+    messages, _ = _drain_pending(tmp_path)
+    assert len(messages) == 1, "legacy marker should still be claimable"
+
+
+def test_two_claude_sessions_have_independent_watch_locks(tmp_path, monkeypatch):
+    """Each Claude session's watcher gets its own per-session lock — no
+    starvation where one session grabs a global lease and the other's
+    markers go unnoticed mid-watch."""
+    monkeypatch.setenv("PANEL_INBOX_DIR", str(tmp_path))
+    from panel_cli.inbox_drain import _try_acquire_watch_lock
+
+    lock_a = _try_acquire_watch_lock(tmp_path, owner_pid=1111)
+    lock_b = _try_acquire_watch_lock(tmp_path, owner_pid=2222)
+
+    assert lock_a is not None
+    assert lock_b is not None
+    assert lock_a != lock_b
+    assert lock_a.name.endswith(".1111")
+    assert lock_b.name.endswith(".2222")
+
+
+def test_owner_pid_field_present_in_written_marker(tmp_path, monkeypatch):
+    """write_completion_marker must stamp claude_pid so drain can route."""
+    monkeypatch.setenv("PANEL_INBOX_DIR", str(tmp_path))
+    monkeypatch.setenv("PANEL_OWNER_PID", "5678")
+    # Reset the module's cached owner pid so the env override takes hold
+    import utils.task_inbox as ti
+
+    ti._OWNER_PID = None
+    out = ti.write_completion_marker(
+        task_id="t",
+        tool="panel",
+        label="x",
+        status="completed",
+        created_at=1.0,
+        completed_at=2.0,
+        elapsed_seconds=1.0,
+    )
+    assert out is not None
+    body = json.loads(out.read_text())
+    assert body.get("claude_pid") == 5678

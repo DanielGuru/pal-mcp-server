@@ -288,6 +288,7 @@ class BugfindTool(BaseTool):
             recent_commits=recent_commits,
             log_tail=log_tail,
             attached_blobs=attached_blobs,
+            repo_root=cwd,
         )
 
         # Hard total cap — if the user attached huge files plus the log
@@ -518,6 +519,7 @@ def _build_investigation_prompt(
     recent_commits: str,
     log_tail: str,
     attached_blobs: list[tuple[str, str, bool]],
+    repo_root: str,
 ) -> str:
     commits_section = (
         f"\n\n=== RECENT COMMITS (what's been changing) ===\n{recent_commits.strip()}"
@@ -541,6 +543,12 @@ def _build_investigation_prompt(
 in production. The user can't reproduce it on demand — your job is to find \
 the root cause from the evidence below and propose the smallest fix that \
 won't make things worse. Adversarial, opinionated, specific.
+
+REPO ROOT: `{repo_root}`
+If you're a CLI agent (codex / gemini / claude), open any file in that repo \
+directly with your read tool when the inline evidence isn't enough. If you're \
+an API model without file tools (grok), reason from the inline content and \
+mark unverifiable claims as MED/LOW confidence.
 
 === BUG DESCRIPTION ===
 {bug_description}\

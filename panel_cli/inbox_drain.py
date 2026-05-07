@@ -38,6 +38,7 @@ import os
 import sys
 import time
 from pathlib import Path
+from typing import Optional
 
 INBOX_DIR_DEFAULT = Path.home() / ".panel" / "inbox"
 PROCESSING_TTL_S = 120.0
@@ -58,7 +59,24 @@ STOP_WATCH_POLL_S = float(os.environ.get("PANEL_STOP_WATCH_POLL_S", "1.0"))
 # next to the markers; first hook to call O_CREAT|O_EXCL wins, others
 # drain-once and exit 0. PID liveness check (kill -0) lets us reclaim a
 # stale lease left by a crashed/killed prior watcher.
-WATCH_LOCK_NAME = ".watch.lock"
+#
+# Per-session: the lock name embeds the owner Claude Code PID so two
+# concurrent Claude sessions on the same box don't fight over a single
+# global lease — without this, only one session's hook would ever run
+# the long-poll watcher and the other session's markers would never get
+# noticed mid-watch.
+WATCH_LOCK_BASE = ".watch.lock"
+
+
+def _watch_lock_name(owner_pid: Optional[int]) -> str:
+    if owner_pid and owner_pid > 0:
+        return f"{WATCH_LOCK_BASE}.{owner_pid}"
+    return WATCH_LOCK_BASE
+
+
+# Backward-compat alias for older imports / tests that referenced the
+# constant directly. New code should use ``_watch_lock_name(...)``.
+WATCH_LOCK_NAME = WATCH_LOCK_BASE
 
 
 def _inbox_dir() -> Path:
@@ -135,7 +153,7 @@ def _pid_is_alive(pid: int) -> bool:
         return _sys.platform != "win32"
 
 
-def _try_acquire_watch_lock(inbox: Path) -> Optional[Path]:
+def _try_acquire_watch_lock(inbox: Path, owner_pid: Optional[int] = None) -> Optional[Path]:
     """Try to become the singleton long-poll watcher. Returns the lock
     path on success (caller MUST release it via ``_release_watch_lock``);
     returns ``None`` if a live watcher already holds the lease.
@@ -157,7 +175,8 @@ def _try_acquire_watch_lock(inbox: Path) -> Optional[Path]:
 
     Reclaim is bounded: at most 2 attempts. If we keep losing the race,
     yield rather than spin."""
-    lock_path = inbox / WATCH_LOCK_NAME
+    lock_name = _watch_lock_name(owner_pid)
+    lock_path = inbox / lock_name
     pid = os.getpid()
     grace_age_s = 5.0  # treat lock files younger than this as "alive even
     # if PID is missing" — gives the holder time to write the PID.
@@ -204,7 +223,7 @@ def _try_acquire_watch_lock(inbox: Path) -> Optional[Path]:
             # Stale — atomic-rename to a unique stale name so we don't
             # race-delete a successor that just took over.
             stale_path = inbox / (
-                f"{WATCH_LOCK_NAME}.stale.{pid}.{int(time.time() * 1000)}"
+                f"{lock_name}.stale.{pid}.{int(time.time() * 1000)}"
             )
             if attempt == 0:
                 try:
@@ -324,11 +343,70 @@ def _exit_code_for(event: str, did_inject: bool) -> int:
     return 0  # UserPromptSubmit, unknown, or no event info
 
 
+def _owner_claude_pid() -> Optional[int]:
+    """The Claude Code PID that fired this hook.
+
+    Claude Code launches the hook command directly (see
+    ``panel_cli/install_hooks.py``: the hook entry is the absolute path to
+    ``panel-inbox-drain``), so ``os.getppid()`` is the originating Claude
+    session. PANEL_OWNER_PID overrides for non-direct hook shapes.
+
+    Returned value is matched against each marker's ``claude_pid`` field;
+    only matching markers are claimed. Markers with no ``claude_pid``
+    (legacy / orphaned Panel) drain via the unowned fallback so old
+    deployments don't strand markers after upgrade.
+    """
+    env = os.environ.get("PANEL_OWNER_PID", "").strip()
+    if env:
+        try:
+            pid = int(env)
+            return pid if pid > 0 else None
+        except ValueError:
+            pass
+    try:
+        ppid = os.getppid()
+    except OSError:
+        return None
+    return ppid if ppid > 1 else None
+
+
+def _marker_claude_pid(marker: Path) -> tuple[Optional[int], bool]:
+    """Peek inside a marker JSON for its ``claude_pid``. Returns
+    ``(pid, valid)`` — ``valid`` is False when the file isn't readable as
+    JSON (caller leaves it alone for the stale-reclaim TTL to handle).
+
+    Read-then-claim has a window where two drain processes both peek the
+    same marker, but only one ``os.replace`` wins downstream — so the
+    decision stays correct: if the marker isn't ours, we skip cleanly
+    and the rightful owner claims it.
+    """
+    try:
+        text = marker.read_text(encoding="utf-8")
+        payload = json.loads(text)
+    except (OSError, json.JSONDecodeError):
+        return None, False
+    pid = payload.get("claude_pid")
+    if isinstance(pid, int) and pid > 0:
+        return pid, True
+    return None, True
+
+
 def _drain_pending(inbox: Path) -> tuple[list[str], list[str]]:
-    """Claim and process every marker currently in the inbox. Returns
-    ``(messages, run_ids)``. Atomic .processing.<pid> claim so concurrent
-    drain processes don't double-inject the same completion."""
+    """Claim and process every marker OWNED by this Claude Code session.
+
+    Returns ``(messages, run_ids)``. Two layers:
+
+    1. **Ownership filter (read-side)** — peek each marker's ``claude_pid``
+       and skip markers that name a different Claude Code session. The
+       inbox is global (``~/.panel/inbox``), shared across every Claude
+       Code on the machine; without this filter the first hook to fire
+       claims any pending marker and injects the verdict into the wrong
+       conversation.
+    2. **Atomic claim (write-side)** — ``.processing.<pid>`` rename so two
+       concurrent hooks scoped to the same session don't double-inject.
+    """
     pid = os.getpid()
+    owner_pid = _owner_claude_pid()
     messages: list[str] = []
     run_ids: list[str] = []
 
@@ -339,15 +417,26 @@ def _drain_pending(inbox: Path) -> tuple[list[str], list[str]]:
         # markers.
         if marker.name.startswith("."):
             continue
-        if marker.name == WATCH_LOCK_NAME:
+        # Skip any per-session watch lock (`.watch.lock` or
+        # `.watch.lock.<pid>`) and any stale-lock files left mid-reclaim.
+        # Lock filenames embed the owner PID for cross-session isolation.
+        if marker.name.startswith(WATCH_LOCK_BASE):
             continue
-        if WATCH_LOCK_NAME + ".stale." in marker.name:
+        # Ownership check BEFORE claim. Markers tagged with another
+        # Claude Code's PID are left alone for that session's hook.
+        # Untagged markers (claude_pid absent or null) are claimable by
+        # anyone — legacy / orphaned-Panel fallback.
+        marker_pid, valid_json = _marker_claude_pid(marker)
+        if not valid_json:
+            # Couldn't parse — leave it for the stale-reclaim TTL.
+            continue
+        if marker_pid is not None and owner_pid is not None and marker_pid != owner_pid:
             continue
         claimed = inbox / f"{marker.name}.processing.{pid}"
         try:
             os.replace(marker, claimed)
         except (OSError, FileNotFoundError):
-            # Another hook beat us to it. Move on.
+            # Another hook (in the right session) beat us to it. Move on.
             continue
         try:
             text = claimed.read_text(encoding="utf-8")
@@ -397,7 +486,12 @@ def main() -> int:
     # later turn fires a fresh one) drain-once-and-yield so we never
     # accumulate N concurrent pollers across a long session.
     if event == "Stop":
-        lock_path = _try_acquire_watch_lock(inbox)
+        # Per-session watch lock so two Claude Code sessions on the
+        # same machine each get their own long-poller; otherwise only
+        # one session runs the watcher and the other's markers go
+        # un-noticed mid-watch.
+        owner_pid = _owner_claude_pid()
+        lock_path = _try_acquire_watch_lock(inbox, owner_pid)
         if lock_path is None:
             # Another live watcher is holding the lease — just drain
             # whatever's already pending and exit cleanly. The lease

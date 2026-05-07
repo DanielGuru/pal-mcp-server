@@ -308,6 +308,7 @@ class MultiauditTool(BaseTool):
             recent_commits=recent_commits,
             files_changed=files_changed,
             extra_context=extra_context,
+            repo_root=cwd,
         )
 
         # ------ dispatch the panel via start_task ------
@@ -495,11 +496,13 @@ def _build_audit_prompt(
     recent_commits: str,
     files_changed: str,
     extra_context: str,
+    repo_root: str,
 ) -> str:
     truncation_note = (
-        "\n\n(Diff was truncated; do not assume you've seen all changes — "
-        "if your verdict depends on something outside the truncated window, "
-        "say so explicitly.)"
+        "\n\n(Diff was truncated by Panel's char cap; the FILES CHANGED list "
+        "below is complete. Open the files you actually need from REPO ROOT "
+        "via your CLI's file-read tool — do not assume you've seen everything "
+        "in the inline diff window.)"
         if diff_truncated
         else ""
     )
@@ -532,11 +535,27 @@ do for a teammate whose change you're going to be on call for. Adversarial, \
 opinionated, specific. You're not here to be polite. You're here to find what \
 breaks before it ships.
 
+REPO ROOT: `{repo_root}`
 The change is on branch `{current_branch}` (vs `{base_branch}`, source: \
-{diff_source}). You are reading the actual diff below — cite `file:line` for \
-every claim and do NOT invent code that isn't shown. If your verdict depends \
-on something outside the diff, say so explicitly and call out what you'd need \
-to see.
+{diff_source}).
+
+=== HOW TO INVESTIGATE ===
+- If you are a CLI agent (codex / gemini / claude) you have READ access to the \
+repo root above. The inline diff is a starting point, not the boundary — open \
+files you need with your CLI's read tool. For big PRs the diff is truncated; \
+the FILES CHANGED list is complete.
+- If you are an API model without file tools (grok, etc.), reason strictly \
+from the inline diff + FILES CHANGED + RECENT COMMITS. Mark anything that \
+would require reading a file you don't have as MED/LOW confidence — don't \
+guess at line numbers.
+- DO NOT run typecheckers (tsc, mypy, pyright), test runners (pytest, jest, \
+vitest, go test), linters, build commands, or installers. Your job is to READ \
+code, not execute it. CI runs those separately.
+- DO NOT respond with `files_required_to_continue`, `files_needed`, \
+`mandatory_instructions`, or any clarification-request JSON. This is \
+fire-and-forget — there is no second turn where Panel feeds you more files. \
+If you ask, you get nothing back and your audit slot is wasted. Read the \
+files yourself (CLI agents) or reason from what's inline (API models).
 
 === HARD RULES ===
 - No "consider X" / "you might want to" / "perhaps". Say what you mean. If \
@@ -545,10 +564,13 @@ something is wrong, say it's wrong and how to fix it.
 - Do not pad. If a section has nothing real to flag, write `(none)` and move on.
 - No style nits, no "rename this variable", no "add a docstring". If your \
 finding wouldn't make a teammate change the PR, drop it.
+- Cite `file:line` for every concrete claim. Numbers must come from a file you \
+actually opened — do not invent line numbers from a guess at what's around the \
+diff window.
 - Tag every concrete finding with **severity** (P0 = blocker, ship breaks; \
 P1 = must-fix before merge; P2 = should-fix soon) and **confidence** (HIGH = \
-I see the bug in the diff; MED = strong reasoning, can't fully verify here; \
-LOW = pattern-match suspicion, worth checking).
+I see the bug in the diff or the file I read; MED = strong reasoning, partial \
+read; LOW = pattern-match suspicion, worth checking).
 
 === OUTPUT STRUCTURE ===
 

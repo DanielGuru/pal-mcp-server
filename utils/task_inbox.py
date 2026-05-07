@@ -40,7 +40,60 @@ from typing import Any, Optional
 
 logger = logging.getLogger("panel.task_inbox")
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+
+# Captured ONCE at import time. For an stdio MCP server (Panel's normal
+# launch shape), Panel's PPID at startup is the Claude Code process that
+# launched it. We freeze the value here so even if Claude Code dies and
+# Panel reparents to init mid-session (PPID becomes 1), every marker we
+# write still carries the originating session's PID.
+#
+# Why this matters: the inbox is a single global directory under ``~/.panel``
+# shared across every Claude Code on the machine. Without an owner tag,
+# whichever Claude Code's Stop / UserPromptSubmit hook fires first claims
+# any pending marker and injects the verdict into THAT conversation —
+# even if the multiaudit was launched from a different repo / session.
+# Tagging by PPID lets the drain script claim only its own session's
+# markers, which is the routing the user expected.
+#
+# Override via PANEL_OWNER_PID for non-stdio launch shapes (e.g. Panel
+# running behind a wrapper that breaks the direct-child relationship).
+_OWNER_PID: Optional[int] = None
+
+
+def _detect_owner_pid() -> Optional[int]:
+    """PPID at module-load time, or PANEL_OWNER_PID override.
+
+    Returns None if either:
+      - PPID is 1 (Panel was started detached / orphaned — no session to
+        scope to, fall back to legacy "any drainer" semantics)
+      - PANEL_OWNER_PID is explicitly set to "0" or empty (opt-out)
+
+    Cached on the first call so a bad clock or a later reparent can't
+    flip the value mid-session.
+    """
+    global _OWNER_PID
+    if _OWNER_PID is not None:
+        return _OWNER_PID if _OWNER_PID > 0 else None
+    env = os.environ.get("PANEL_OWNER_PID", "").strip()
+    if env:
+        try:
+            pid = int(env)
+            _OWNER_PID = pid if pid > 0 else 0
+            return pid if pid > 0 else None
+        except ValueError:
+            pass
+    try:
+        ppid = os.getppid()
+    except OSError:
+        ppid = 0
+    # PPID==1 (init) means Panel was started orphaned, e.g. systemd unit,
+    # detached daemon. No useful session to scope to — leave unowned.
+    if ppid > 1:
+        _OWNER_PID = ppid
+        return ppid
+    _OWNER_PID = 0
+    return None
 
 
 def inbox_dir(override: Optional[str] = None) -> Path:
@@ -92,6 +145,12 @@ def write_completion_marker(
         "completed_at": completed_at,
         "elapsed_seconds": elapsed_seconds,
         "run_id": run_id,
+        # Owner Claude Code PID — drain script claims only matching markers
+        # so a multiaudit fired from one Claude Code session doesn't wake up
+        # an unrelated session that happens to fire its hook first. May be
+        # None for orphaned/detached Panel processes; those fall back to
+        # legacy "any drainer" semantics on the read side.
+        "claude_pid": _detect_owner_pid(),
         "result_hint": (
             f"Call task_result('{task_id}') for the synthesised output, or "
             f"run_tree('{run_id}', mode='transcript') for panelist verdicts."

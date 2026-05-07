@@ -54,6 +54,30 @@ DEBATE_PER_PEER_CHAR_CAP = 4000
 # in the debate; the host model sees the prompt and answers like any other.
 HOST_AGENT_NAME = "host"
 
+# Panel-mode preamble prepended to ask_panel / multiaudit / bugfind prompts
+# so panelists running in BOTH modes (clink CLI + chat API) get the same
+# fire-and-forget guardrails. Without this, chat-API panelists fall back to
+# their tool's system prompt (chat_prompt.py), which actively instructs the
+# model to issue `files_required_to_continue` when it lacks context — that
+# JSON is the single biggest cause of an audit panelist returning a stalled
+# clarification request instead of an answer.
+PANEL_MODE_PREAMBLE = (
+    "=== PANEL MODE — read this first ===\n"
+    "You are answering as one panelist in a multi-model debate. Single "
+    "shot — there is NO follow-up turn where you can request more files.\n"
+    "- DO NOT respond with `files_required_to_continue`, `files_needed`, "
+    "`mandatory_instructions`, or any other clarification-request JSON. "
+    "If you do, your slot is wasted; nothing comes back.\n"
+    "- DO NOT run typecheckers (tsc / mypy / pyright), test runners "
+    "(pytest / jest / vitest / go test / cargo test), linters, build "
+    "commands, package installs, or anything that mutates state. Read "
+    "the code; CI runs the rest.\n"
+    "- If you're a CLI agent (codex / gemini / claude), open files you "
+    "need with your read tool. If you're an API model without file tools "
+    "(grok and OAuth-fallback paths), reason from the inline content "
+    "and explicitly mark anything unverified as MED/LOW confidence."
+)
+
 
 def _is_host_agent(name: str) -> bool:
     """Match the literal panelist name 'host' (the MCP-side LLM)."""
@@ -1158,6 +1182,17 @@ class PanelTool(BaseTool):
         if not isinstance(prompt, str) or not prompt.strip():
             return _err("'prompt' must be a non-empty string")
 
+        # Prepend the panel-mode preamble so every panel dispatch (panel,
+        # ask_panel, multiaudit, bugfind) enforces fire-and-forget rules:
+        # no clarification JSON, no typecheckers/test runs. Idempotent —
+        # the multiaudit/bugfind rubrics already embed equivalent text but
+        # the dedicated preamble at the top is the single load-bearing
+        # signal for chat-API panelists who'd otherwise inherit
+        # chat_prompt.py's "use files_required_to_continue" instruction.
+        if PANEL_MODE_PREAMBLE not in prompt:
+            prompt = PANEL_MODE_PREAMBLE + "\n\n" + prompt
+            arguments = {**arguments, "prompt": prompt}
+
         # Boundary size check on the user's prompt — bypassed when an
         # internal generator (multiaudit) marked the context, fired
         # otherwise. Audit panel finding: direct `panel(prompt=<huge>)`
@@ -1614,6 +1649,11 @@ class AskPanelTool(PanelTool):
         if auto_attachments:
             merged = existing_attachments + auto_attachments
             arguments = {**arguments, "absolute_file_paths": merged}
+
+        # PanelTool.execute() will prepend PANEL_MODE_PREAMBLE — no need
+        # to duplicate here; AskPanelTool inherits the parent's preamble
+        # injection so all panel-dispatched calls (multiaudit, bugfind,
+        # ask_panel, direct panel) get the same fire-and-forget guards.
 
         return await super().execute(arguments)
 
