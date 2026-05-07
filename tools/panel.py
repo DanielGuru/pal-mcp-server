@@ -1480,6 +1480,87 @@ def _err(message: str) -> list[TextContent]:
     return [TextContent(type="text", text=json.dumps({"status": "error", "error": message}, indent=2))]
 
 
+# ---------------------------------------------------------------------------
+# Auto-attach absolute paths from prompt text
+#
+# When ask_panel runs a question that references specific files, API-mode
+# panelists need those files inlined into the prompt — they have no shell.
+# We detect absolute paths in the prompt body, validate that each exists +
+# is readable + has a sensible code/text extension, dedupe with whatever
+# the caller already passed, and cap the total. Best-effort: silently
+# skips anything that doesn't fit the heuristic, so a noisy prompt with
+# inadvertent / matches doesn't blow the budget.
+# ---------------------------------------------------------------------------
+
+
+_AUTO_ATTACH_MAX_FILES = 10
+_AUTO_ATTACH_MAX_TOTAL_BYTES = 200_000
+
+# Conservative regex: absolute paths starting with /, containing alphanumerics
+# / underscores / hyphens / dots / slashes, ending in a 1-5 char extension.
+# Excludes /usr/, /opt/, /etc/, /tmp/, /var/, /System/ where source files
+# basically never live and false positives are common (e.g. "/etc/hosts" in
+# error messages). Tightens the heuristic to repo-shaped paths.
+_PATH_RE = re.compile(r"(?<![\w/])(/(?!(?:usr|opt|etc|tmp|var|System|bin|sbin|dev)/)[\w./_-]+\.[A-Za-z0-9]{1,6})(?![\w])")
+# Extensions we'll auto-attach. Anything else (binaries, archives, images)
+# would just bloat the prompt without helping a code-verification panelist.
+_AUTO_ATTACH_EXTENSIONS = frozenset({
+    ".py", ".js", ".jsx", ".ts", ".tsx", ".rb", ".go", ".rs", ".c", ".cc",
+    ".cpp", ".h", ".hpp", ".java", ".kt", ".swift", ".scala", ".sh", ".bash",
+    ".zsh", ".sql", ".yaml", ".yml", ".toml", ".json", ".jsonl", ".md", ".txt",
+    ".html", ".css", ".lua", ".php", ".pl", ".r", ".dockerfile", ".cfg",
+    ".ini", ".env",
+})
+
+
+def _auto_detect_file_paths(prompt: str, already_attached: list[str]) -> list[str]:
+    """Pull absolute paths out of ``prompt`` body, validate them, dedupe
+    against ``already_attached``, return the new ones to attach.
+
+    Conservative: only absolute paths with code/text extensions that
+    actually exist on disk, capped at ``_AUTO_ATTACH_MAX_FILES`` files and
+    ``_AUTO_ATTACH_MAX_TOTAL_BYTES`` bytes. Privacy-aware: skips paths
+    under common system / config directories where the user almost
+    certainly didn't intend the file to be read.
+    """
+    if not prompt or not isinstance(prompt, str):
+        return []
+    seen: set[str] = {os.path.abspath(p) for p in already_attached if isinstance(p, str)}
+    out: list[str] = []
+    total_bytes = 0
+    for match in _PATH_RE.finditer(prompt):
+        raw = match.group(1)
+        try:
+            abspath = os.path.abspath(raw)
+        except Exception:  # noqa: BLE001
+            continue
+        if abspath in seen:
+            continue
+        # Extension whitelist
+        _, ext = os.path.splitext(abspath)
+        if ext.lower() not in _AUTO_ATTACH_EXTENSIONS:
+            continue
+        # Must exist and be a readable file (not a dir, not a symlink to /)
+        try:
+            st = os.stat(abspath)
+        except (OSError, ValueError):
+            continue
+        import stat as _stat
+        if not _stat.S_ISREG(st.st_mode):
+            continue
+        # Skip suspiciously large files — would blow the budget by themselves
+        if st.st_size > _AUTO_ATTACH_MAX_TOTAL_BYTES:
+            continue
+        if total_bytes + st.st_size > _AUTO_ATTACH_MAX_TOTAL_BYTES:
+            break
+        seen.add(abspath)
+        out.append(abspath)
+        total_bytes += st.st_size
+        if len(out) >= _AUTO_ATTACH_MAX_FILES:
+            break
+    return out
+
+
 class AskPanelTool(PanelTool):
     """Magic-phrase entry point for the freeform multi-model panel.
 
@@ -1518,6 +1599,22 @@ class AskPanelTool(PanelTool):
             ).strip()
             if default_judge:
                 arguments = {**arguments, "judge": default_judge}
+
+        # Auto-attach absolute file paths mentioned in the prompt so
+        # API-mode panelists (grok always; codex/gemini/claude when their
+        # OAuth path falls back to paid API) get the same code visibility
+        # the clink-shell panelists already have. Without this, an
+        # ask_panel call asking "verify claim X against this file" leaves
+        # API-mode panelists asking us for files mid-debate or hallucinating
+        # answers. Multiaudit is already covered by the diff payload;
+        # bugfind has explicit attached_files; ask_panel is the gap.
+        prompt = arguments.get("prompt") or ""
+        existing_attachments = list(arguments.get("absolute_file_paths") or [])
+        auto_attachments = _auto_detect_file_paths(prompt, existing_attachments)
+        if auto_attachments:
+            merged = existing_attachments + auto_attachments
+            arguments = {**arguments, "absolute_file_paths": merged}
+
         return await super().execute(arguments)
 
     def get_description(self) -> str:
@@ -1533,6 +1630,13 @@ class AskPanelTool(PanelTool):
             "context from the conversation into a tight, well-scoped prompt and "
             "pass it as `ask_panel(prompt=..., panelists=[...], judge=..., "
             "debate_rounds=...)`. Don't make the user paste their question "
-            "through; you write the prompt. Always wrap in start_task — "
-            "panels run for several minutes per round."
+            "through; you write the prompt. "
+            "**For code-verification questions, ALWAYS pass `absolute_file_paths` "
+            "with the files panelists need to inspect.** API-mode panelists "
+            "(grok always; codex/gemini/claude when their OAuth quota is exhausted "
+            "and they fall back to paid API) cannot read files via shell — they "
+            "rely on `absolute_file_paths`. Absolute paths mentioned in the prompt "
+            "are auto-detected and attached too (capped at 10 files / 200KB), but "
+            "passing them explicitly is more reliable. Always wrap in start_task "
+            "— panels run for several minutes per round."
         )

@@ -1026,6 +1026,159 @@ def test_taskmanager_start_writes_marker_with_digest_end_to_end(tmp_path, monkey
     assert "Ship it" in digest
 
 
+def test_ask_panel_auto_attaches_absolute_paths_from_prompt(tmp_path, monkeypatch):
+    """REGRESSION (the api-mode panelist gap): when ask_panel's prompt
+    mentions absolute file paths, the orchestrator must auto-attach them
+    via `absolute_file_paths` so API-mode panelists (grok always; clink
+    panelists when their OAuth quota is exhausted and they fall back to
+    paid API) can read the files. Without this, those panelists return
+    'files_required_to_continue' and the audit fails mid-debate."""
+    import asyncio
+    from tools.panel import AskPanelTool, PanelTool
+
+    # Create real files the panel would attach
+    py_file = tmp_path / "module.py"
+    py_file.write_text("def hello(): return 'world'\n")
+    md_file = tmp_path / "notes.md"
+    md_file.write_text("# Notes\nReview please.\n")
+
+    prompt = (
+        f"Verify the implementation in {py_file} matches the docs at "
+        f"{md_file}. Also check {tmp_path}/does_not_exist.py (skip if "
+        "not present) and ignore /etc/hosts since that's just config."
+    )
+
+    captured = {}
+
+    async def fake_super_execute(self, args):
+        captured["args"] = args
+        return []
+
+    orig = PanelTool.execute
+    PanelTool.execute = fake_super_execute  # type: ignore[assignment]
+    try:
+        tool = AskPanelTool()
+        asyncio.run(tool.execute({"prompt": prompt, "panelists": ["codex"]}))
+        attached = captured["args"].get("absolute_file_paths", [])
+        # Both real files attached
+        assert os.path.abspath(str(py_file)) in attached
+        assert os.path.abspath(str(md_file)) in attached
+        # Nonexistent file NOT attached
+        assert all("does_not_exist" not in p for p in attached)
+        # /etc/hosts NOT attached (system path blacklist)
+        assert all("/etc/hosts" not in p for p in attached)
+    finally:
+        PanelTool.execute = orig  # type: ignore[assignment]
+
+
+def test_ask_panel_auto_attach_respects_existing_paths(tmp_path, monkeypatch):
+    """Caller-supplied `absolute_file_paths` must be preserved AND
+    deduplicated against auto-detected matches (so the same file doesn't
+    appear twice)."""
+    import asyncio
+    from tools.panel import AskPanelTool, PanelTool
+
+    py_file = tmp_path / "auth.py"
+    py_file.write_text("class Auth: pass\n")
+    other = tmp_path / "config.toml"
+    other.write_text("[server]\nport = 8080\n")
+
+    captured = {}
+
+    async def fake_super_execute(self, args):
+        captured["args"] = args
+        return []
+
+    orig = PanelTool.execute
+    PanelTool.execute = fake_super_execute  # type: ignore[assignment]
+    try:
+        tool = AskPanelTool()
+        asyncio.run(
+            tool.execute(
+                {
+                    "prompt": f"Look at {py_file}",
+                    "panelists": ["codex"],
+                    # Caller already passed py_file AND a separate config
+                    "absolute_file_paths": [str(py_file), str(other)],
+                }
+            )
+        )
+        attached = captured["args"]["absolute_file_paths"]
+        # py_file appears exactly once across all forms (dedupe)
+        abs_py = os.path.abspath(str(py_file))
+        py_count = sum(1 for p in attached if os.path.abspath(p) == abs_py)
+        assert py_count == 1, f"expected 1 occurrence of py_file, got {py_count} in {attached}"
+        # config.toml preserved
+        assert str(other) in attached or os.path.abspath(str(other)) in attached
+    finally:
+        PanelTool.execute = orig  # type: ignore[assignment]
+
+
+def test_ask_panel_auto_attach_caps_file_count_and_size(tmp_path, monkeypatch):
+    """A prompt that mentions 50 files shouldn't blow the budget. Cap
+    at 10 files / 200KB total."""
+    import asyncio
+    from tools.panel import AskPanelTool, PanelTool
+
+    files = []
+    for i in range(20):
+        f = tmp_path / f"file_{i}.py"
+        f.write_text(f"# file {i}\n")
+        files.append(str(f))
+
+    prompt = "Audit these: " + " and ".join(files)
+
+    captured = {}
+
+    async def fake_super_execute(self, args):
+        captured["args"] = args
+        return []
+
+    orig = PanelTool.execute
+    PanelTool.execute = fake_super_execute  # type: ignore[assignment]
+    try:
+        tool = AskPanelTool()
+        asyncio.run(tool.execute({"prompt": prompt, "panelists": ["codex"]}))
+        attached = captured["args"]["absolute_file_paths"]
+        assert len(attached) <= 10
+    finally:
+        PanelTool.execute = orig  # type: ignore[assignment]
+
+
+def test_ask_panel_auto_attach_skips_huge_individual_file(tmp_path, monkeypatch):
+    """A single file larger than the total budget would otherwise consume
+    the entire allowance. Skip it instead — the panelists can ask for it
+    explicitly via `absolute_file_paths` if they actually need it."""
+    import asyncio
+    from tools.panel import AskPanelTool, PanelTool
+
+    big = tmp_path / "huge.py"
+    big.write_text("x = 1\n" * 100_000)  # ~700KB
+    small = tmp_path / "small.py"
+    small.write_text("y = 2\n")
+
+    prompt = f"Audit {big} and {small}"
+
+    captured = {}
+
+    async def fake_super_execute(self, args):
+        captured["args"] = args
+        return []
+
+    orig = PanelTool.execute
+    PanelTool.execute = fake_super_execute  # type: ignore[assignment]
+    try:
+        tool = AskPanelTool()
+        asyncio.run(tool.execute({"prompt": prompt, "panelists": ["codex"]}))
+        attached = captured["args"]["absolute_file_paths"]
+        # Big file skipped, small file present
+        assert str(big) not in attached
+        assert os.path.abspath(str(big)) not in attached
+        assert os.path.abspath(str(small)) in attached
+    finally:
+        PanelTool.execute = orig  # type: ignore[assignment]
+
+
 def test_install_refuses_corrupt_settings_json(tmp_path, monkeypatch):
     settings = tmp_path / "settings.json"
     monkeypatch.setenv("CLAUDE_SETTINGS_PATH", str(settings))
