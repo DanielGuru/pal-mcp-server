@@ -205,7 +205,12 @@ class RunTreeTool(BaseTool):
             "to get JUST the panelist verdicts + judge synthesis as clean "
             "text — same view the user sees on the live web viewer page. "
             "Always prefer this over scraping task_status's progress event "
-            "log when you want to read the panel's findings.**"
+            "log when you want to read the panel's findings.** "
+            "**After calling this, surface the verdicts to the user as "
+            "plain readable text in your reply.** The user sees nothing "
+            "unless you write the headline / per-panelist takes / "
+            "recommended actions out as prose. End your turn with that "
+            "surfaced text — do not chain more tool calls to 'process' it."
         )
 
     def get_input_schema(self) -> dict[str, Any]:

@@ -1006,7 +1006,15 @@ class TaskStatusTool(BaseTool):
         return (
             "Return the current status of a background task started via start_task, "
             "including recent progress events. Instant — does not wait. Pass "
-            "task_id='all' to list every known task."
+            "task_id='all' to list every known task. "
+            "**After calling this, ALWAYS surface the meaningful content to "
+            "the user as plain text in your reply** — status, elapsed seconds, "
+            "and the most recent 2-3 progress event labels. The tool result is "
+            "JSON for your consumption; the user sees nothing unless you write "
+            "it. Bad: call task_status, get JSON back, end turn silent. Good: "
+            "call task_status, then say 'panel running 4m23s, codex done, "
+            "claude streaming' or similar. End the turn with that text — "
+            "don't loop into another silent poll."
         )
 
     def get_input_schema(self) -> dict[str, Any]:
@@ -1092,7 +1100,15 @@ class TaskResultTool(BaseTool):
             "many seconds for it to complete. Returns the wrapped tool's output verbatim. "
             f"NOTE: wait_seconds is capped at {int(MAX_WAIT_SECONDS)}s. Long blocks freeze the "
             "user out of the conversation; prefer short polls or wait for the push-completion "
-            "notification Panel emits when the task finishes."
+            "notification Panel emits when the task finishes. "
+            "**After calling this, ALWAYS surface the verdict to the user as plain "
+            "text in your reply.** The result is JSON; the user sees nothing unless "
+            "you write the verdict / headline / panelist takes / recommended actions "
+            "out as readable prose. For panel-family results, prefer "
+            "`run_tree(run_id, mode='transcript')` — cleaner output, drops the "
+            "tool-call chatter and gives you just the panelists' final answers + "
+            "judge synthesis. After fetching, end your turn with the surfaced "
+            "verdict text — do NOT call more tools to 'process' it."
         )
 
     def get_input_schema(self) -> dict[str, Any]:
