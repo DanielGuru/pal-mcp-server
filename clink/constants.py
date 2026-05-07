@@ -95,8 +95,13 @@ INTERNAL_DEFAULTS: dict[str, CLIInternalDefaults] = {
         ),
         oauth_failure_patterns=(
             # claude CLI surfaces auth/quota issues with these signals.
+            # Narrow auth/quota matchers only — `anthropic_api_error` was
+            # too broad (any 4xx/5xx from the Anthropic backend tripped it,
+            # including legit prompt errors), causing paid-API retries on
+            # non-recoverable failures. Panel-flagged.
             "please run claude /login",
-            "anthropic_api_error",
+            "authentication_error",
+            "invalid_api_key",
             "credit balance is too low",
             "rate_limit_error",
         ),

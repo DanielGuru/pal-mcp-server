@@ -410,6 +410,7 @@ async function renderRunPicker() {
         if (target !== SELECTED) {
           SELECTED = target;
           picker.value = SELECTED;
+          renderConversation._lastFingerprint = null;
           renderConversation();
         } else {
           picker.value = SELECTED;
@@ -424,6 +425,7 @@ async function renderRunPicker() {
         SELECTED = liveRun.run_id;
         MANUAL_PICK = false;
         picker.value = SELECTED;
+        renderConversation._lastFingerprint = null;
         renderConversation();
       } else if (SELECTED) {
         // Keep the picker's selected option in sync. If the user's
@@ -880,6 +882,26 @@ async function renderConversation() {
     const wasAtBottom = preDistFromBottom <= STICKY_BOTTOM_PX;
     const preScrollY = window.scrollY;
 
+    // Fingerprint-skip: SSE pings up to ~10x/s during streaming. If
+    // nothing the viewer cares about changed (event count, last event ts,
+    // status, panelist progress, last streaming text length), skip the
+    // wholesale innerHTML rewrite — that rewrite is what the user
+    // perceives as flicker / disappear-reappear when scrolling up.
+    const lastEvent = events.length ? events[events.length - 1] : null;
+    const fingerprint = JSON.stringify({
+      n: events.length,
+      lastTs: lastEvent ? lastEvent.ts : 0,
+      // last streaming chunk length so we DO re-render when streaming text
+      // grows but the event count stays flat (streaming text_chunk events
+      // accumulate into one block).
+      lastLen: lastEvent ? String(lastEvent.text || lastEvent.content || '').length : 0,
+      status: effStatus,
+      answers: panelistAnswerCount,
+      sel: SELECTED,
+    });
+    if (renderConversation._lastFingerprint === fingerprint) return;
+    renderConversation._lastFingerprint = fingerprint;
+
     $('#content').innerHTML = summary + promptHeader + middle + renderRawTree(tree);
 
     // Restore user-toggled state of the prompt header. Before this fix
@@ -932,6 +954,9 @@ $('#run-picker').addEventListener('change', (e) => {
   SELECTED = e.target.value;
   MANUAL_PICK = true;
   LAST_EVENT_COUNT = 0;
+  // Clear cached fingerprint — the new run's content is unrelated, so
+  // the next render must fire even if its fingerprint happens to collide.
+  renderConversation._lastFingerprint = null;
   window.scrollTo({ top: 0 });
   renderConversation();
 });
@@ -1143,6 +1168,39 @@ async function renderSettings() {
   }
 }
 
+// -- render scheduling: coalesce + scroll-aware -------------------------
+// SSE can fire up to ~10x/s during streaming. Every fire used to trigger
+// a full innerHTML rebuild of #content, which the user perceives as
+// flicker / text-disappears-then-reappears when they're scrolling up to
+// read history. We coalesce bursts into trailing-edge renders and skip
+// renders entirely while the user is actively scrolling.
+let _RENDER_PENDING = null;          // setTimeout handle when one is queued
+let _USER_SCROLLING_UNTIL = 0;       // ms timestamp when scroll quiesces
+const RENDER_THROTTLE_MS = 250;
+const SCROLL_QUIET_MS = 200;
+window.addEventListener('scroll', () => {
+  // Bump the "user is scrolling" deadline forward on every scroll event.
+  // While the deadline is in the future, scheduleRender keeps deferring.
+  _USER_SCROLLING_UNTIL = Date.now() + SCROLL_QUIET_MS;
+}, { passive: true });
+
+function scheduleRender() {
+  if (CURRENT_TAB !== 'transcript' || !SELECTED) return;
+  if (_RENDER_PENDING) return;       // already queued — drop the duplicate
+  const now = Date.now();
+  const scrollWait = Math.max(0, _USER_SCROLLING_UNTIL - now);
+  const delay = Math.max(RENDER_THROTTLE_MS, scrollWait);
+  _RENDER_PENDING = setTimeout(() => {
+    _RENDER_PENDING = null;
+    // If scroll resumed during the wait, push out one more cycle.
+    if (Date.now() < _USER_SCROLLING_UNTIL) {
+      scheduleRender();
+      return;
+    }
+    renderConversation();
+  }, delay);
+}
+
 // -- live updates: SSE first, polling fallback --------------------------
 let _SSE_HEALTHY = false;
 function _startSSE() {
@@ -1152,7 +1210,7 @@ function _startSSE() {
       _SSE_HEALTHY = true;
       // Pings carry the new graph version; refresh both surfaces.
       renderRunPicker();
-      if (CURRENT_TAB === 'transcript' && SELECTED) renderConversation();
+      scheduleRender();
     });
     es.addEventListener('error', () => {
       // Browser will auto-reconnect; if it stays broken, the polling
@@ -1185,7 +1243,7 @@ setInterval(() => {
   const now = Date.now();
   if (!renderConversation._lastTick || now - renderConversation._lastTick >= stride) {
     renderConversation._lastTick = now;
-    renderConversation();
+    scheduleRender();
   }
 }, 500);
 </script>

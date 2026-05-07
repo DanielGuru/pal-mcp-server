@@ -252,7 +252,7 @@ def test_pal_debug_cli_output_disables_redaction(monkeypatch):
 def test_oauth_failure_detected_for_gemini_quota():
     """Real Gemini stderr from the live smoke test must match."""
     from clink.agents import CLIAgentError
-    from tools.clink import CLinkTool
+    from tools.clink import _looks_like_recoverable_failure
 
     exc = CLIAgentError(
         "exited 1",
@@ -260,12 +260,12 @@ def test_oauth_failure_detected_for_gemini_quota():
         stdout='{"type":"result","status":"error"}',
         stderr="TerminalQuotaError: You have exhausted your capacity on this model. Your quota will reset after 21h59m17s.",
     )
-    assert CLinkTool._looks_like_oauth_failure(exc)
+    assert _looks_like_recoverable_failure(exc)
 
 
 def test_oauth_failure_detected_for_codex_auth_lapse():
     from clink.agents import CLIAgentError
-    from tools.clink import CLinkTool
+    from tools.clink import _looks_like_recoverable_failure
 
     exc = CLIAgentError(
         "exited 1",
@@ -273,7 +273,7 @@ def test_oauth_failure_detected_for_codex_auth_lapse():
         stdout="",
         stderr="Error: 401 Unauthorized. Please run codex login.",
     )
-    assert CLinkTool._looks_like_oauth_failure(exc)
+    assert _looks_like_recoverable_failure(exc)
 
 
 def test_internal_payload_marker_is_off_by_default():
@@ -397,7 +397,7 @@ def test_timeout_triggers_fallback_when_env_opt_in(monkeypatch):
 def test_real_prompt_error_not_misclassified_as_oauth_failure():
     """Negative case — false positive costs a paid-API call."""
     from clink.agents import CLIAgentError
-    from tools.clink import CLinkTool
+    from tools.clink import _looks_like_recoverable_failure
 
     exc = CLIAgentError(
         "exited 2",
@@ -405,7 +405,7 @@ def test_real_prompt_error_not_misclassified_as_oauth_failure():
         stdout="",
         stderr="Bad request: invalid model name",
     )
-    assert not CLinkTool._looks_like_oauth_failure(exc)
+    assert not _looks_like_recoverable_failure(exc)
 
 
 def test_oauth_fallback_models_wired_for_each_cli():

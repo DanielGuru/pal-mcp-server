@@ -365,6 +365,7 @@ class CLinkTool(SimpleTool):
                 role_config,
                 system_prompt=system_prompt_text,
                 include_system_prompt=include_system_prompt,
+                selected_cli=client_config.name,
             )
         except Exception as exc:
             logger.exception("Failed to prepare clink prompt")
@@ -444,7 +445,8 @@ class CLinkTool(SimpleTool):
         return [TextContent(type="text", text=tool_output.model_dump_json())]
 
     async def prepare_prompt(self, request) -> str:
-        client_config = self._registry.get_client(request.cli_name)
+        selected_cli = request.cli_name or self._default_cli_name
+        client_config = self._registry.get_client(selected_cli)
         role_config = client_config.get_role(request.role)
         system_prompt_text = await asyncio.to_thread(
             role_config.prompt_path.read_text, encoding="utf-8"
@@ -455,6 +457,7 @@ class CLinkTool(SimpleTool):
             role_config,
             system_prompt=system_prompt_text,
             include_system_prompt=include_system_prompt,
+            selected_cli=client_config.name,
         )
 
     async def _prepare_prompt_for_role(
@@ -464,13 +467,19 @@ class CLinkTool(SimpleTool):
         *,
         system_prompt: str,
         include_system_prompt: bool,
+        selected_cli: str = "",
     ) -> str:
         """Load the role prompt and assemble the final user message."""
         self._active_system_prompt = system_prompt
         try:
             user_content = self.handle_prompt_file_with_fallback(request).strip()
-            # Pass the CLI name so the framing matches the spawned CLI.
-            cli_name = (request.cli_name or "").strip() if request else ""
+            # Pass the resolved CLI name so framing matches the spawned CLI.
+            # Caller-supplied selected_cli wins; fall back to request.cli_name
+            # only when the caller didn't thread it through. Empty string is
+            # a valid sentinel for "no CLI configured" — guidance handles it.
+            cli_name = selected_cli or (
+                (request.cli_name or "").strip() if request else ""
+            )
             guidance = self._agent_capabilities_guidance(cli_name)
             file_section = self._format_file_references(self.get_request_files(request))
 
@@ -637,12 +646,6 @@ class CLinkTool(SimpleTool):
         if exc.stderr:
             metadata["stderr"] = _redact_and_cap(exc.stderr.strip(), cap=_CLI_METADATA_TEXT_CAP)
         return metadata
-
-    @staticmethod
-    def _looks_like_oauth_failure(exc: CLIAgentError) -> bool:
-        """Best-effort check that a CLI failure originated from OAuth side, not the prompt."""
-        haystack = " ".join(filter(None, [str(exc), exc.stdout or "", exc.stderr or ""])).lower()
-        return any(pattern in haystack for pattern in OAUTH_FAILURE_PATTERNS)
 
     async def _try_oauth_fallback(
         self,
