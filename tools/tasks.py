@@ -30,6 +30,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import time
 import uuid
 from collections import deque
@@ -607,6 +608,71 @@ class TaskManager:
 
 _DIGEST_MAX_PANELISTS = 8
 _DIGEST_MAX_ACTIONS = 10
+# Per-field char caps. Panelist text is UNTRUSTED model output and lands
+# inside a system-reminder we inject into the next turn. Without bounds an
+# adversarial / runaway panelist could push tens of KB into our context, or
+# craft <system-reminder> tags / secret-shaped strings to manipulate the
+# model. Caps are deliberately tight; the full transcript stays in the
+# graph and run_tree(mode='transcript') gives the depth.
+_DIGEST_HEADLINE_CAP = 400
+_DIGEST_PANELIST_LINE_CAP = 240
+_DIGEST_ACTION_CAP = 180
+_DIGEST_TOTAL_CAP = 6000  # hard ceiling on the entire formatted body
+
+
+def _sanitise_untrusted(text: str, *, cap: int) -> str:
+    """Apply to ANY string that originated from a panelist's response
+    before inlining it into the wake-up system-reminder.
+
+    Defenses:
+      - Length cap (cap chars).
+      - Strip control chars except \\n (would break the reminder layout
+        or smuggle terminal escape sequences).
+      - Neutralise ``<system-reminder>`` tags so a panelist can't inject a
+        nested reminder block that the host would parse as authoritative.
+      - Redact secret shapes via utils.redaction so a panelist who
+        echoed an API key / Bearer header / JWT in their summary can't
+        leak it through us.
+    """
+    if not isinstance(text, str):
+        return ""
+    if not text:
+        return ""
+    # 1. Cap first so all subsequent work runs on bounded data.
+    if len(text) > cap:
+        text = text[: cap - 1] + "…"
+    # 2. Strip control chars (keep \n, \t).
+    text = "".join(
+        ch for ch in text if ch == "\n" or ch == "\t" or ch.isprintable()
+    )
+    # 3. Neutralise system-reminder tags. Both opening and closing forms,
+    # case-insensitive. Panelists don't need to emit these in summaries
+    # ever — replacing with a visible escape preserves their intent
+    # without giving us a nested reminder.
+    text = re.sub(
+        r"</?system-reminder>",
+        lambda m: m.group(0).replace("<", "‹").replace(">", "›"),
+        text,
+        flags=re.IGNORECASE,
+    )
+    # 4. Redact secret shapes — best-effort, uses Panel's existing
+    # redaction so the rules stay consistent with clink stdout / log
+    # tail handling.
+    try:
+        from utils.redaction import redact_secrets
+
+        text = redact_secrets(text)
+    except Exception:  # noqa: BLE001 — never fail the task path on this
+        pass
+    return text.strip()
+
+
+def _cap_total(text: str, cap: int = _DIGEST_TOTAL_CAP) -> str:
+    """Hard ceiling on the whole formatted digest. If we exceed, truncate
+    with a visible marker so the model knows it was cut."""
+    if len(text) <= cap:
+        return text
+    return text[: cap - len("\n\n[…digest truncated]")] + "\n\n[…digest truncated]"
 
 
 def _extract_run_id_and_digest(
@@ -638,10 +704,18 @@ def _format_completion_digest(payload: dict[str, Any]) -> Optional[str]:
     structured summary (verdict / severity / one-line headline), and the
     deduped recommended-actions list. Round-by-round debate history is left
     in the graph; the model can fetch it via run_tree if it wants to dig in.
+
+    Every text field that originated from a panelist's response (headline,
+    panelist headlines, recommended actions) is run through
+    ``_sanitise_untrusted`` before inlining: per-field cap, control-char
+    strip, ``<system-reminder>`` tag neutralisation, secret-shape redaction.
+    Without that, an adversarial or runaway panelist could push secrets
+    or nested reminder tags into our wake-up context.
     """
     lines: list[str] = []
 
-    headline = (payload.get("headline") or "").strip()
+    headline_raw = (payload.get("headline") or "").strip()
+    headline = _sanitise_untrusted(headline_raw, cap=_DIGEST_HEADLINE_CAP)
     if headline:
         lines.append(f"**Verdict:** {headline}")
 
@@ -651,21 +725,35 @@ def _format_completion_digest(payload: dict[str, Any]) -> Optional[str]:
         for p in panelists[:_DIGEST_MAX_PANELISTS]:
             if not isinstance(p, dict):
                 continue
-            label = p.get("label") or p.get("agent") or "?"
-            cost = p.get("cost_tier") or "?"
+            # Tool-controlled fields (label / cost_tier / duration) are
+            # not user-text and don't need sanitisation, but we still cap
+            # the label in case a malicious config supplied something
+            # weird.
+            label = _sanitise_untrusted(
+                str(p.get("label") or p.get("agent") or "?"),
+                cap=80,
+            ) or "?"
+            cost = _sanitise_untrusted(str(p.get("cost_tier") or "?"), cap=40) or "?"
             duration = p.get("duration_s")
-            duration_str = f"{duration:.0f}s" if isinstance(duration, (int, float)) else "?"
+            duration_str = (
+                f"{duration:.0f}s" if isinstance(duration, (int, float)) else "?"
+            )
             if not p.get("ok"):
-                err = (p.get("error") or "failed")[:120]
+                err = _sanitise_untrusted(
+                    str(p.get("error") or "failed"), cap=160
+                )
                 rows.append(f"- {label} [{cost}, {duration_str}]: ✗ {err}")
                 continue
             summary = p.get("summary") or {}
-            verdict = summary.get("verdict") or "?"
-            severity = summary.get("severity") or "?"
-            ph = (summary.get("headline") or "").strip()
-            if not ph:
-                ph = (p.get("response_excerpt") or "").strip()[:160]
-            rows.append(f"- {label} [{verdict}/{severity}, {duration_str}, {cost}]: {ph}")
+            verdict = _sanitise_untrusted(str(summary.get("verdict") or "?"), cap=40) or "?"
+            severity = _sanitise_untrusted(str(summary.get("severity") or "?"), cap=40) or "?"
+            ph_raw = (summary.get("headline") or "").strip()
+            if not ph_raw:
+                ph_raw = (p.get("response_excerpt") or "").strip()[:200]
+            ph = _sanitise_untrusted(ph_raw, cap=_DIGEST_PANELIST_LINE_CAP)
+            rows.append(
+                f"- {label} [{verdict}/{severity}, {duration_str}, {cost}]: {ph}"
+            )
         if rows:
             lines.append("\n**Panelists:**")
             lines.extend(rows)
@@ -673,22 +761,32 @@ def _format_completion_digest(payload: dict[str, Any]) -> Optional[str]:
     judge = payload.get("judge")
     if isinstance(judge, dict):
         if judge.get("ok"):
-            jh = (judge.get("headline") or "").strip()
+            jh = _sanitise_untrusted(
+                (judge.get("headline") or "").strip(),
+                cap=_DIGEST_HEADLINE_CAP,
+            )
+            judge_label = _sanitise_untrusted(
+                str(judge.get("agent") or "?"), cap=40
+            ) or "?"
             if jh and jh != headline:  # don't duplicate the top-level headline
-                lines.append(f"\n**Judge ({judge.get('agent', '?')}):** {jh}")
+                lines.append(f"\n**Judge ({judge_label}):** {jh}")
         else:
-            err = (judge.get("error") or "failed")[:120]
+            err = _sanitise_untrusted(
+                str(judge.get("error") or "failed"), cap=160
+            )
             lines.append(f"\n**Judge:** ✗ {err}")
 
     actions = _collect_recommended_actions(panelists)
     if actions:
         lines.append("\n**Recommended actions (combined):**")
         for a in actions[:_DIGEST_MAX_ACTIONS]:
-            lines.append(f"- {a}")
+            sanitised = _sanitise_untrusted(a, cap=_DIGEST_ACTION_CAP)
+            if sanitised:
+                lines.append(f"- {sanitised}")
 
     if not lines:
         return None
-    return "\n".join(lines)
+    return _cap_total("\n".join(lines))
 
 
 def _collect_recommended_actions(panelists: Any) -> list[str]:

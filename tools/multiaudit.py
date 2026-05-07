@@ -70,7 +70,11 @@ logger = logging.getLogger(__name__)
 # mutation.
 DEFAULT_PANELISTS = ("codex", "gemini", "claude", "grok-4.3")
 DEFAULT_DEBATE_ROUNDS = 1
-DEFAULT_PANELIST_TIMEOUT_S = 300
+DEFAULT_PANELIST_TIMEOUT_S = 600  # 10 min. Claude does deep file investigation
+# on audit prompts and consistently exceeds 300s on the multiaudit rubric;
+# 600s gives him room to finish without trading off depth. Codex/gemini/grok
+# typically finish in 30-90s and this only matters when the slowest panelist
+# stretches.
 
 # Cap the diff payload we forward to panelists so a 50KB diff doesn't blow
 # the context window. We surface a clear marker when this fires so the

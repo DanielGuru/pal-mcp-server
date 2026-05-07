@@ -65,7 +65,9 @@ logger = logging.getLogger(__name__)
 # audit). Don't reintroduce module-level mutation.
 DEFAULT_PANELISTS = ("codex", "gemini", "claude", "grok-4.3")
 DEFAULT_DEBATE_ROUNDS = 1
-DEFAULT_PANELIST_TIMEOUT_S = 300
+DEFAULT_PANELIST_TIMEOUT_S = 600  # see multiaudit comment — claude needs room
+# on deep rubrics; 600s prevents the slow-but-thorough panelist from getting
+# truncated mid-investigation.
 
 # Caps to keep context windows sane. The bug description plus all
 # auto-attached context goes into one prompt; cap each piece so a

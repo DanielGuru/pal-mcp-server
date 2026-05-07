@@ -94,9 +94,24 @@ def _format_marker(payload: dict) -> str:
 
 
 def _pid_is_alive(pid: int) -> bool:
-    """``kill -0`` liveness check. POSIX-only; Windows lacks signals so we
-    fall back to assuming the lock holder is alive (safer to wait than to
-    steal a lease from a real process)."""
+    """``kill -0`` liveness check. Returns False for nonexistent processes,
+    True for live ones (including cross-user where we can't signal but the
+    PID is real). Platform handling:
+
+    - **POSIX**: ``ProcessLookupError`` → dead. ``PermissionError`` → alive
+      (real cross-user case — someone else's process). ``OSError`` with
+      ESRCH → dead. Other ``OSError`` → dead (panel-flagged: previously
+      "alive" was the safer default, but on Windows that meant a stale
+      lease never got reclaimed).
+    - **Windows**: ``os.kill(pid, 0)`` raises generic ``OSError`` /
+      ``AttributeError`` for both nonexistent and live processes. Without
+      a clean way to distinguish, treat as DEAD so a stale lease is
+      always reclaimable (worst case: another live watcher loses its
+      lease and re-acquires on the next poll tick — recoverable).
+    """
+    import errno
+    import sys as _sys
+
     if pid <= 0:
         return False
     try:
@@ -105,12 +120,19 @@ def _pid_is_alive(pid: int) -> bool:
     except ProcessLookupError:
         return False
     except PermissionError:
-        # Process exists but we can't signal it — alive enough for our
-        # purposes (somebody else's hook polling under another user).
+        # POSIX: process exists but we can't signal it (different uid).
+        # Alive for our purposes.
         return True
-    except (OSError, AttributeError):
-        # AttributeError on Windows where os.kill semantics differ.
-        return True
+    except OSError as exc:
+        if getattr(exc, "errno", None) == errno.ESRCH:
+            return False
+        # On Windows, generic OSError is the "no such process" failure
+        # mode. Tighten: assume dead so stale locks get reclaimed.
+        return False
+    except AttributeError:
+        # os.kill missing entirely (extreme edge cases). Be conservative
+        # on POSIX (assume alive), aggressive on Windows (assume dead).
+        return _sys.platform != "win32"
 
 
 def _try_acquire_watch_lock(inbox: Path) -> Optional[Path]:
@@ -118,37 +140,96 @@ def _try_acquire_watch_lock(inbox: Path) -> Optional[Path]:
     path on success (caller MUST release it via ``_release_watch_lock``);
     returns ``None`` if a live watcher already holds the lease.
 
-    Reclaims stale leases: if the lock file references a PID that's no
-    longer alive (crashed Claude Code, killed hook), unlink it and
-    retry once. Single retry is intentional — if a third party keeps
-    re-creating it, we yield rather than fight."""
+    TOCTOU-safe reclaim path (panel finding):
+
+    - The window between ``O_CREAT|O_EXCL`` succeeding and the holder
+      writing its PID is small but real. A reclaiming process could
+      observe an empty lock file mid-creation. Treat empty / unreadable
+      lock contents as ALIVE (within a short grace window) rather than
+      stale, so we don't race-delete a fresh lock.
+    - Reclaim uses atomic ``os.replace`` to a unique
+      ``.watch.lock.stale.<our-pid>.<ts>`` path — NOT ``unlink``. If
+      another process raced and replaced the lock between our read and
+      our reclaim, the rename either moves THEIR fresh lock to a
+      uniquely-named stale file (we then re-attempt creation and find
+      it gone, win) OR fails because the path no longer matches what we
+      expected. Either way, no live lock gets blindly deleted.
+
+    Reclaim is bounded: at most 2 attempts. If we keep losing the race,
+    yield rather than spin."""
     lock_path = inbox / WATCH_LOCK_NAME
     pid = os.getpid()
+    grace_age_s = 5.0  # treat lock files younger than this as "alive even
+    # if PID is missing" — gives the holder time to write the PID.
 
     for attempt in range(2):
         try:
             fd = os.open(lock_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         except FileExistsError:
-            # Existing holder — alive or stale?
+            # Existing holder — alive, mid-creation, or stale?
+            holder_alive = False
             try:
-                holder_pid = int(lock_path.read_text(encoding="utf-8").strip())
-            except (OSError, ValueError):
+                contents = lock_path.read_text(encoding="utf-8").strip()
+                # Empty or non-numeric → could be mid-creation. Use the
+                # file's mtime as a coarse "is the holder still in the
+                # write window?" check. Files older than the grace
+                # period with empty/unparseable contents are stale.
+                try:
+                    holder_pid = int(contents)
+                except ValueError:
+                    age = max(0.0, time.time() - lock_path.stat().st_mtime)
+                    if age < grace_age_s:
+                        holder_alive = True  # presume mid-write
+                        holder_pid = -1
+                    else:
+                        holder_pid = -1
+                else:
+                    if holder_pid > 0 and _pid_is_alive(holder_pid):
+                        holder_alive = True
+            except FileNotFoundError:
+                # Disappeared between our open() and our read — retry
+                # the whole acquire. The race is effectively resolved.
+                continue
+            except OSError:
+                # Couldn't read it — be conservative within the grace
+                # window. Outside it, treat as stale.
+                try:
+                    age = max(0.0, time.time() - lock_path.stat().st_mtime)
+                    holder_alive = age < grace_age_s
+                except OSError:
+                    holder_alive = False
                 holder_pid = -1
-            if holder_pid > 0 and _pid_is_alive(holder_pid):
-                return None  # legit live watcher
-            # Stale — try to remove and retry the create.
+            if holder_alive:
+                return None  # live watcher (or in-flight write)
+            # Stale — atomic-rename to a unique stale name so we don't
+            # race-delete a successor that just took over.
+            stale_path = inbox / (
+                f"{WATCH_LOCK_NAME}.stale.{pid}.{int(time.time() * 1000)}"
+            )
             if attempt == 0:
                 try:
-                    lock_path.unlink()
+                    os.replace(lock_path, stale_path)
                 except FileNotFoundError:
-                    pass  # someone else got there first
+                    pass  # someone else got there first; retry create
                 except OSError:
                     return None
+                else:
+                    # Best-effort cleanup of the moved-aside lock.
+                    try:
+                        stale_path.unlink()
+                    except OSError:
+                        pass
                 continue
             return None
         else:
             try:
+                # Write PID immediately after creation so the
+                # mid-creation grace window is as short as possible.
                 os.write(fd, str(pid).encode("ascii"))
+                try:
+                    os.fsync(fd)
+                except OSError:
+                    pass
             finally:
                 os.close(fd)
             return lock_path
@@ -252,12 +333,15 @@ def _drain_pending(inbox: Path) -> tuple[list[str], list[str]]:
     run_ids: list[str] = []
 
     for marker in sorted(inbox.glob("*.json")):
-        # Skip dotfiles (staging dir, lease lock, anything we deliberately
-        # tucked away). The lease lock has no .json suffix anyway, but
-        # being explicit here keeps the loop robust.
+        # Skip dotfiles (staging dir, anything we deliberately tucked
+        # away), the lease lock itself, and any moved-aside stale-lock
+        # files from the reclaim path. None of these are completion
+        # markers.
         if marker.name.startswith("."):
             continue
         if marker.name == WATCH_LOCK_NAME:
+            continue
+        if WATCH_LOCK_NAME + ".stale." in marker.name:
             continue
         claimed = inbox / f"{marker.name}.processing.{pid}"
         try:
