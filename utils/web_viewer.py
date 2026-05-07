@@ -903,6 +903,15 @@ function switchTab(name) {
 $('#tab-transcript').addEventListener('click', () => switchTab('transcript'));
 $('#tab-settings').addEventListener('click', () => switchTab('settings'));
 
+// Deep-link the tab via ?tab=settings so panel_settings can land users
+// straight on the config pane without an extra click.
+(function applyTabDeepLink() {
+  try {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('tab') === 'settings') switchTab('settings');
+  } catch (_) {}
+})();
+
 // -- settings rendering --------------------------------------------------
 async function renderSettings() {
   try {

@@ -283,7 +283,7 @@ from tools.graph_query import (  # noqa: E402
     ListRunsTool,
     RunTreeTool,
 )
-from tools.web_url import WebUrlTool  # noqa: E402
+from tools.web_url import PanelSettingsTool, WebUrlTool  # noqa: E402
 from tools.multiaudit import MultiauditTool  # noqa: E402
 from tools.bugfind import BugfindTool  # noqa: E402
 
@@ -315,6 +315,7 @@ TOOLS: dict[str, type] = {
     "get_run": GetRunTool,
     "run_tree": RunTreeTool,
     "web_url": WebUrlTool,
+    "panel_settings": PanelSettingsTool,
     "multiaudit": MultiauditTool,
     "bugfind": BugfindTool,
 }
