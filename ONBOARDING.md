@@ -191,13 +191,51 @@ after the trigger phrase is forwarded as `extra_context`.
 `multiaudit` is a **gate, not a post-hoc check** — run it BEFORE you commit /
 push.
 
+**No `XAI_API_KEY`?** The default panel includes `grok-4.3` which has no
+OAuth path. Drop it from the panel: `multiaudit panelists=["codex","gemini","claude"]`,
+or set `PANEL_MULTIAUDIT_PANELISTS=codex,gemini,claude` once and forget it.
+
+---
+
+## 5b. First bugfind (sister magic phrase)
+
+Got a bug you can't pin down? Same shape as multiaudit, different rubric.
+Describe the symptom; the panel debates root cause + minimal fix:
+
+> bugfind: the viewer header shows 'grok-4.3' instead of 'panel' for multiaudit runs
+
+Or with attached files when the bug is in specific code:
+
+> bugfind: utils/web_viewer.py picker shows wrong run on completion. attached_files: /abs/path/to/utils/web_viewer.py
+
+Magic phrases that fire `bugfind`:
+
+- `bugfind` / `bugfind it` / `bugfind this`
+- `find this bug` / `use panel to find the bug`
+- `what's breaking` / `panel debug this` / `diagnose with all models`
+
+The rubric the panel sees: REPRO / ROOT CAUSE (file:line) / MINIMAL FIX
+(unified diff if possible) / REGRESSION TEST / BLAST RADIUS / WHAT YOU MISSED.
+The judge synthesises a single fix proposal you can review and apply.
+
+Auto-collected context: recent commits, the tail of `logs/mcp_server.log`
+filtered to ERROR/Traceback/Failed/Exception lines (with secret-shape
+redaction applied before dispatch), and any explicitly attached files
+(also redacted as a safety net).
+
+Same `XAI_API_KEY` caveat as multiaudit — drop `grok-4.3` from `panelists`
+if you don't have an X.AI key.
+
+`PANEL_BUGFIND_PANELISTS` and `PANEL_BUGFIND_JUDGE` env vars work the
+same way as the `MULTIAUDIT` ones.
+
 ---
 
 ## 6. The settings tab — quick toggles
 
 The viewer has a **settings** button next to the run picker. It shows:
 
-- Live env vars you can change without restarting (streaming flags, `PANEL_MULTIAUDIT_JUDGE`, `PANEL_MULTIAUDIT_PANELISTS`). Edit the value, click `save` — the next provider/multiaudit call picks it up immediately.
+- Live env vars you can change without restarting (streaming flags, `PANEL_MULTIAUDIT_JUDGE`/`PANELISTS`, `PANEL_BUGFIND_JUDGE`/`PANELISTS`). Edit the value, click `save` — the next provider/multiaudit/bugfind call picks it up immediately.
 - Provider key presence (which API keys are loaded).
 - OAuth-CLI login status (codex / gemini / claude).
 - Viewer host/port/URL + execution-graph DB path + version + tools registered.

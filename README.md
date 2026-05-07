@@ -139,15 +139,26 @@ For best results when using [Codex CLI](https://developers.openai.com/codex/cli)
 
 **Prerequisites:** Python 3.10+, Git, [uv installed](https://docs.astral.sh/uv/getting-started/installation/)
 
-**1. Get API Keys** (choose one or more):
-- **[Anthropic](https://console.anthropic.com/settings/keys)** - Claude Opus 4.7 / Sonnet 4.6
-- **[OpenAI](https://platform.openai.com/api-keys)** - GPT-5.5 / 5.4 / 5.1-codex
-- **[Gemini](https://aistudio.google.com/app/apikey)** - Gemini 3.1 Pro
-- **[X.AI](https://console.x.ai/)** - Grok-4.3 / 4.1-fast
-- **[OpenRouter](https://openrouter.ai/)** - Access multiple models with one API
-- **[Azure OpenAI](https://learn.microsoft.com/azure/ai-services/openai/)** - Enterprise OpenAI deployments
-- **[DIAL](https://dialx.ai/)** - Vendor-agnostic model access
-- **[Ollama](https://ollama.ai/)** - Local models (free)
+**1. Pick how you want to authenticate** — at least one of:
+
+**Free OAuth via subscription CLIs** (zero API spend; CLIs use your existing logins):
+- **[Codex CLI](https://developers.openai.com/codex/cli)** — `codex login` (uses your ChatGPT subscription)
+- **[Gemini CLI](https://github.com/google-gemini/gemini-cli)** — first run prompts Google OAuth
+- **[Claude CLI](https://www.anthropic.com/claude-code)** — `claude /login` (uses your Claude subscription)
+
+OAuth CLIs are the cheapest path: `clink`, `panel`, `multiaudit`, and `bugfind` all route through them automatically when available, falling back to paid API only on quota exhaustion.
+
+**Paid API keys** (needed for Grok, and as the OAuth fallback safety net):
+- **[Anthropic](https://console.anthropic.com/settings/keys)** — Claude Opus 4.7 / Sonnet 4.6
+- **[OpenAI](https://platform.openai.com/api-keys)** — GPT-5.5 / 5.4 / 5.1-codex
+- **[Gemini](https://aistudio.google.com/app/apikey)** — Gemini 3.1 Pro
+- **[X.AI](https://console.x.ai/)** — Grok-4.3 / 4.1-fast (no OAuth path; API only)
+- **[OpenRouter](https://openrouter.ai/)** — Access multiple models with one API
+- **[Azure OpenAI](https://learn.microsoft.com/azure/ai-services/openai/)** — Enterprise OpenAI deployments
+- **[DIAL](https://dialx.ai/)** — Vendor-agnostic model access
+- **[Ollama](https://ollama.ai/)** — Local models (free)
+
+> **Soft-landing on zero everything:** if you start the server with neither API keys nor authed CLIs, it doesn't crash — it logs a friendly capability summary and the always-available tools (`listmodels`, `version`, `web_url`, graph queries) still work. Set or login to whatever you want, restart your MCP client, and you're off.
 
 **2. Install** (choose one):
 
@@ -168,7 +179,10 @@ cp .env.example .env
 **Option B: Instant Setup with [uvx](https://docs.astral.sh/uv/getting-started/installation/)**
 ```json
 // Add to ~/.claude/settings.json or .mcp.json
-// Don't forget to add your API keys under env
+// Set whichever keys you have — at least one is enough.
+// (If you only have authed OAuth CLIs, you can leave keys empty and
+// still use clink/panel/multiaudit/bugfind via the free OAuth path,
+// modulo the grok-4.3 caveat above.)
 {
   "mcpServers": {
     "panel": {
@@ -176,7 +190,10 @@ cp .env.example .env
       "args": ["-c", "for p in $(which uvx 2>/dev/null) $HOME/.local/bin/uvx /opt/homebrew/bin/uvx /usr/local/bin/uvx uvx; do [ -x \"$p\" ] && exec \"$p\" --from git+https://github.com/DanielGuru/panel-mcp-server.git panel-mcp-server; done; echo 'uvx not found' >&2; exit 1"],
       "env": {
         "PATH": "/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin:~/.local/bin",
-        "GEMINI_API_KEY": "your-key-here",
+        "ANTHROPIC_API_KEY": "your-anthropic-key-or-empty",
+        "OPENAI_API_KEY": "your-openai-key-or-empty",
+        "GEMINI_API_KEY": "your-gemini-key-or-empty",
+        "XAI_API_KEY": "your-xai-key-or-empty",
         "DISABLED_TOOLS": "analyze,refactor,testgen,secaudit,docgen,tracer",
         "DEFAULT_MODEL": "auto"
       }
@@ -186,6 +203,14 @@ cp .env.example .env
 ```
 
 **3. Start Using!**
+
+**Magic phrases — the killer features:**
+```
+"multiaudit it"          # right before commit/push: 4-way panel reviews the diff
+"bugfind it: <bug>"      # describe a bug; the panel investigates + proposes a fix
+```
+
+**Direct multi-model orchestration:**
 ```
 "Use panel to analyze this code for security issues with gemini-3.1-pro-preview"
 "Debug this error with grok-4.3 and then get gpt-5.5 to suggest optimizations"
@@ -272,6 +297,8 @@ The `multiaudit` tool reads `git diff` (vs `main`, falling back to uncommitted/s
 
 `host` (Claude Code as a peer panelist via MCP sampling) is **opt-in**, not default — pass `panelists=["host", "codex", ...]` explicitly. Most MCP hosts (including Claude Code today) don't advertise the sampling capability, so `host` would fail; the implementation excludes it from defaults to keep the magic-phrase path reliable.
 
+**No `XAI_API_KEY`?** The default panelist set includes `grok-4.3`, which has no OAuth path. If you don't want to set an X.AI key, drop it from the panel: `multiaudit panelists=["codex","gemini","claude"]` (or set `PANEL_MULTIAUDIT_PANELISTS=codex,gemini,claude` once in `.env` to make that the global default).
+
 Default audit rubric (built into the prompt): **VERDICT / BUGS / DESIGN CONCERNS / SECURITY / MISSING TESTS / WHAT YOU'D ATTACK.** Diff truncated at 60KB with a clear marker so panelists know they're reasoning about a subset.
 
 ```
@@ -308,6 +335,10 @@ bugfind "..." debate_rounds=2                 # deeper pressure-testing
 bugfind "..." panelists=["claude","codex"]    # 2-way only
 bugfind "..." skip_log_tail=true              # UI bug, logs irrelevant
 ```
+
+**Same `XAI_API_KEY` caveat as multiaudit** — the default panelist set includes `grok-4.3`. Drop it via `panelists=["codex","gemini","claude"]` or set `PANEL_BUGFIND_PANELISTS=codex,gemini,claude` globally if you don't want to set an X.AI key.
+
+**Security:** `attached_files` contents and the auto-attached log tail go verbatim to the configured panelist APIs. Panel applies a redaction pass that strips API-key shapes (sk- / sk-ant- / AIza / xai-), JWTs, Bearer headers, and user-home paths before dispatch — but defence-in-depth: don't attach files containing secrets you wouldn't want in OpenAI / Anthropic / Gemini / xAI request logs.
 
 ---
 
