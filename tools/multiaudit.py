@@ -70,12 +70,12 @@ logger = logging.getLogger(__name__)
 # mutation.
 DEFAULT_PANELISTS = ("codex", "gemini", "claude", "grok-4.3")
 DEFAULT_DEBATE_ROUNDS = 1
-DEFAULT_PANELIST_TIMEOUT_S = 1200  # 20 min. Claude does deep file investigation
-# on audit prompts and routinely exceeds 600s on the multiaudit rubric when
-# the rubric tells him to read files (post-prompt-update behaviour) — 1200s
-# gives him room to finish without trading off depth. Codex/gemini/grok
-# typically finish in 30-90s and this only matters when the slowest panelist
-# stretches.
+DEFAULT_PANELIST_TIMEOUT_S = 1800  # 30 min. Claude does deep file investigation
+# on audit prompts and can run long when the rubric tells him to read files
+# (post-prompt-update behaviour). 30 min is generous; codex/gemini/grok
+# typically finish in 30-90s and this only matters when the slowest
+# panelist stretches. Aligned with STOP_WATCH_TIMEOUT_S so the wake-up
+# watcher always outlasts the actual panel run.
 
 # Cap the diff payload we forward to panelists so a 50KB diff doesn't blow
 # the context window. We surface a clear marker when this fires so the
@@ -170,8 +170,8 @@ class MultiauditTool(BaseTool):
                 "panelist_timeout_s": {
                     "type": "number",
                     "minimum": 30,
-                    "maximum": 1800,
-                    "description": "Per-panelist timeout (default 1200s).",
+                    "maximum": 3600,
+                    "description": "Per-panelist timeout (default 1800s).",
                 },
                 "working_directory_absolute_path": {
                     "type": "string",

@@ -65,7 +65,7 @@ logger = logging.getLogger(__name__)
 # audit). Don't reintroduce module-level mutation.
 DEFAULT_PANELISTS = ("codex", "gemini", "claude", "grok-4.3")
 DEFAULT_DEBATE_ROUNDS = 1
-DEFAULT_PANELIST_TIMEOUT_S = 1200  # see multiaudit comment — claude needs room
+DEFAULT_PANELIST_TIMEOUT_S = 1800  # see multiaudit comment — claude needs room
 # on deep rubrics; 600s prevents the slow-but-thorough panelist from getting
 # truncated mid-investigation.
 
@@ -180,8 +180,8 @@ class BugfindTool(BaseTool):
                 "panelist_timeout_s": {
                     "type": "number",
                     "minimum": 30,
-                    "maximum": 1800,
-                    "description": "Per-panelist timeout (default 1200s).",
+                    "maximum": 3600,
+                    "description": "Per-panelist timeout (default 1800s).",
                 },
                 "working_directory_absolute_path": {
                     "type": "string",

@@ -35,7 +35,7 @@ from utils.progress import emit_progress
 
 logger = logging.getLogger("panel.panel")
 
-DEFAULT_TIMEOUT_S = 1200  # 20 min — matches multiaudit/bugfind defaults so a
+DEFAULT_TIMEOUT_S = 1800  # 30 min — matches multiaudit/bugfind defaults so a
 # panel/ask_panel call with claude on it gets the same room he gets in the
 # magic-phrase tools. Other panelists finish in 30-90s and wait for him via
 # asyncio.gather; the bump only costs wall time on the slowest panelist.
@@ -1127,8 +1127,8 @@ class PanelTool(BaseTool):
                 "panelist_timeout_s": {
                     "type": "number",
                     "minimum": 5,
-                    "maximum": 1800,
-                    "description": "Per-panelist timeout in seconds (default 1200).",
+                    "maximum": 3600,
+                    "description": "Per-panelist timeout in seconds (default 1800).",
                 },
                 "debate_rounds": {
                     "type": "integer",
@@ -1251,8 +1251,8 @@ class PanelTool(BaseTool):
                 timeout = float(timeout)
             except (TypeError, ValueError):
                 return _err("'panelist_timeout_s' must be numeric")
-            if timeout < 5 or timeout > 1800:
-                return _err("'panelist_timeout_s' must be between 5 and 1800")
+            if timeout < 5 or timeout > 3600:
+                return _err("'panelist_timeout_s' must be between 5 and 3600")
 
         judge = arguments.get("judge")
         if judge is not None and (not isinstance(judge, str) or not judge.strip()):

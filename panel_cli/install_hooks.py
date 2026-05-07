@@ -149,11 +149,11 @@ def _build_hook_entry(event: str, command: str) -> dict[str, Any]:
     to opt into idle wake-up, AND sets an explicit ``timeout`` to override
     Claude Code's default async-hook timeout (600s = 10 min). Without the
     explicit timeout, the long-poll watcher inside ``panel-inbox-drain``
-    gets killed at 10 min — which is BELOW the 20-min default panelist
-    budget for multiaudit/bugfind. Real failure observed: marker arrived
-    at ~11 min, watcher had been killed at 10. Setting the hook timeout
-    above ``STOP_WATCH_TIMEOUT_S`` (default 1200s in inbox_drain) lets the
-    watcher hit its own clean exit instead of getting SIGKILL'd by Claude.
+    gets killed at 10 min — which is BELOW the panelist budget for a
+    long multiaudit/bugfind. Real failure observed: marker arrived at
+    ~11 min, watcher had been killed at 10. Setting the hook timeout
+    above ``STOP_WATCH_TIMEOUT_S`` (default 1800s in inbox_drain) lets
+    the watcher hit its own clean exit instead of getting SIGKILL'd.
     """
     inner: dict[str, Any] = {
         "type": "command",
@@ -164,10 +164,10 @@ def _build_hook_entry(event: str, command: str) -> dict[str, Any]:
     if event == "Stop":
         inner["async"] = True
         inner["asyncRewake"] = True
-        # Slightly above STOP_WATCH_TIMEOUT_S (1200s) so the watcher's own
+        # Slightly above STOP_WATCH_TIMEOUT_S (1800s) so the watcher's own
         # deadline-driven exit fires first, leaving the hook process to
         # return cleanly rather than be killed by the platform timeout.
-        inner["timeout"] = 1230
+        inner["timeout"] = 1830
     return {"matcher": "*", "hooks": [inner]}
 
 

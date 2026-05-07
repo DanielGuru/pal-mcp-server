@@ -49,7 +49,7 @@ PROCESSING_TTL_S = 120.0
 # the inbox for up to ``STOP_WATCH_TIMEOUT_S`` and exit 2 the moment a
 # marker appears. UserPromptSubmit and unknown events drain-once because
 # the user is already here — they don't want a 15-minute hang.
-STOP_WATCH_TIMEOUT_S = float(os.environ.get("PANEL_STOP_WATCH_TIMEOUT_S", "1200"))
+STOP_WATCH_TIMEOUT_S = float(os.environ.get("PANEL_STOP_WATCH_TIMEOUT_S", "1800"))
 STOP_WATCH_POLL_S = float(os.environ.get("PANEL_STOP_WATCH_POLL_S", "1.0"))
 
 # Singleton-watcher lease (panel-flagged): without this, every Stop hook

@@ -6,7 +6,9 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
-DEFAULT_TIMEOUT_SECONDS = 1800
+DEFAULT_TIMEOUT_SECONDS = 2400  # 40 min hard ceiling for CLI subprocesses,
+# kept slightly above the 30-min panelist budget so a clink call gets clean
+# shutdown of its subprocess rather than racing the platform timeout.
 DEFAULT_STREAM_LIMIT = 10 * 1024 * 1024  # 10MB per stream
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
