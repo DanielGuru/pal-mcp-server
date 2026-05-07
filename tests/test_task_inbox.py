@@ -263,10 +263,16 @@ def test_install_creates_settings_json_when_missing(tmp_path, monkeypatch):
     body = json.loads(settings.read_text())
     stop_entries = body["hooks"]["Stop"]
     assert len(stop_entries) == 1
-    h = stop_entries[0]["hooks"][0]
+    # Flat shape (correct for Stop / UserPromptSubmit per Claude Code docs):
+    # the entry IS the hook, no {matcher, hooks: [...]} wrapper.
+    h = stop_entries[0]
+    assert h["type"] == "command"
     assert h["command"] == "/usr/bin/panel-inbox-drain"
     assert h["asyncRewake"] is True
     assert h["_panel_managed"] is True
+    # And no stray nested wrapping
+    assert "matcher" not in h
+    assert "hooks" not in h
 
 
 def test_install_is_idempotent(tmp_path, monkeypatch):
@@ -307,16 +313,17 @@ def test_install_preserves_user_hooks(tmp_path, monkeypatch):
     install(command="/usr/bin/panel-inbox-drain")
     body = json.loads(settings.read_text())
 
-    # Unrelated hook still there
+    # Unrelated user hook still there (legacy nested shape)
     stop_entries = body["hooks"]["Stop"]
     user_entries = [
         e
         for e in stop_entries
-        if any(h.get("command") == "echo hello" for h in e["hooks"])
+        if isinstance(e.get("hooks"), list)
+        and any(h.get("command") == "echo hello" for h in e["hooks"])
     ]
     assert len(user_entries) == 1
-    # Panel-managed entry added alongside
-    panel_entries = [e for e in stop_entries if any(h.get("_panel_managed") for h in e["hooks"])]
+    # Panel-managed entry added alongside (flat shape)
+    panel_entries = [e for e in stop_entries if e.get("_panel_managed")]
     assert len(panel_entries) == 1
     # Top-level keys preserved
     assert body["model"] == "sonnet"
@@ -361,9 +368,10 @@ def test_uninstall_removes_only_managed_entries(tmp_path, monkeypatch):
     summary = uninstall()
     assert summary["changed"] is True
     body = json.loads(settings.read_text())
-    # User hook still there
+    # User hook still there (legacy nested shape, untouched)
     assert len(body["hooks"]["Stop"]) == 1
-    assert body["hooks"]["Stop"][0]["hooks"][0]["command"] == "echo user"
+    user_remaining = body["hooks"]["Stop"][0]
+    assert user_remaining["hooks"][0]["command"] == "echo user"
     # UserPromptSubmit was only ours, so its key is gone
     assert "UserPromptSubmit" not in body["hooks"]
 
@@ -403,6 +411,67 @@ def test_ensure_installed_idempotent_fast_path(tmp_path, monkeypatch):
     s2 = ensure_installed()
     # Already installed → fast path returns None without re-writing
     assert s2 is None
+
+
+def test_install_migrates_legacy_nested_panel_entry_to_flat(tmp_path, monkeypatch):
+    """REGRESSION: Pre-fix versions of install() wrote Panel hooks in the
+    nested {matcher, hooks: [...]} shape — silently ignored by Claude Code
+    for Stop/UserPromptSubmit which expect FLAT entries. A re-install must
+    detect and replace the legacy broken entry, not duplicate it."""
+    settings = tmp_path / "settings.json"
+    monkeypatch.setenv("CLAUDE_SETTINGS_PATH", str(settings))
+    # Simulate the broken pre-fix install output:
+    settings.write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "Stop": [
+                        {
+                            "matcher": "*",
+                            "hooks": [
+                                {
+                                    "type": "command",
+                                    "command": "/old/panel-inbox-drain",
+                                    "_panel_managed": True,
+                                    "async": True,
+                                    "asyncRewake": True,
+                                }
+                            ],
+                        }
+                    ],
+                    "UserPromptSubmit": [
+                        {
+                            "matcher": "*",
+                            "hooks": [
+                                {
+                                    "type": "command",
+                                    "command": "/old/panel-inbox-drain",
+                                    "_panel_managed": True,
+                                }
+                            ],
+                        }
+                    ],
+                }
+            }
+        )
+    )
+    from panel_cli.install_hooks import install
+
+    summary = install(command="/usr/bin/panel-inbox-drain")
+    assert summary["changed"] is True
+    # Should have UPDATED in place, not appended a duplicate
+    body = json.loads(settings.read_text())
+    stop = body["hooks"]["Stop"]
+    ups = body["hooks"]["UserPromptSubmit"]
+    assert len(stop) == 1
+    assert len(ups) == 1
+    # New entries are FLAT
+    assert stop[0]["type"] == "command"
+    assert "matcher" not in stop[0]
+    assert "hooks" not in stop[0]
+    assert stop[0]["asyncRewake"] is True
+    assert ups[0]["type"] == "command"
+    assert "matcher" not in ups[0]
 
 
 def test_install_refuses_corrupt_settings_json(tmp_path, monkeypatch):

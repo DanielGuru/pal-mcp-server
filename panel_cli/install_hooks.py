@@ -126,10 +126,33 @@ def _backup(path: Path) -> Optional[Path]:
 
 
 def _build_hook_entry(event: str, command: str) -> dict[str, Any]:
-    """Build a hook entry the Claude Code schema accepts. The exact shape
-    is:
-        {"matcher": "*", "hooks": [{"type": "command", "command": "...", ...}]}
-    The Stop variant adds ``asyncRewake: true`` to opt into idle wake-up.
+    """Build a hook entry in the shape Claude Code expects for this event.
+
+    Two distinct shapes per the official docs at code.claude.com/docs/en/hooks:
+
+    1. **Flat shape** for ``UserPromptSubmit``, ``Stop``, ``Notification``,
+       ``SessionStart`` etc. — events that always fire (no matcher):
+
+       .. code-block:: json
+
+          {"type": "command", "command": "..."}
+
+    2. **Nested-with-matcher** for ``PreToolUse`` / ``PostToolUse`` etc.
+       (here for completeness, not used by Panel today):
+
+       .. code-block:: json
+
+          {"matcher": "<tool>", "hooks": [{"type": "command", ...}]}
+
+    Earlier versions of this module always used shape #2 — including for
+    UserPromptSubmit/Stop. Claude Code silently skipped those entries
+    because it looks for ``type`` at the top level on no-matcher events,
+    didn't find it (saw ``matcher`` + ``hooks`` instead), and the hook
+    never fired. Caught in live e2e test where a UserPromptSubmit prompt
+    on a non-empty inbox didn't drain markers.
+
+    The ``Stop`` variant adds ``asyncRewake: true`` to opt into idle wake-up
+    (exit 2 + stdout wakes the model even if the user is idle).
     """
     hook_obj: dict[str, Any] = {
         "type": "command",
@@ -138,27 +161,40 @@ def _build_hook_entry(event: str, command: str) -> dict[str, Any]:
         MANAGED_MARKER: True,
     }
     if event == "Stop":
-        # asyncRewake fires the hook in the background after Claude stops;
-        # exit code 2 + stdout becomes a wake-up reminder even if the user
-        # is idle. Verified in current Claude Code hook docs.
         hook_obj["async"] = True
         hook_obj["asyncRewake"] = True
-    return {"matcher": "*", "hooks": [hook_obj]}
+    # Flat shape: event entry IS the hook itself, not a wrapper.
+    return hook_obj
 
 
-def _is_managed_matcher(entry: Any) -> bool:
-    """Does this ``hooks[event][i]`` entry only contain a Panel-managed
-    drain hook (so we can safely delete the whole entry)?"""
+def _is_managed_entry(entry: Any) -> bool:
+    """Does this top-level ``hooks[event][i]`` entry belong to Panel?
+
+    Handles both the new flat shape (entry = hook obj) and the legacy
+    nested shape (entry = {matcher, hooks: [...]}) so an `uninstall` /
+    re-install on an old broken settings.json can find and clean up the
+    pre-fix entries instead of leaving them orphaned.
+    """
     if not isinstance(entry, dict):
         return False
-    hooks = entry.get("hooks")
-    if not isinstance(hooks, list) or not hooks:
-        return False
-    return all(
-        isinstance(h, dict)
-        and (h.get(MANAGED_MARKER) is True or _is_panel_drain_command(h.get("command", "")))
-        for h in hooks
-    )
+    # Flat shape (current) — entry IS the hook.
+    if entry.get(MANAGED_MARKER) is True:
+        return True
+    if "command" in entry and _is_panel_drain_command(entry.get("command", "")):
+        return True
+    # Legacy nested shape — entry wraps a `hooks: [...]` list.
+    nested = entry.get("hooks")
+    if isinstance(nested, list) and nested:
+        return all(
+            isinstance(h, dict)
+            and (h.get(MANAGED_MARKER) is True or _is_panel_drain_command(h.get("command", "")))
+            for h in nested
+        )
+    return False
+
+
+# Keep the old name as an alias so any external callers / tests don't break.
+_is_managed_matcher = _is_managed_entry
 
 
 def install(*, settings_override: Optional[str] = None, command: Optional[str] = None) -> dict[str, Any]:
