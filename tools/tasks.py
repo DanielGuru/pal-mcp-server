@@ -498,7 +498,18 @@ class TaskManager:
     def _write_inbox_marker(self, record: TaskRecord) -> None:
         """Atomic write of a completion marker to ``~/.panel/inbox/``. The
         Claude Code drain hook (installed via ``panel-install-hooks``) reads
-        these and injects a system reminder when the agent next runs."""
+        these and injects a system reminder when the agent next runs.
+
+        Two enriching pieces beyond the bare lifecycle metadata:
+
+        - ``run_id``: the panel/ask_panel/multiaudit/bugfind run id, pulled
+          from the result JSON. Lets the system-reminder point the model
+          at ``run_tree(run_id, mode='transcript')`` for the full debate.
+        - ``transcript_digest``: a compact summary of the panel verdict
+          (judge headline + each panelist's final 1-line take + the
+          combined recommended-actions list). Inlined into the wake-up
+          system-reminder so the model lands already knowing what was
+          said, without a follow-up tool call."""
         try:
             from utils.task_inbox import write_completion_marker
 
@@ -506,6 +517,9 @@ class TaskManager:
                 round(record.completed_at - record.started_at, 2)
                 if (record.completed_at and record.started_at)
                 else None
+            )
+            run_id, digest = _extract_run_id_and_digest(
+                record.tool_name, record.result_text
             )
             write_completion_marker(
                 task_id=record.task_id,
@@ -515,11 +529,133 @@ class TaskManager:
                 created_at=record.created_at,
                 completed_at=record.completed_at,
                 elapsed_seconds=elapsed,
-                run_id=getattr(record, "run_id", None),
+                run_id=run_id,
                 error=record.error,
+                transcript_digest=digest,
             )
         except Exception as exc:  # noqa: BLE001 — best-effort, never fail
             logger.debug("inbox marker write failed for %s: %s", record.task_id, exc)
+
+
+# ---------------------------------------------------------------------------
+# Inbox-marker enrichment: extract run_id + a compact transcript digest from a
+# panel-family tool's result so the asyncRewake wake-up can carry the actual
+# panel takeaway instead of just "task X finished".
+# ---------------------------------------------------------------------------
+
+
+_DIGEST_MAX_PANELISTS = 8
+_DIGEST_MAX_ACTIONS = 10
+
+
+def _extract_run_id_and_digest(
+    tool_name: str, result_text: Optional[list[str]]
+) -> tuple[Optional[str], Optional[str]]:
+    """Pull ``(run_id, digest)`` from a panel-family tool's result. Returns
+    ``(None, None)`` for non-panel tools or unparseable payloads."""
+    if not result_text:
+        return None, None
+    try:
+        payload = json.loads(result_text[0])
+    except (ValueError, IndexError, TypeError):
+        return None, None
+    if not isinstance(payload, dict):
+        return None, None
+
+    # panel / ask_panel / multiaudit / bugfind all surface this field.
+    run_id = payload.get("panel_run_id") or payload.get("run_id")
+    if not isinstance(run_id, str) or not run_id:
+        run_id = None
+
+    digest = _format_completion_digest(payload)
+    return run_id, digest
+
+
+def _format_completion_digest(payload: dict[str, Any]) -> Optional[str]:
+    """Render the FINAL panel takeaway as a compact text block. We deliberately
+    show ONLY the synthesised result — judge headline, each panelist's final
+    structured summary (verdict / severity / one-line headline), and the
+    deduped recommended-actions list. Round-by-round debate history is left
+    in the graph; the model can fetch it via run_tree if it wants to dig in.
+    """
+    lines: list[str] = []
+
+    headline = (payload.get("headline") or "").strip()
+    if headline:
+        lines.append(f"**Verdict:** {headline}")
+
+    panelists = payload.get("panelists") or []
+    if isinstance(panelists, list) and panelists:
+        rows: list[str] = []
+        for p in panelists[:_DIGEST_MAX_PANELISTS]:
+            if not isinstance(p, dict):
+                continue
+            label = p.get("label") or p.get("agent") or "?"
+            cost = p.get("cost_tier") or "?"
+            duration = p.get("duration_s")
+            duration_str = f"{duration:.0f}s" if isinstance(duration, (int, float)) else "?"
+            if not p.get("ok"):
+                err = (p.get("error") or "failed")[:120]
+                rows.append(f"- {label} [{cost}, {duration_str}]: ✗ {err}")
+                continue
+            summary = p.get("summary") or {}
+            verdict = summary.get("verdict") or "?"
+            severity = summary.get("severity") or "?"
+            ph = (summary.get("headline") or "").strip()
+            if not ph:
+                ph = (p.get("response_excerpt") or "").strip()[:160]
+            rows.append(f"- {label} [{verdict}/{severity}, {duration_str}, {cost}]: {ph}")
+        if rows:
+            lines.append("\n**Panelists:**")
+            lines.extend(rows)
+
+    judge = payload.get("judge")
+    if isinstance(judge, dict):
+        if judge.get("ok"):
+            jh = (judge.get("headline") or "").strip()
+            if jh and jh != headline:  # don't duplicate the top-level headline
+                lines.append(f"\n**Judge ({judge.get('agent', '?')}):** {jh}")
+        else:
+            err = (judge.get("error") or "failed")[:120]
+            lines.append(f"\n**Judge:** ✗ {err}")
+
+    actions = _collect_recommended_actions(panelists)
+    if actions:
+        lines.append("\n**Recommended actions (combined):**")
+        for a in actions[:_DIGEST_MAX_ACTIONS]:
+            lines.append(f"- {a}")
+
+    if not lines:
+        return None
+    return "\n".join(lines)
+
+
+def _collect_recommended_actions(panelists: Any) -> list[str]:
+    """Flatten + dedupe the per-panelist ``recommended_actions`` lists.
+    Each entry in the structured summary is a multi-line string of bullets;
+    we split on newlines, strip prefixes, and dedupe while preserving order."""
+    seen: set[str] = set()
+    out: list[str] = []
+    if not isinstance(panelists, list):
+        return out
+    for p in panelists:
+        if not isinstance(p, dict):
+            continue
+        summary = p.get("summary") or {}
+        for raw in summary.get("recommended_actions") or []:
+            if not isinstance(raw, str):
+                continue
+            for line in raw.splitlines():
+                cleaned = line.strip()
+                if cleaned.startswith(("-", "*", "•")):
+                    cleaned = cleaned[1:].lstrip()
+                if not cleaned:
+                    continue
+                if cleaned in seen:
+                    continue
+                seen.add(cleaned)
+                out.append(cleaned)
+    return out
 
     async def _push_completion_notification(self, record: TaskRecord) -> None:
         if record.session is None:

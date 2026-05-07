@@ -69,6 +69,7 @@ def write_completion_marker(
     elapsed_seconds: Optional[float],
     run_id: Optional[str] = None,
     error: Optional[str] = None,
+    transcript_digest: Optional[str] = None,
     inbox_override: Optional[str] = None,
 ) -> Optional[Path]:
     """Atomically write a completion marker to the inbox.
@@ -93,9 +94,17 @@ def write_completion_marker(
         "run_id": run_id,
         "result_hint": (
             f"Call task_result('{task_id}') for the synthesised output, or "
-            f"run_tree(<run_id>, mode='transcript') for panelist verdicts."
+            f"run_tree('{run_id}', mode='transcript') for panelist verdicts."
+            if run_id
+            else f"Call task_result('{task_id}') for the synthesised output."
         ),
         "error": error,
+        # Compact panel takeaway (judge headline + per-panelist final
+        # summaries + recommended actions). When set, the drain script
+        # inlines this into the wake-up system-reminder so the model
+        # lands already knowing what the panel said. Empty / absent for
+        # non-panel tools or when the result couldn't be parsed.
+        "transcript_digest": transcript_digest,
     }
 
     try:

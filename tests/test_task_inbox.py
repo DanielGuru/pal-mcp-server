@@ -229,6 +229,127 @@ def test_inbox_drain_stop_watches_until_marker_arrives(tmp_path, monkeypatch):
     assert "ask_panel:test" in out
 
 
+def test_inbox_drain_stop_lease_blocks_concurrent_watcher(tmp_path, monkeypatch):
+    """REGRESSION (panel finding): every Stop hook used to start its own
+    900s polling loop. After N user turns in a long session, you'd get N
+    concurrent pollers. Singleton lease (.watch.lock + PID liveness)
+    means the first hook wins; subsequent hooks drain-once and exit 0
+    without entering the long watch."""
+    monkeypatch.setenv("PANEL_INBOX_DIR", str(tmp_path))
+    monkeypatch.setenv("PANEL_STOP_WATCH_TIMEOUT_S", "5.0")
+    monkeypatch.setenv("PANEL_STOP_WATCH_POLL_S", "0.05")
+
+    from panel_cli.inbox_drain import (
+        WATCH_LOCK_NAME,
+        _release_watch_lock,
+        _try_acquire_watch_lock,
+    )
+
+    # Hook #1 acquires the lease.
+    lock1 = _try_acquire_watch_lock(tmp_path)
+    assert lock1 is not None
+    assert lock1.exists()
+    assert lock1.name == WATCH_LOCK_NAME
+    assert int(lock1.read_text()) == os.getpid()
+
+    # Hook #2 tries to enter the watch loop while #1 holds it. Should
+    # detect the live lease and drain-once (exit 0 with empty inbox).
+    rc, out = _run_drain(monkeypatch, stdin_payload=json.dumps({"hook_event_name": "Stop"}))
+    assert rc == 0
+    assert out == ""
+
+    # Hook #2 with markers present still drains them and exits 2 even
+    # though it didn't get the lease — that's the "wake on already-
+    # completed work" path.
+    _drop_marker(tmp_path, task_id="leaseless-drain")
+    rc, out = _run_drain(monkeypatch, stdin_payload=json.dumps({"hook_event_name": "Stop"}))
+    assert rc == 2
+    assert "leaseless-drain" in out
+
+    # Cleanup.
+    _release_watch_lock(lock1)
+    assert not lock1.exists()
+
+
+def test_inbox_drain_stop_lease_reclaims_stale_holder(tmp_path, monkeypatch):
+    """A lock file referencing a dead PID must NOT block fresh hooks
+    indefinitely — would-be lease holders should reclaim and proceed."""
+    monkeypatch.setenv("PANEL_INBOX_DIR", str(tmp_path))
+    from panel_cli.inbox_drain import WATCH_LOCK_NAME, _try_acquire_watch_lock
+
+    # Plant a lock file with a PID that's almost certainly dead.
+    # 99999999 is well beyond any realistic process; even if it's
+    # somehow live, it's not us, and the kill-0 check tolerates that
+    # (PermissionError → treat as alive). We use 99999998 which on
+    # macOS / Linux is far above the typical pid_max.
+    lock = tmp_path / WATCH_LOCK_NAME
+    lock.write_text("99999998")
+
+    # We should reclaim and acquire, not yield.
+    acquired = _try_acquire_watch_lock(tmp_path)
+    assert acquired is not None
+    # Lock now references our PID.
+    assert int(lock.read_text()) == os.getpid()
+
+
+def test_inbox_drain_stop_lease_released_on_normal_exit(tmp_path, monkeypatch):
+    """The watch loop's finally block must release the lease so the next
+    Stop hook can acquire it cleanly. Verified end-to-end: empty inbox,
+    short timeout, run main() — lock should be gone after main returns."""
+    monkeypatch.setenv("PANEL_INBOX_DIR", str(tmp_path))
+    monkeypatch.setenv("PANEL_STOP_WATCH_TIMEOUT_S", "0.2")
+    monkeypatch.setenv("PANEL_STOP_WATCH_POLL_S", "0.05")
+    from panel_cli.inbox_drain import WATCH_LOCK_NAME
+
+    lock = tmp_path / WATCH_LOCK_NAME
+    rc, _ = _run_drain(monkeypatch, stdin_payload=json.dumps({"hook_event_name": "Stop"}))
+    assert rc == 0
+    assert not lock.exists(), "lease was not released after the watch timed out"
+
+
+def test_inbox_drain_includes_transcript_digest_in_reminder(tmp_path, monkeypatch):
+    """User-requested behaviour: the wake-up system-reminder should carry
+    the panel verdict / panelist headlines / recommended actions baked in,
+    so the model lands already knowing what was said and doesn't need to
+    chase task_result for the synthesis."""
+    monkeypatch.setenv("PANEL_INBOX_DIR", str(tmp_path))
+    digest = (
+        "**Verdict:** LAND-WITH-CHANGES, high confidence.\n\n"
+        "**Panelists:**\n"
+        "- codex [land/major, 60s, oauth_free]: Add a singleton lease.\n"
+        "- gemini [land/major, 95s, oauth_fallback_paid]: Polling is optimal.\n\n"
+        "**Recommended actions (combined):**\n"
+        "- Implement try_acquire_watch_lease.\n"
+        "- Add os.getppid() == 1 orphan check."
+    )
+    marker = tmp_path / "task1.json"
+    marker.write_text(
+        json.dumps(
+            {
+                "task_id": "task1",
+                "tool": "ask_panel",
+                "label": "design-review",
+                "status": "completed",
+                "elapsed_seconds": 365.2,
+                "run_id": "run-abc",
+                "transcript_digest": digest,
+            }
+        )
+    )
+
+    rc, out = _run_drain(monkeypatch, stdin_payload=json.dumps({"hook_event_name": "Stop"}))
+
+    assert rc == 2
+    assert "<system-reminder>" in out
+    assert "task1" in out
+    # Header is still there
+    assert "design-review" in out
+    # And the digest body is inlined
+    assert "LAND-WITH-CHANGES" in out
+    assert "Add a singleton lease" in out
+    assert "Implement try_acquire_watch_lease" in out
+
+
 def test_inbox_drain_stop_watch_times_out_with_empty_inbox(tmp_path, monkeypatch):
     """Stop hook with no markers and no marker arriving within the
     watch window exits 0 cleanly — no spurious wake-ups, no hang."""
@@ -533,6 +654,135 @@ def test_install_migrates_broken_flat_panel_entry_to_wrapper(tmp_path, monkeypat
     assert inner["asyncRewake"] is True
     assert ups[0]["matcher"] == "*"
     assert ups[0]["hooks"][0]["type"] == "command"
+
+
+def test_extract_run_id_and_digest_from_panel_result():
+    """``_extract_run_id_and_digest`` pulls the panel run_id and a compact
+    digest (judge headline + per-panelist final summaries + recommended
+    actions, deduped) out of a panel-family tool's result JSON."""
+    from tools.tasks import _extract_run_id_and_digest
+
+    # Synthetic but representative panel-result shape (mirrors the live
+    # run from task ec88b057cd0d).
+    result_json = json.dumps(
+        {
+            "headline": "LAND-WITH-CHANGES, high confidence. Polling stays.",
+            "panel_run_id": "abc123def456",
+            "panelists": [
+                {
+                    "agent": "codex",
+                    "label": "codex",
+                    "ok": True,
+                    "duration_s": 66.2,
+                    "cost_tier": "oauth_free",
+                    "summary": {
+                        "verdict": "needs-changes",
+                        "severity": "major",
+                        "headline": "Add a singleton Stop-watch lease.",
+                        "recommended_actions": [
+                            "\n- Implement watch lease.\n- Keep 1s polling.\n"
+                        ],
+                    },
+                },
+                {
+                    "agent": "claude",
+                    "label": "claude",
+                    "ok": True,
+                    "duration_s": 116.0,
+                    "cost_tier": "oauth_free",
+                    "summary": {
+                        "verdict": "needs-changes",
+                        "severity": "major",
+                        "headline": "Single-watcher lock is the missing piece.",
+                        "recommended_actions": [
+                            "\n- Implement watch lease.\n- Add os.getppid() check.\n"
+                        ],
+                    },
+                },
+            ],
+            "judge": {
+                "agent": "codex",
+                "ok": True,
+                "headline": "LAND-WITH-CHANGES — add the lease.",
+            },
+        }
+    )
+    run_id, digest = _extract_run_id_and_digest("ask_panel", [result_json])
+
+    assert run_id == "abc123def456"
+    assert digest is not None
+    # Verdict / panelists / actions all present
+    assert "LAND-WITH-CHANGES" in digest
+    assert "codex" in digest and "claude" in digest
+    assert "Add a singleton Stop-watch lease" in digest
+    assert "Single-watcher lock" in digest
+    # Actions deduped: "Implement watch lease" appears once even though
+    # both panelists recommended it
+    assert digest.count("Implement watch lease") == 1
+    assert "Add os.getppid() check" in digest
+    # Don't duplicate the top-level headline if judge.headline matches
+    # (here judge.headline differs slightly so it appears once)
+    assert digest.count("LAND-WITH-CHANGES") <= 2
+
+
+def test_extract_run_id_and_digest_returns_none_for_non_panel_result():
+    """Non-panel tools (clink, chat directly) don't expose panel_run_id;
+    we should silently return (None, None) instead of inventing a digest."""
+    from tools.tasks import _extract_run_id_and_digest
+
+    # Looks like a chat result — no panel_run_id, no panelists list.
+    result_json = json.dumps({"status": "ok", "content": "plain reply"})
+    run_id, digest = _extract_run_id_and_digest("chat", [result_json])
+    assert run_id is None
+    assert digest is None
+
+    # Empty / malformed inputs are also handled.
+    assert _extract_run_id_and_digest("chat", None) == (None, None)
+    assert _extract_run_id_and_digest("chat", []) == (None, None)
+    assert _extract_run_id_and_digest("chat", ["not json"]) == (None, None)
+
+
+def test_ask_panel_injects_default_judge_when_caller_omits():
+    """REGRESSION: opus-4-7 is the default judge for ask_panel (per
+    user preference). The override must NOT fire when the caller
+    passed an explicit judge — that would silently overwrite intent."""
+    from tools.panel import AskPanelTool
+
+    # Caller didn't pass a judge — default kicks in.
+    tool = AskPanelTool()
+    captured = {}
+
+    async def fake_super_execute(self, args):
+        captured["args"] = args
+        return []
+
+    # Monkeypatch PanelTool.execute to capture args without running real
+    # orchestration.
+    import asyncio
+    from tools.panel import PanelTool
+
+    orig = PanelTool.execute
+    PanelTool.execute = fake_super_execute  # type: ignore[assignment]
+    try:
+        asyncio.run(tool.execute({"prompt": "x", "panelists": ["codex"]}))
+        assert captured["args"]["judge"] == "claude-opus-4-7"
+
+        # Caller passed explicit judge — left alone.
+        captured.clear()
+        asyncio.run(
+            tool.execute({"prompt": "x", "panelists": ["codex"], "judge": "codex"})
+        )
+        assert captured["args"]["judge"] == "codex"
+
+        # Caller passed empty string — treated as "no judge specified",
+        # default kicks in.
+        captured.clear()
+        asyncio.run(
+            tool.execute({"prompt": "x", "panelists": ["codex"], "judge": "  "})
+        )
+        assert captured["args"]["judge"] == "claude-opus-4-7"
+    finally:
+        PanelTool.execute = orig  # type: ignore[assignment]
 
 
 def test_install_refuses_corrupt_settings_json(tmp_path, monkeypatch):

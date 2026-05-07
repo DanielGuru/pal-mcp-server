@@ -51,6 +51,15 @@ PROCESSING_TTL_S = 120.0
 STOP_WATCH_TIMEOUT_S = float(os.environ.get("PANEL_STOP_WATCH_TIMEOUT_S", "900"))
 STOP_WATCH_POLL_S = float(os.environ.get("PANEL_STOP_WATCH_POLL_S", "1.0"))
 
+# Singleton-watcher lease (panel-flagged): without this, every Stop hook
+# spawns its OWN 15-min poller. After N user turns in a long session, you
+# end up with N concurrent pollers. Atomic per-marker claim prevents
+# duplicate INJECTION but doesn't bound process count. Lease file lives
+# next to the markers; first hook to call O_CREAT|O_EXCL wins, others
+# drain-once and exit 0. PID liveness check (kill -0) lets us reclaim a
+# stale lease left by a crashed/killed prior watcher.
+WATCH_LOCK_NAME = ".watch.lock"
+
 
 def _inbox_dir() -> Path:
     env = os.environ.get("PANEL_INBOX_DIR")
@@ -60,7 +69,13 @@ def _inbox_dir() -> Path:
 
 
 def _format_marker(payload: dict) -> str:
-    """Build a single readable line for the system-reminder block."""
+    """Format one marker as a system-reminder block. The header is always
+    present (task_id + label + status + elapsed). When the marker carries
+    a ``transcript_digest`` (panel-family results), append it after a
+    blank line so the model lands with the verdict already in context —
+    no follow-up ``task_result`` call needed. Long-running clink/chat
+    background tasks that don't emit a digest just get the header line.
+    """
     task_id = payload.get("task_id", "?")
     label = payload.get("label") or payload.get("tool") or "panel task"
     status = payload.get("status", "?")
@@ -70,7 +85,100 @@ def _format_marker(payload: dict) -> str:
 
     if error:
         return f"Panel task {task_id} ({label}) {status} after {elapsed_str} — error: {error}"
-    return f"Panel task {task_id} ({label}) {status} in {elapsed_str}"
+
+    header = f"Panel task {task_id} ({label}) {status} in {elapsed_str}"
+    digest = payload.get("transcript_digest")
+    if isinstance(digest, str) and digest.strip():
+        return f"{header}\n\n{digest.strip()}"
+    return header
+
+
+def _pid_is_alive(pid: int) -> bool:
+    """``kill -0`` liveness check. POSIX-only; Windows lacks signals so we
+    fall back to assuming the lock holder is alive (safer to wait than to
+    steal a lease from a real process)."""
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        # Process exists but we can't signal it — alive enough for our
+        # purposes (somebody else's hook polling under another user).
+        return True
+    except (OSError, AttributeError):
+        # AttributeError on Windows where os.kill semantics differ.
+        return True
+
+
+def _try_acquire_watch_lock(inbox: Path) -> Optional[Path]:
+    """Try to become the singleton long-poll watcher. Returns the lock
+    path on success (caller MUST release it via ``_release_watch_lock``);
+    returns ``None`` if a live watcher already holds the lease.
+
+    Reclaims stale leases: if the lock file references a PID that's no
+    longer alive (crashed Claude Code, killed hook), unlink it and
+    retry once. Single retry is intentional — if a third party keeps
+    re-creating it, we yield rather than fight."""
+    lock_path = inbox / WATCH_LOCK_NAME
+    pid = os.getpid()
+
+    for attempt in range(2):
+        try:
+            fd = os.open(lock_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            # Existing holder — alive or stale?
+            try:
+                holder_pid = int(lock_path.read_text(encoding="utf-8").strip())
+            except (OSError, ValueError):
+                holder_pid = -1
+            if holder_pid > 0 and _pid_is_alive(holder_pid):
+                return None  # legit live watcher
+            # Stale — try to remove and retry the create.
+            if attempt == 0:
+                try:
+                    lock_path.unlink()
+                except FileNotFoundError:
+                    pass  # someone else got there first
+                except OSError:
+                    return None
+                continue
+            return None
+        else:
+            try:
+                os.write(fd, str(pid).encode("ascii"))
+            finally:
+                os.close(fd)
+            return lock_path
+    return None
+
+
+def _release_watch_lock(lock_path: Path) -> None:
+    """Release the lease. Verify ownership (PID match) before unlinking
+    so a slow-shutting-down process doesn't accidentally wipe a fresh
+    successor's lock."""
+    try:
+        contents = lock_path.read_text(encoding="utf-8").strip()
+        holder_pid = int(contents)
+    except (OSError, ValueError):
+        return
+    if holder_pid == os.getpid():
+        try:
+            lock_path.unlink()
+        except OSError:
+            pass
+
+
+def _parent_orphaned() -> bool:
+    """``os.getppid() == 1`` on POSIX means the parent (Claude Code) died
+    and we got reparented to init. We should exit cleanly rather than keep
+    polling on a dead conversation."""
+    try:
+        return os.getppid() == 1
+    except (OSError, AttributeError):
+        return False
 
 
 def _reclaim_stale(inbox: Path) -> None:
@@ -144,7 +252,12 @@ def _drain_pending(inbox: Path) -> tuple[list[str], list[str]]:
     run_ids: list[str] = []
 
     for marker in sorted(inbox.glob("*.json")):
+        # Skip dotfiles (staging dir, lease lock, anything we deliberately
+        # tucked away). The lease lock has no .json suffix anyway, but
+        # being explicit here keeps the loop robust.
         if marker.name.startswith("."):
+            continue
+        if marker.name == WATCH_LOCK_NAME:
             continue
         claimed = inbox / f"{marker.name}.processing.{pid}"
         try:
@@ -195,21 +308,39 @@ def main() -> int:
         return 0
 
     # Stop hook with asyncRewake: at hook fire-time the panel is still
-    # running and the inbox is empty. Poll for up to STOP_WATCH_TIMEOUT_S
-    # so we exit 2 the moment the marker drops, waking the model with the
-    # completion reminder instead of forcing the user to type something
-    # to trigger UserPromptSubmit.
+    # running and the inbox is empty. The first hook to acquire the
+    # singleton lease enters the watch loop; subsequent Stop hooks (each
+    # later turn fires a fresh one) drain-once-and-yield so we never
+    # accumulate N concurrent pollers across a long session.
     if event == "Stop":
-        deadline = time.time() + STOP_WATCH_TIMEOUT_S
-        while True:
+        lock_path = _try_acquire_watch_lock(inbox)
+        if lock_path is None:
+            # Another live watcher is holding the lease — just drain
+            # whatever's already pending and exit cleanly. The lease
+            # holder will catch any future arrivals.
             _reclaim_stale(inbox)
             messages, run_ids = _drain_pending(inbox)
             if messages:
                 _emit_reminder(messages, run_ids)
-                return 2  # asyncRewake wakes the model
-            if time.time() >= deadline:
-                return 0  # nothing arrived within the watch window
-            time.sleep(STOP_WATCH_POLL_S)
+                return 2  # still wake on already-completed work
+            return 0
+
+        try:
+            deadline = time.time() + STOP_WATCH_TIMEOUT_S
+            while True:
+                if _parent_orphaned():
+                    # Claude Code died; nobody listening for our exit-2.
+                    return 0
+                _reclaim_stale(inbox)
+                messages, run_ids = _drain_pending(inbox)
+                if messages:
+                    _emit_reminder(messages, run_ids)
+                    return 2  # asyncRewake wakes the model
+                if time.time() >= deadline:
+                    return 0  # nothing arrived within the watch window
+                time.sleep(STOP_WATCH_POLL_S)
+        finally:
+            _release_watch_lock(lock_path)
 
     # UserPromptSubmit / unknown / no event info: drain-once. The user is
     # actively here — don't hang the prompt waiting for a possible future

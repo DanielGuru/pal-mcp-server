@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
 import time
 from typing import Any, Optional
@@ -1494,10 +1495,30 @@ class AskPanelTool(PanelTool):
 
     Internal callers (multiaudit, bugfind, OAuth-first wrapping) keep
     using ``panel`` directly so existing dispatch chains are unaffected.
+
+    Default judge: ``claude-opus-4-7`` (overridable via
+    ``PANEL_ASK_PANEL_DEFAULT_JUDGE`` env or per-call ``judge`` arg).
+    Reasoning: synthesis work benefits from the strongest writing /
+    reasoning model. Multiaudit/bugfind keep ``codex`` as default
+    because their rubrics demand cite-the-code rigour over prose
+    quality. The caller can always override.
     """
 
     def get_name(self) -> str:
         return "ask_panel"
+
+    async def execute(self, arguments: dict[str, Any]) -> list[TextContent]:
+        # Inject default judge ONLY when the caller didn't pass one
+        # (or passed an empty string). Don't second-guess explicit
+        # caller choice — that's the whole point of the override.
+        existing = arguments.get("judge")
+        if not (isinstance(existing, str) and existing.strip()):
+            default_judge = os.environ.get(
+                "PANEL_ASK_PANEL_DEFAULT_JUDGE", "claude-opus-4-7"
+            ).strip()
+            if default_judge:
+                arguments = {**arguments, "judge": default_judge}
+        return await super().execute(arguments)
 
     def get_description(self) -> str:
         return (
