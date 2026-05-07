@@ -372,18 +372,59 @@ def _exit_code_for(event: str, did_inject: bool) -> int:
     return 0  # UserPromptSubmit, unknown, or no event info
 
 
+def _ppid_of(pid: int) -> int:
+    """Best-effort cross-platform PPID lookup. Returns 0 on failure so the
+    caller treats it as "give up" rather than walking into the init
+    process. Uses ``ps`` because we deliberately don't import psutil here
+    (the drain script is stdlib-only — runs under whatever Python the
+    hook environment provides, even if Panel itself is uninstalled)."""
+    try:
+        import subprocess
+        out = subprocess.check_output(
+            ["ps", "-o", "ppid=", "-p", str(pid)],
+            stderr=subprocess.DEVNULL,
+            timeout=2,
+        ).decode()
+        return int(out.strip() or 0)
+    except Exception:  # noqa: BLE001
+        return 0
+
+
+def _proc_name(pid: int) -> str:
+    """Best-effort cross-platform process-name lookup. Empty string on
+    failure. Used to walk up the tree finding the Claude Code ancestor
+    when the immediate parent is a shell wrapper."""
+    try:
+        import subprocess
+        out = subprocess.check_output(
+            ["ps", "-o", "comm=", "-p", str(pid)],
+            stderr=subprocess.DEVNULL,
+            timeout=2,
+        ).decode()
+        return out.strip()
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 def _owner_claude_pid() -> Optional[int]:
     """The Claude Code PID that fired this hook.
 
-    Claude Code launches the hook command directly (see
-    ``panel_cli/install_hooks.py``: the hook entry is the absolute path to
-    ``panel-inbox-drain``), so ``os.getppid()`` is the originating Claude
-    session. PANEL_OWNER_PID overrides for non-direct hook shapes.
+    Three layers, in order:
 
-    Returned value is matched against each marker's ``claude_pid`` field;
-    only matching markers are claimed. Markers with no ``claude_pid``
-    (legacy / orphaned Panel) drain via the unowned fallback so old
-    deployments don't strand markers after upgrade.
+    1. ``PANEL_OWNER_PID`` env var — explicit override. Set this in the
+       hook command (e.g. ``PANEL_OWNER_PID=$PPID panel-inbox-drain``)
+       to bypass auto-detection entirely.
+    2. **Walk up the process tree** to find the nearest ancestor whose
+       process name contains ``claude``. This is the robust path: hooks
+       are sometimes spawned via a shell (``sh -c "panel-inbox-drain"``),
+       which makes ``os.getppid()`` the shell PID, not Claude. Walking
+       up handles both direct-spawn and shell-wrapped invocations.
+    3. ``os.getppid()`` fallback — preserves the simple-spawn path even
+       when the walk fails (e.g. ``ps`` unavailable, restricted env).
+
+    Returns ``None`` for orphaned/init-parented processes so markers
+    fall through to the legacy "any drainer" branch rather than
+    binding to PID 1.
     """
     env = os.environ.get("PANEL_OWNER_PID", "").strip()
     if env:
@@ -392,6 +433,20 @@ def _owner_claude_pid() -> Optional[int]:
             return pid if pid > 0 else None
         except ValueError:
             pass
+
+    # Walk up the tree finding the nearest "claude" ancestor.
+    # Bounded at 8 levels — any sane spawn chain is shallower than that,
+    # and we'd rather give up than walk forever on a corrupt /proc.
+    cur = os.getpid()
+    for _ in range(8):
+        cur = _ppid_of(cur)
+        if cur <= 1:
+            break
+        name = _proc_name(cur)
+        if name and "claude" in name.lower():
+            return cur
+
+    # Fallback: immediate PPID (legacy direct-spawn path).
     try:
         ppid = os.getppid()
     except OSError:

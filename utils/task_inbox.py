@@ -61,20 +61,57 @@ SCHEMA_VERSION = 2
 _OWNER_PID: Optional[int] = None
 
 
+def _ppid_of(pid: int) -> int:
+    """Cross-platform PPID lookup. Returns 0 on failure (caller bails)."""
+    try:
+        import subprocess
+        out = subprocess.check_output(
+            ["ps", "-o", "ppid=", "-p", str(pid)],
+            stderr=subprocess.DEVNULL,
+            timeout=2,
+        ).decode()
+        return int(out.strip() or 0)
+    except Exception:  # noqa: BLE001
+        return 0
+
+
+def _proc_name(pid: int) -> str:
+    try:
+        import subprocess
+        out = subprocess.check_output(
+            ["ps", "-o", "comm=", "-p", str(pid)],
+            stderr=subprocess.DEVNULL,
+            timeout=2,
+        ).decode()
+        return out.strip()
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 def _detect_owner_pid() -> Optional[int]:
-    """PPID at module-load time, or PANEL_OWNER_PID override.
+    """The Claude Code PID that owns the current Panel process.
 
-    Returns None if either:
-      - PPID is 1 (Panel was started detached / orphaned — no session to
-        scope to, fall back to legacy "any drainer" semantics)
-      - PANEL_OWNER_PID is explicitly set to "0" or empty (opt-out)
+    Three layers, in order:
 
-    Cached on the first call so a bad clock or a later reparent can't
-    flip the value mid-session.
+    1. ``PANEL_OWNER_PID`` env var — explicit override.
+    2. Walk up the process tree to find the nearest ancestor whose
+       process name contains ``claude``. Robust to wrapper-based launches
+       (uv tool run, npx, sh -c) where the immediate parent isn't Claude
+       directly. The drain hook does the same walk so both ends converge
+       on the same Claude PID.
+    3. ``os.getppid()`` fallback — covers the simple direct-spawn path.
+
+    Returns ``None`` when no Claude ancestor is found and the immediate
+    parent is init (PPID==1) — markers go out unowned and fall through
+    to the legacy "any drainer" branch on the read side.
+
+    Result is cached at first call so a later reparent (Claude died,
+    Panel survived briefly) doesn't flip the value mid-session.
     """
     global _OWNER_PID
     if _OWNER_PID is not None:
         return _OWNER_PID if _OWNER_PID > 0 else None
+
     env = os.environ.get("PANEL_OWNER_PID", "").strip()
     if env:
         try:
@@ -83,12 +120,23 @@ def _detect_owner_pid() -> Optional[int]:
             return pid if pid > 0 else None
         except ValueError:
             pass
+
+    # Walk up the tree finding the nearest "claude" ancestor (bounded).
+    cur = os.getpid()
+    for _ in range(8):
+        cur = _ppid_of(cur)
+        if cur <= 1:
+            break
+        name = _proc_name(cur)
+        if name and "claude" in name.lower():
+            _OWNER_PID = cur
+            return cur
+
+    # Fallback: immediate PPID (direct-spawn path — typical stdio MCP shape).
     try:
         ppid = os.getppid()
     except OSError:
         ppid = 0
-    # PPID==1 (init) means Panel was started orphaned, e.g. systemd unit,
-    # detached daemon. No useful session to scope to — leave unowned.
     if ppid > 1:
         _OWNER_PID = ppid
         return ppid
