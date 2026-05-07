@@ -536,6 +536,67 @@ class TaskManager:
         except Exception as exc:  # noqa: BLE001 — best-effort, never fail
             logger.debug("inbox marker write failed for %s: %s", record.task_id, exc)
 
+    async def _push_completion_notification(self, record: TaskRecord) -> None:
+        if record.session is None:
+            return
+        try:
+            elapsed = (
+                round(record.completed_at - record.started_at, 2)
+                if (record.completed_at and record.started_at)
+                else None
+            )
+            payload = {
+                "event": "panel.task.finished",
+                "task_id": record.task_id,
+                "tool": record.tool_name,
+                "label": record.label,
+                "status": record.status,
+                "elapsed_seconds": elapsed,
+                "error": record.error,
+            }
+            level = "info" if record.status == "completed" else (
+                "warning" if record.status == "cancelled" else "error"
+            )
+            notification = ServerNotification(
+                LoggingMessageNotification(
+                    method="notifications/message",
+                    params=LoggingMessageNotificationParams(
+                        level=level,
+                        logger="panel.tasks",
+                        data=payload,
+                    ),
+                )
+            )
+            await record.session.send_notification(notification)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Failed to push completion notification: %s", exc)
+
+    # -- gc ----------------------------------------------------------------
+
+    def _gc(self) -> None:
+        """Evict completed records: by TTL first, then by count cap (FIFO)."""
+        now = time.time()
+        # 1. TTL eviction
+        cutoff = now - COMPLETED_TTL_S
+        stale = [
+            tid
+            for tid, rec in self._tasks.items()
+            if rec.completed_at is not None and rec.completed_at < cutoff
+        ]
+        for tid in stale:
+            self._tasks.pop(tid, None)
+
+        # 2. Count cap on completed records (oldest first)
+        completed = [
+            (rec.completed_at or 0.0, tid)
+            for tid, rec in self._tasks.items()
+            if rec.is_terminal()
+        ]
+        completed.sort()
+        excess = len(completed) - MAX_COMPLETED_RECORDS
+        for _, tid in completed[: max(0, excess)]:
+            self._tasks.pop(tid, None)
+
 
 # ---------------------------------------------------------------------------
 # Inbox-marker enrichment: extract run_id + a compact transcript digest from a
@@ -656,67 +717,6 @@ def _collect_recommended_actions(panelists: Any) -> list[str]:
                 seen.add(cleaned)
                 out.append(cleaned)
     return out
-
-    async def _push_completion_notification(self, record: TaskRecord) -> None:
-        if record.session is None:
-            return
-        try:
-            elapsed = (
-                round(record.completed_at - record.started_at, 2)
-                if (record.completed_at and record.started_at)
-                else None
-            )
-            payload = {
-                "event": "panel.task.finished",
-                "task_id": record.task_id,
-                "tool": record.tool_name,
-                "label": record.label,
-                "status": record.status,
-                "elapsed_seconds": elapsed,
-                "error": record.error,
-            }
-            level = "info" if record.status == "completed" else (
-                "warning" if record.status == "cancelled" else "error"
-            )
-            notification = ServerNotification(
-                LoggingMessageNotification(
-                    method="notifications/message",
-                    params=LoggingMessageNotificationParams(
-                        level=level,
-                        logger="panel.tasks",
-                        data=payload,
-                    ),
-                )
-            )
-            await record.session.send_notification(notification)
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("Failed to push completion notification: %s", exc)
-
-    # -- gc ----------------------------------------------------------------
-
-    def _gc(self) -> None:
-        """Evict completed records: by TTL first, then by count cap (FIFO)."""
-        now = time.time()
-        # 1. TTL eviction
-        cutoff = now - COMPLETED_TTL_S
-        stale = [
-            tid
-            for tid, rec in self._tasks.items()
-            if rec.completed_at is not None and rec.completed_at < cutoff
-        ]
-        for tid in stale:
-            self._tasks.pop(tid, None)
-
-        # 2. Count cap on completed records (oldest first)
-        completed = [
-            (rec.completed_at or 0.0, tid)
-            for tid, rec in self._tasks.items()
-            if rec.is_terminal()
-        ]
-        completed.sort()
-        excess = len(completed) - MAX_COMPLETED_RECORDS
-        for _, tid in completed[: max(0, excess)]:
-            self._tasks.pop(tid, None)
 
 
 # ---------------------------------------------------------------------------
