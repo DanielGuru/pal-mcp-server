@@ -577,19 +577,46 @@ async def _emit_panelist_answer(
 def _build_judge_prompt(original_prompt: str, panelist_results: list[dict[str, Any]]) -> str:
     sections: list[str] = []
     sections.append(
-        "You are synthesizing a panel of AI models that each independently answered a question. "
-        "Identify points of agreement, points of divergence, the strongest argument from each, "
-        "and your overall recommendation."
+        "You are the judge synthesising a panel of independent AI models that "
+        "each answered the same question. The user is going to act on what you "
+        "say. Be decisive. Your job is NOT to average — it's to weigh evidence "
+        "and call which panelists were right where they disagreed.\n"
+        "\n"
+        "How to weigh panelists:\n"
+        "- A panelist who showed code (`file:line` cites, actual diffs) outweighs "
+        "one who reasoned in the abstract.\n"
+        "- A panelist who tagged confidence honestly (especially LOW where "
+        "warranted) is more trustworthy than one who claimed HIGH everywhere.\n"
+        "- Convergence across independent models is signal, but a single "
+        "panelist with concrete evidence outweighs three panelists with "
+        "matching vibes. Don't follow majority vote when one model showed its "
+        "work.\n"
+        "- Call out OVERCLAIMS: if a panelist asserted something HIGH-confidence "
+        "without evidence to back it, name that and discount it.\n"
+        "- Call out CONVERGENCE-ON-WRONG: if multiple panelists agreed but "
+        "missed something the diff/code clearly shows, say so.\n"
     )
     sections.append(
         "\nCRITICAL OUTPUT FORMAT — your response MUST begin with a fenced HEADLINE block, exactly:\n"
         "<HEADLINE>\n"
-        "[2-3 sentences plain English. Direct verdict on the question. Lead with the answer. "
-        "If panelists converged, name the consensus. If they diverged, name the divergence and your call. "
-        "No preamble, no 'after careful consideration', just the verdict.]\n"
+        "[2-3 sentences plain English. The user's takeaway. Lead with the "
+        "verdict, not the process. If panelists converged, name the consensus "
+        "and any dissent worth heeding. If they diverged, name your call and "
+        "the single strongest reason for it. No 'after careful consideration', "
+        "no 'the panel believes', just the answer.]\n"
         "</HEADLINE>\n"
-        "Then continue with your full reasoning under normal prose. Callers read the HEADLINE alone "
-        "for a quick scan; the body is for provenance and depth."
+        "Then continue with your full reasoning under normal prose. The body should:\n"
+        "1. Identify the points of real disagreement (not surface differences in "
+        "phrasing) and explain who you sided with and why.\n"
+        "2. Highlight the strongest finding from each panelist that you "
+        "incorporated, by panelist label.\n"
+        "3. Flag any finding from any panelist that you REJECTED — by name, with "
+        "the reason (no evidence, contradicted by another panelist's code cite, "
+        "out of scope, etc.).\n"
+        "4. End with **RECOMMENDED ACTIONS** — a numbered list, ordered by "
+        "priority, of what the user should do. Concrete and actionable. Not "
+        '"consider testing more"; "add `tests/test_x.py::test_xauth_drop` '
+        'asserting Y; ship the fix from panelist Z\'s diff".'
     )
     sections.append("\n=== ORIGINAL QUESTION ===\n" + original_prompt.strip())
     for r in panelist_results:
@@ -854,11 +881,11 @@ def _build_debate_prompt(
     sections: list[str] = []
     sections.append(
         "You are a panelist in an adversarial multi-model debate. The other "
-        "panelists are independent AI models that answered the same question. "
-        "Your goal in this round: critique their positions, defend yours where "
-        "they disagree, concede where they convinced you, and produce a revised "
-        "answer. Be specific and concrete — reference the other panelists by "
-        "label when you respond to their points."
+        "panelists are independent AI models that saw the same question and "
+        "answered it without knowing what you said. Your job in this round is "
+        "NOT to summarise — it's to engage. The judge will synthesise; if "
+        "you're hand-wavy you get out-voted by panelists who took clear "
+        "positions backed by evidence."
     )
     sections.append("\n=== ORIGINAL QUESTION ===\n" + original_prompt.strip())
     if self_previous.strip():
@@ -876,8 +903,25 @@ def _build_debate_prompt(
         sections.append("\n=== PEER PANELISTS ===\n(no peer outputs available)")
     sections.append(
         "\n=== YOUR REVISED ANSWER ===\n"
-        "Write your updated position now. Lead with where you changed your mind "
-        "(if anywhere), then where you still disagree and why."
+        "Required structure for this round:\n"
+        "\n"
+        "1. **PEER ENGAGEMENT** — for EACH peer above, by label, write one of:\n"
+        "   - `CONCEDE [peer-label]:` <one line on the specific finding they "
+        "saw that you missed, and how it changes your position>\n"
+        "   - `COUNTER [peer-label]:` <specific reason their finding is wrong, "
+        "overstated, or out of scope — cite the evidence they're misreading>\n"
+        "   `Mostly agree` / `partially agree` is not acceptable. You must "
+        "concede or counter their single strongest finding by name.\n"
+        "\n"
+        "2. **REVISED POSITION** — your updated answer. Lead with what changed "
+        "from round 1 (if anything). Then your final position with the same "
+        "rigour as round 1: cite `file:line` if reviewing code, tag confidence, "
+        "show diffs/code rather than describing them. If your position didn't "
+        "move, say so explicitly and explain why peer arguments didn't shift "
+        "you — that itself is signal.\n"
+        "\n"
+        "Do not pad. Do not restate peer positions back to them — engage with "
+        "the strongest point and move on. Do not hedge."
     )
     return "\n".join(sections)
 

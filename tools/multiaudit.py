@@ -90,7 +90,9 @@ class MultiauditTool(BaseTool):
     def get_description(self) -> str:
         return (
             "Trigger a multi-model audit of the current branch's changes. "
-            "Reads the git diff (vs main, or uncommitted if no diff vs main), "
+            "Reads the git diff (vs main, then uncommitted, then staged, then "
+            "the last commit if all of those are empty — so it works equally "
+            "well before OR after you've committed), "
             "packages it with intent context from recent commits, and fires "
             "an adversarial debate panel (codex + gemini + claude + grok-4.3 by default, "
             "1 debate round, codex as judge). Returns the task_id + live web "
@@ -252,15 +254,36 @@ class MultiauditTool(BaseTool):
                 ["diff", "--name-only", f"{base_branch}...HEAD"],
                 allow_empty=True,
             ).strip()
+            # Last-commit fallback: when branch == base_branch and the user
+            # has already committed, the three primary diffs are all empty.
+            # Audit HEAD~1..HEAD instead so the tool stays useful post-commit.
+            # Tolerate the "no parent" edge case (initial commit) silently.
+            try:
+                last_commit = _git(
+                    cwd, ["diff", "HEAD~1..HEAD"], allow_empty=True
+                )
+                last_commit_files = _git(
+                    cwd, ["diff", "--name-only", "HEAD~1..HEAD"], allow_empty=True
+                ).strip()
+            except _GitError:
+                last_commit = ""
+                last_commit_files = ""
         except _GitError as exc:
             return _err(f"git command failed: {exc}")
 
-        diff_blob, diff_source = _pick_diff(diff_vs_base, uncommitted, staged)
+        diff_blob, diff_source = _pick_diff(
+            diff_vs_base, uncommitted, staged, last_commit
+        )
+        # When falling back to the last commit, surface its files in
+        # files_changed too — otherwise the response payload reports an
+        # empty list while the panel is reasoning about real changes.
+        if diff_source == "last commit (HEAD)" and last_commit_files:
+            files_changed = last_commit_files
         if not diff_blob.strip():
             return _err(
                 f"No changes to audit. Tried '{base_branch}...HEAD', uncommitted, "
-                "and staged — all empty. Make some changes first or pass a "
-                "different base_branch."
+                "staged, and last commit (HEAD~1..HEAD) — all empty. Make some "
+                "changes first or pass a different base_branch."
             )
         diff_blob, truncated = _cap(diff_blob, _DIFF_CHAR_CAP)
 
@@ -415,14 +438,20 @@ def _git(cwd: str, argv: list[str], *, allow_empty: bool = False) -> str:
 
 
 def _pick_diff(
-    diff_vs_base: str, uncommitted: str, staged: str
+    diff_vs_base: str,
+    uncommitted: str,
+    staged: str,
+    last_commit: str = "",
 ) -> tuple[str, str]:
     """Pick the most useful diff payload to audit.
 
     Priority:
       1. Diff against base_branch (the PR-shaped view) if non-empty.
       2. Uncommitted changes (working tree + index) if any.
-      3. Staged-only changes as a last resort.
+      3. Staged-only changes.
+      4. Last commit (HEAD~1..HEAD) so multiaudit still works post-commit
+         — this is the common case when you've already pushed and want the
+         models to look at what just landed.
 
     Returns (diff_blob, source_label) so the panel knows what it's seeing.
     """
@@ -432,6 +461,8 @@ def _pick_diff(
         return uncommitted, "uncommitted changes"
     if staged.strip():
         return staged, "staged changes"
+    if last_commit.strip():
+        return last_commit, "last commit (HEAD)"
     return "", "(none)"
 
 
@@ -477,32 +508,83 @@ def _build_audit_prompt(
         else ""
     )
 
-    return f"""You are a panelist in an adversarial multi-model code-review audit. \
-Be opinionated. Defend your position. Only change your mind when convinced.
+    return f"""You are a senior engineer doing the kind of code review you'd \
+do for a teammate whose change you're going to be on call for. Adversarial, \
+opinionated, specific. You're not here to be polite. You're here to find what \
+breaks before it ships.
 
-The change you're reviewing is on branch `{current_branch}` (vs `{base_branch}`, \
-diff source: {diff_source}). Output structure required:
+The change is on branch `{current_branch}` (vs `{base_branch}`, source: \
+{diff_source}). You are reading the actual diff below — cite `file:line` for \
+every claim and do NOT invent code that isn't shown. If your verdict depends \
+on something outside the diff, say so explicitly and call out what you'd need \
+to see.
 
-1. **VERDICT** — one paragraph. Land/don't-land/needs-changes. Lead with that.
-2. **BUGS** — concrete defects you'd want fixed before merging. Cite file:line. \
-Do not flag style/preference as a bug.
-3. **DESIGN CONCERNS** — load-bearing design decisions you'd push back on. \
-Be specific about what to change and why.
-4. **SECURITY** — anything that loosens a security boundary, leaks secrets, \
-mishandles untrusted input, or removes a check.
-5. **MISSING TESTS** — behaviour the diff introduces or modifies that has no \
-test coverage. Be precise about what should be tested, not "add more tests".
-6. **WHAT YOU'D ATTACK** — if you wanted to break this PR in production, where \
-would you aim? One scenario per bullet. This is the most valuable section — \
-do not skip it.
+=== HARD RULES ===
+- No "consider X" / "you might want to" / "perhaps". Say what you mean. If \
+something is wrong, say it's wrong and how to fix it.
+- Do not restate the diff back. The reader already saw it. Findings only.
+- Do not pad. If a section has nothing real to flag, write `(none)` and move on.
+- No style nits, no "rename this variable", no "add a docstring". If your \
+finding wouldn't make a teammate change the PR, drop it.
+- Tag every concrete finding with **severity** (P0 = blocker, ship breaks; \
+P1 = must-fix before merge; P2 = should-fix soon) and **confidence** (HIGH = \
+I see the bug in the diff; MED = strong reasoning, can't fully verify here; \
+LOW = pattern-match suspicion, worth checking).
 
-If a section legitimately has nothing to flag, write "(none)" — do not pad. \
-Do not flag "consider adding a comment" or "rename this variable" type nits \
-unless they materially affect correctness or maintainability.
+=== OUTPUT STRUCTURE ===
 
-You are reading the actual diff. Cite file:line for every claim. Do not \
-hallucinate code that isn't shown — if you need more context, say so explicitly \
-and reason about what's visible.{truncation_note}\
+1. **VERDICT** — one short paragraph. `LAND` / `LAND WITH CHANGES` / \
+`BLOCK`. Lead with that label. Add your confidence in the verdict (HIGH/MED/LOW) \
+and the single biggest reason.
+
+2. **BUGS** — actual defects, not opinions. For each:
+   - `[P0|P1|P2 / HIGH|MED|LOW]` `file:line` — what's wrong (1 sentence)
+   - **Fix:** a unified-diff-style snippet OR ≤5 lines of corrected code. \
+Not "refactor this" — show the change.
+
+3. **SECURITY** — anything that loosens a boundary, leaks a secret, mishandles \
+untrusted input, weakens auth, broadens permissions, or strips a check. Same \
+`[severity / confidence] file:line` + fix sketch shape as BUGS. Include supply-\
+chain (new deps), injection surfaces, and any redaction/logging that could leak \
+PII or tokens.
+
+4. **CONCURRENCY / ROLLOUT / ROLLBACK** — production-shaped questions a static \
+review misses. Address each that applies; write `(none)` for those that don't:
+   - Race conditions / ordering assumptions / shared-state mutations
+   - What happens half-deployed (old clients hitting new server, or vice versa)
+   - Retry / idempotency behaviour on transient failure
+   - Migration order if schema/contract changed
+   - **Rollback story:** if this lands and breaks in prod, what's the undo? \
+If "revert and redeploy" doesn't work (data written, schema changed, cache \
+poisoned), say so loudly.
+
+5. **DESIGN / ARCHITECTURE** — load-bearing decisions you'd push back on. Be \
+specific about what to change and why. Include: wrong abstraction layer, \
+leaking implementation through the API, premature generality, hidden coupling, \
+violations of an invariant the rest of the codebase relies on.
+
+6. **OMISSIONS — what the diff DIDN'T change but should have** — the most \
+expensive bugs live here. The diff's negative space:
+   - Callers/consumers of changed functions not updated
+   - Public API / OpenAPI / schema / type definitions out of sync with code
+   - New flag/config added but not wired through
+   - New error path created but not handled upstream
+   - Docs / CLAUDE.md / tests that codify the OLD behaviour
+   - Rename or deletion that other files still reference
+
+7. **MISSING TESTS** — behaviour the diff introduces or changes that has no \
+test exercising it. Be precise: name the function and the failure mode, not \
+"add coverage". Also flag tests that look like they cover something but only \
+hit the happy path.
+
+8. **WHAT YOU'D ATTACK** — if you wanted to break this PR in prod, where would \
+you aim? Top 1-3 scenarios. One concrete attack per bullet — input shape, \
+timing, scale, or environment that the author probably didn't think about.
+
+9. **ASSUMPTIONS** — list every assumption you made that you couldn't verify \
+from the diff alone (caller behaviour, framework guarantees, env config). \
+Forces honesty: if half your verdict rests on assumptions, that's important \
+signal.{truncation_note}\
 {extra_section}\
 {files_section}\
 {commits_section}
@@ -512,9 +594,11 @@ and reason about what's visible.{truncation_note}\
 
 === END DIFF ===
 
-Begin your audit. This is round 1; in round 2 you'll see the other panelists' \
-takes and must engage directly — what did they get wrong, where did they convince \
-you, what's your revised position?
+This is round 1. In round 2 you'll see the other panelists' takes and must \
+engage directly: for each peer, name their single strongest finding and either \
+**CONCEDE** (with one line on what they saw that you missed) or **COUNTER** \
+(with a specific reason their finding is wrong, overstated, or out of scope). \
+Vague "I mostly agree" is not acceptable in round 2.
 """
 
 

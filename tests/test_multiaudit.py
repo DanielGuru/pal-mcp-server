@@ -401,3 +401,63 @@ def test_propagates_start_task_error_no_false_success(tmp_path, monkeypatch):
     assert "too_many_active_tasks" in body["error"]
     # Critical: the user must NOT see status=started for a refused dispatch
     assert body.get("task_id") in (None, "")
+
+
+def test_falls_back_to_last_commit_when_clean_main(tmp_path, monkeypatch):
+    """When branch == base_branch and the working tree is clean, fall back
+    to HEAD~1..HEAD so multiaudit still works after the change has already
+    been committed (the common 'I just pushed, audit it' case)."""
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.email", "t@l"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.name", "T"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "checkout", "-q", "-b", "main"], cwd=tmp_path, check=True)
+    (tmp_path / "a.py").write_text("def a(): return 1\n")
+    subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "feat: a"], cwd=tmp_path, check=True)
+    (tmp_path / "b.py").write_text("def b(): return 2\n")
+    subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "feat: b"], cwd=tmp_path, check=True)
+
+    captured: dict = {}
+
+    async def fake_execute(name, arguments):
+        captured["arguments"] = arguments
+        from mcp.types import TextContent
+        return [TextContent(
+            type="text",
+            text=json.dumps({"status": "started", "task_id": "tid"}),
+        )]
+
+    import server
+    monkeypatch.setattr(server, "execute_tool", fake_execute)
+
+    from tools.multiaudit import MultiauditTool
+
+    async def go():
+        return await MultiauditTool().execute({
+            "working_directory_absolute_path": str(tmp_path),
+            "panelists": ["codex"],
+            "debate_rounds": 0,
+        })
+
+    out = asyncio.run(go())
+    body = json.loads(out[0].text)
+    assert body["status"] == "started"
+    assert body["diff_source"] == "last commit (HEAD)"
+    assert "b.py" in body["files_changed"]
+    prompt = captured["arguments"]["arguments"]["prompt"]
+    assert "def b()" in prompt
+
+
+def test_strip_null_bytes_replaces_with_visible_escape():
+    """NUL bytes in a clink prompt must be replaced before subprocess
+    dispatch — argv rejects them with ValueError, stdin can hang the CLI."""
+    from clink.agents.base import _strip_null_bytes
+
+    src = "before\x00PH1\x00middle\x00PH2\x00after"
+    out = _strip_null_bytes(src, label="gemini")
+    assert "\x00" not in out
+    assert out == "before\\x00PH1\\x00middle\\x00PH2\\x00after"
+    # No-op when clean — must return the same string instance for hot path.
+    clean = "no nulls here"
+    assert _strip_null_bytes(clean, label="codex") is clean

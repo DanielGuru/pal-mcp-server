@@ -44,6 +44,20 @@ class AgentOutput:
     output_file_content: str | None = None
 
 
+def _strip_null_bytes(text: str, *, label: str) -> str:
+    """Replace NUL bytes with the literal escape '\\x00' for safe subprocess
+    transit. NUL in argv is a hard ValueError; NUL in stdin can hang CLIs."""
+    if "\x00" not in text:
+        return text
+    count = text.count("\x00")
+    logger.warning(
+        "clink[%s]: stripped %d NUL byte(s) from prompt before subprocess dispatch",
+        label,
+        count,
+    )
+    return text.replace("\x00", "\\x00")
+
+
 class CLIAgentError(RuntimeError):
     """Raised when a CLI agent fails (non-zero exit, timeout, parse errors)."""
 
@@ -74,6 +88,15 @@ class BaseCLIAgent:
         # Files and images are already embedded into the prompt by the tool; they are
         # accepted here only to keep parity with SimpleTool callers.
         _ = (files, images)
+        # NUL bytes in the prompt break the subprocess boundary: Python's
+        # os.execvp / Popen reject argv strings containing \x00 outright
+        # (gemini -p uses argv → ValueError: embedded null byte), and CLIs
+        # that read from stdin can hang on them (claude observed timing out
+        # at panelist_timeout_s with no progress events). Source code with
+        # binary placeholder markers (e.g. \x00PH${idx}\x00) is the realistic
+        # source. Replace with the visible \\x00 escape so the model still
+        # sees the marker pattern but no NUL crosses the OS boundary.
+        prompt = _strip_null_bytes(prompt, label=self.client.name)
         command = self._build_command(role=role, system_prompt=system_prompt)
         env = self._build_environment()
 
