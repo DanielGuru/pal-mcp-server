@@ -126,45 +126,38 @@ def _backup(path: Path) -> Optional[Path]:
 
 
 def _build_hook_entry(event: str, command: str) -> dict[str, Any]:
-    """Build a hook entry in the shape Claude Code expects for this event.
+    """Build a hook entry in the shape Claude Code's settings.json schema
+    expects (verified against ``/doctor``):
 
-    Two distinct shapes per the official docs at code.claude.com/docs/en/hooks:
+    .. code-block:: json
 
-    1. **Flat shape** for ``UserPromptSubmit``, ``Stop``, ``Notification``,
-       ``SessionStart`` etc. — events that always fire (no matcher):
+       {"matcher": "*", "hooks": [{"type": "command", "command": "..."}]}
 
-       .. code-block:: json
+    Every hook event uses this wrapper — Stop, UserPromptSubmit,
+    PreToolUse, PostToolUse, etc. ``matcher`` is a tool-name pattern for
+    PreToolUse/PostToolUse and is silently ignored (per docs) on events
+    that always fire — but the wrapper itself is REQUIRED. Removing the
+    wrapper makes Claude Code's validator reject the entry with
+    ``hooks.<event>.0.hooks: Expected array, but received undefined``,
+    which is what ``/doctor`` reports. (We learned this the hard way:
+    the docs page at code.claude.com/docs/en/hooks summarised the
+    no-matcher events as flat-shape, but the actual config schema
+    enforced by the runtime requires the wrapper. /doctor is the
+    source of truth.)
 
-          {"type": "command", "command": "..."}
-
-    2. **Nested-with-matcher** for ``PreToolUse`` / ``PostToolUse`` etc.
-       (here for completeness, not used by Panel today):
-
-       .. code-block:: json
-
-          {"matcher": "<tool>", "hooks": [{"type": "command", ...}]}
-
-    Earlier versions of this module always used shape #2 — including for
-    UserPromptSubmit/Stop. Claude Code silently skipped those entries
-    because it looks for ``type`` at the top level on no-matcher events,
-    didn't find it (saw ``matcher`` + ``hooks`` instead), and the hook
-    never fired. Caught in live e2e test where a UserPromptSubmit prompt
-    on a non-empty inbox didn't drain markers.
-
-    The ``Stop`` variant adds ``asyncRewake: true`` to opt into idle wake-up
-    (exit 2 + stdout wakes the model even if the user is idle).
+    The ``Stop`` variant marks the inner hook as ``asyncRewake: true``
+    to opt into idle wake-up.
     """
-    hook_obj: dict[str, Any] = {
+    inner: dict[str, Any] = {
         "type": "command",
         "command": command,
         # Marker for managed-entry detection on subsequent installs/uninstalls.
         MANAGED_MARKER: True,
     }
     if event == "Stop":
-        hook_obj["async"] = True
-        hook_obj["asyncRewake"] = True
-    # Flat shape: event entry IS the hook itself, not a wrapper.
-    return hook_obj
+        inner["async"] = True
+        inner["asyncRewake"] = True
+    return {"matcher": "*", "hooks": [inner]}
 
 
 def _is_managed_entry(entry: Any) -> bool:
