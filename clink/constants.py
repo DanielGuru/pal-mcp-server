@@ -31,6 +31,13 @@ class CLIInternalDefaults:
     # try the OAuth path first, so when the CLI's quota replenishes the next
     # call goes back to the free path automatically.
     oauth_fallback_model: str | None = None
+    # CLI-specific stdout/stderr substrings that mark a recoverable OAuth
+    # failure (the caller's free quota / login is the problem, not the
+    # request). Merged with the global ``OAUTH_FAILURE_PATTERNS`` at
+    # check-time. Empty tuple = rely on globals only. Per-CLI patterns
+    # let us add quota signatures specific to a vendor without false-
+    # firing on the others (panel-flagged: globals were one-size-fits-all).
+    oauth_failure_patterns: tuple[str, ...] = ()
 
 
 INTERNAL_DEFAULTS: dict[str, CLIInternalDefaults] = {
@@ -40,6 +47,15 @@ INTERNAL_DEFAULTS: dict[str, CLIInternalDefaults] = {
         default_role_prompt="systemprompts/clink/default.txt",
         runner="gemini",
         oauth_fallback_model="gemini-3.1-pro-preview",
+        # Gemini-specific quota signals seen in the wild. Globals already
+        # cover most of these; per-CLI list documents intent and lets us
+        # add new signatures without polluting the global set.
+        oauth_failure_patterns=(
+            "terminalquotaerror",
+            "exhausted your capacity",
+            "quota will reset",
+            "please run gemini login",
+        ),
     ),
     "codex": CLIInternalDefaults(
         parser="codex_jsonl",
@@ -47,6 +63,11 @@ INTERNAL_DEFAULTS: dict[str, CLIInternalDefaults] = {
         default_role_prompt="systemprompts/clink/default.txt",
         runner="codex",
         oauth_fallback_model="gpt-5.5",
+        oauth_failure_patterns=(
+            "401 unauthorized",
+            "please run codex login",
+            "rate_limit_exceeded",
+        ),
     ),
     "claude": CLIInternalDefaults(
         # Stream-json (one JSONL event per line) instead of single-shot json:
@@ -71,6 +92,13 @@ INTERNAL_DEFAULTS: dict[str, CLIInternalDefaults] = {
         # operator has explicitly opted into paid-Opus fallback).
         oauth_fallback_model=os.environ.get(
             "PANEL_CLAUDE_OAUTH_FALLBACK_MODEL", "claude-sonnet-4-6"
+        ),
+        oauth_failure_patterns=(
+            # claude CLI surfaces auth/quota issues with these signals.
+            "please run claude /login",
+            "anthropic_api_error",
+            "credit balance is too low",
+            "rate_limit_error",
         ),
     ),
 }

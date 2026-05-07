@@ -281,8 +281,34 @@ class OAuthFirstProvider(ModelProvider):
                 response.metadata.setdefault("oauth_route", "none")
             return response
 
-        # CLI not installed on this machine → straight to API.
+        # CLI not installed on this machine → strict mode aborts; default
+        # falls through to API with a LOUD warning. Panel-flagged: silent
+        # billing when an OAuth-eligible model dispatches to paid API
+        # because the CLI isn't on PATH (or PATH doesn't have it for the
+        # MCP server's environment, which is a common gotcha — Claude
+        # Code spawns Panel with a stripped PATH).
         if not _cli_executable_present(cli_name):
+            strict = os.environ.get(
+                "PANEL_OAUTH_FIRST_STRICT", "0"
+            ).strip().lower() in ("1", "true", "yes", "on")
+            if strict:
+                raise RuntimeError(
+                    f"oauth-first strict mode: {cli_name} CLI not installed (or "
+                    f"not on PATH visible to Panel) for model {model_name}. "
+                    "Install / add to PATH, or unset PANEL_OAUTH_FIRST_STRICT "
+                    "to fall through to paid API automatically."
+                )
+            # Loud warning — emit_progress alone is too quiet (just a UI
+            # ping); logger.warning lands in mcp_server.log so post-hoc
+            # cost surprises are debuggable.
+            logger.warning(
+                "oauth-first: %s CLI not on PATH; %s will be billed via "
+                "direct API (cost_tier=api_paid). Install %s or set "
+                "PANEL_OAUTH_FIRST_STRICT=1 to abort instead.",
+                cli_name,
+                model_name,
+                cli_name,
+            )
             await emit_progress(
                 f"oauth-first: {cli_name} CLI not installed; using {model_name} via direct API",
                 progress=0.0,

@@ -135,11 +135,32 @@ _TIMEOUT_FALLBACK_PATTERNS: tuple[str, ...] = (
 )
 
 
-def _looks_like_recoverable_failure(exc: CLIAgentError) -> bool:
+def _looks_like_recoverable_failure(
+    exc: CLIAgentError, *, client: "ResolvedCLIClient | None" = None
+) -> bool:
     """OAuth signals always trigger fallback. Timeouts trigger only when
-    PANEL_FALLBACK_ON_TIMEOUT is set."""
+    PANEL_FALLBACK_ON_TIMEOUT is set.
+
+    Pattern matching merges:
+      - Per-CLI patterns from ``CLIInternalDefaults.oauth_failure_patterns``
+        (set at clink/constants.py — vendor-specific quota signals).
+      - Global ``OAUTH_FAILURE_PATTERNS`` (broad catches that apply to any
+        OAuth-style auth/quota issue).
+
+    Per-CLI lets us add a signature unique to one vendor without false-
+    firing on the others (panel finding: globals were one-size-fits-all
+    and accumulating risked unrelated CLIs matching unrelated patterns)."""
     haystack = " ".join(filter(None, [str(exc), exc.stdout or "", exc.stderr or ""])).lower()
-    if any(p in haystack for p in OAUTH_FAILURE_PATTERNS):
+    patterns = list(OAUTH_FAILURE_PATTERNS)
+    if client is not None:
+        try:
+            from clink.constants import INTERNAL_DEFAULTS
+            extras = INTERNAL_DEFAULTS.get(client.name.lower())
+            if extras and extras.oauth_failure_patterns:
+                patterns.extend(extras.oauth_failure_patterns)
+        except Exception:  # noqa: BLE001 — never fail the recoverable check
+            pass
+    if any(p in haystack for p in patterns):
         return True
     if os.environ.get("PANEL_FALLBACK_ON_TIMEOUT", "").strip().lower() in ("1", "true", "yes", "on"):
         if any(p in haystack for p in _TIMEOUT_FALLBACK_PATTERNS):
@@ -448,7 +469,9 @@ class CLinkTool(SimpleTool):
         self._active_system_prompt = system_prompt
         try:
             user_content = self.handle_prompt_file_with_fallback(request).strip()
-            guidance = self._agent_capabilities_guidance()
+            # Pass the CLI name so the framing matches the spawned CLI.
+            cli_name = (request.cli_name or "").strip() if request else ""
+            guidance = self._agent_capabilities_guidance(cli_name)
             file_section = self._format_file_references(self.get_request_files(request))
 
             sections: list[str] = []
@@ -649,7 +672,9 @@ class CLinkTool(SimpleTool):
         first F1 cut).
         """
         fallback_model = client_config.oauth_fallback_model
-        if not fallback_model or not _looks_like_recoverable_failure(exc):
+        if not fallback_model or not _looks_like_recoverable_failure(
+            exc, client=client_config
+        ):
             return None
 
         from providers.registry import ModelProviderRegistry
@@ -783,9 +808,17 @@ class CLinkTool(SimpleTool):
         error_output = ToolOutput(status="error", content=message, content_type="text", metadata=metadata)
         raise ToolExecutionError(error_output.model_dump_json())
 
-    def _agent_capabilities_guidance(self) -> str:
+    def _agent_capabilities_guidance(self, cli_name: str = "") -> str:
+        # cli_name should be set by the caller to ``client.name`` so the
+        # prompt framing matches the actual CLI we spawned. Older versions
+        # hardcoded "Gemini CLI agent" for every CLI — codex and claude
+        # got Gemini-flavoured framing (panel-flagged: a soft prompt-
+        # mismatch that nudged non-Gemini CLIs toward Gemini-style
+        # behaviour). Default to a generic phrasing if no CLI name is
+        # supplied so the message is never literally false.
+        agent_label = f"the {cli_name} CLI agent" if cli_name else "this CLI agent"
         return (
-            "You are operating through the Gemini CLI agent. You have access to your full suite of "
+            f"You are operating through {agent_label}. You have access to your full suite of "
             "CLI capabilities—including launching web searches, reading files, and using any other "
             "available tools. Gather current information yourself and deliver the final answer without "
             "asking the Panel MCP host to perform searches or file reads."
