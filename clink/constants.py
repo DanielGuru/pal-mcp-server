@@ -49,8 +49,17 @@ INTERNAL_DEFAULTS: dict[str, CLIInternalDefaults] = {
         oauth_fallback_model="gpt-5.5",
     ),
     "claude": CLIInternalDefaults(
-        parser="claude_json",
-        additional_args=["--print", "--output-format", "json"],
+        # Stream-json (one JSONL event per line) instead of single-shot json:
+        # the panel adapter's progress hook recognises per-event lines via
+        # ``describe_event``, so the user sees live activity ("claude:
+        # starting…", "claude: tool_use Read → /path", "claude: drafting
+        # response…") instead of a 300s silent hang. With the previous
+        # ``--output-format json`` claude buffered everything until exit;
+        # any run longer than panelist_timeout_s tripped a "spawned then
+        # zero progress events" timeout that LOOKED like a CLI hang but
+        # was just buffering. Requires ``--verbose`` per claude CLI.
+        parser="claude_stream_jsonl",
+        additional_args=["--print", "--output-format", "stream-json", "--verbose"],
         default_role_prompt="systemprompts/clink/default.txt",
         runner="claude",
         # When the user's Claude CLI subscription hits its quota, fall

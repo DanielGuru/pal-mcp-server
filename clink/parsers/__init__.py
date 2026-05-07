@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from .base import BaseParser, ParsedCLIResponse, ParserError
 from .claude import ClaudeJSONParser
+from .claude_stream import ClaudeStreamJSONLParser
 from .codex import CodexJSONLParser
 from .gemini import GeminiJSONParser
 from .gemini_stream import GeminiStreamJSONLParser
@@ -13,6 +14,7 @@ _PARSER_CLASSES: dict[str, type[BaseParser]] = {
     GeminiJSONParser.name: GeminiJSONParser,
     GeminiStreamJSONLParser.name: GeminiStreamJSONLParser,
     ClaudeJSONParser.name: ClaudeJSONParser,
+    ClaudeStreamJSONLParser.name: ClaudeStreamJSONLParser,
 }
 
 
