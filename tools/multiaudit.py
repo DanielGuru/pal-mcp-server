@@ -111,10 +111,17 @@ class MultiauditTool(BaseTool):
                 "extra_context": {
                     "type": "string",
                     "description": (
-                        "Optional extra context for the panel: what the change "
-                        "is intended to do, what specifically to scrutinise, any "
-                        "prior reviewer concerns. Will be appended to the audit "
-                        "prompt verbatim."
+                        "Optional directive for the panel — treat this as the "
+                        "specific question you want answered, not just background. "
+                        "Use it to narrow scope (\"focus only on the auth changes "
+                        "in middleware.py\"), exclude noise (\"ignore the 30-file "
+                        "rename, it's mechanical\"), pose a specific question "
+                        "(\"is the SQL-injection fix in db.py actually safe under "
+                        "concurrent writes?\"), or share intent (\"this is a "
+                        "hot-fix for the prod outage filed as INC-1247\"). When "
+                        "set, panelists lead with this directive and filter the "
+                        "standard rubric sections to what's relevant. Inlined "
+                        "verbatim into the audit prompt."
                     ),
                 },
                 "base_branch": {
@@ -493,7 +500,15 @@ def _build_audit_prompt(
         else ""
     )
     extra_section = (
-        f"\n\n=== EXTRA CONTEXT FROM AUTHOR ===\n{extra_context.strip()}"
+        "\n\n=== AUTHOR DIRECTIVE — focus / ignore / specific question ===\n"
+        f"{extra_context.strip()}\n"
+        "(Treat the directive above as the primary question to answer. The "
+        "standard rubric sections are still required, but filter each section "
+        "to what's actually relevant to this directive — do not pad sections "
+        "with material outside the directive's scope. If the directive narrows "
+        "the audit, narrow your VERDICT and BUGS lists accordingly; broader "
+        "concerns can go in OMISSIONS as 'directive-scoped: out of scope, but "
+        "you should also know X'.)"
         if extra_context.strip()
         else ""
     )
