@@ -281,6 +281,33 @@ def _parent_orphaned() -> bool:
         return False
 
 
+def _log_watcher_exit(
+    inbox: Path,
+    owner_pid: Optional[int],
+    reason: str,
+    *,
+    elapsed_s: float = 0.0,
+    details: str = "",
+) -> None:
+    """Append one line to ``<inbox>/.watcher.log`` recording why a watcher
+    exited. Helps diagnose "wake-up never fired" reports — without this we
+    don't know whether the watcher hit timeout, was killed by Claude Code
+    starting a new turn, became orphaned, or crashed. Strictly best-effort:
+    log failures must never disrupt the hook return path. Capped trim
+    pending — re-rotate manually if it gets unwieldy."""
+    try:
+        log_path = inbox / ".watcher.log"
+        ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+        line = (
+            f"{ts} pid={os.getpid()} owner={owner_pid} reason={reason} "
+            f"elapsed={elapsed_s:.1f}s details={details}\n"
+        )
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(line)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _reclaim_stale(inbox: Path) -> None:
     """Re-rename ``.processing.<pid>`` files older than the TTL back to
     ``<id>.json``, AND clean up per-session watch locks (``.watch.lock.<pid>``)
@@ -611,20 +638,44 @@ def main() -> int:
                 return 2  # still wake on already-completed work
             return 0
 
+        started = time.time()
         try:
-            deadline = time.time() + STOP_WATCH_TIMEOUT_S
+            deadline = started + STOP_WATCH_TIMEOUT_S
             while True:
                 if _parent_orphaned():
                     # Claude Code died; nobody listening for our exit-2.
+                    _log_watcher_exit(
+                        inbox, owner_pid, "orphaned",
+                        elapsed_s=time.time() - started,
+                    )
                     return 0
                 _reclaim_stale(inbox)
                 messages, run_ids = _drain_pending(inbox)
                 if messages:
                     _emit_reminder(messages, run_ids)
+                    _log_watcher_exit(
+                        inbox, owner_pid, "claimed",
+                        elapsed_s=time.time() - started,
+                        details=f"messages={len(messages)}",
+                    )
                     return 2  # asyncRewake wakes the model
                 if time.time() >= deadline:
+                    _log_watcher_exit(
+                        inbox, owner_pid, "timeout",
+                        elapsed_s=time.time() - started,
+                    )
                     return 0  # nothing arrived within the watch window
                 time.sleep(STOP_WATCH_POLL_S)
+        except BaseException as exc:
+            # SIGTERM / KeyboardInterrupt / unhandled error — Claude Code
+            # may kill the hook process when starting a new turn. Capture
+            # so we have evidence next time the wake-up doesn't fire.
+            _log_watcher_exit(
+                inbox, owner_pid, f"exception:{type(exc).__name__}",
+                elapsed_s=time.time() - started,
+                details=str(exc)[:200],
+            )
+            raise
         finally:
             _release_watch_lock(lock_path)
 
