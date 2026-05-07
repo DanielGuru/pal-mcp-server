@@ -16,8 +16,13 @@ Behaviour:
    mid-injection); they get re-renamed to ``<task_id>.json`` for the
    next drain to retry.
 5. If anything was processed, print a single ``<system-reminder>`` block
-   to stdout and exit with code 2 — Claude Code's hook contract treats
-   exit-code-2 stdout as a system reminder injection, waking the agent.
+   to stdout. Exit code is event-specific (Claude Code hook contract):
+     - ``Stop`` (with ``asyncRewake: true``): exit 2 → wake the model and
+       inject stdout as a system reminder.
+     - ``UserPromptSubmit``: exit 0 → stdout is appended to the user's
+       prompt as ``additionalContext``. Exit 2 here BLOCKS the user's
+       prompt entirely (a pre-fix bug we hit on first install).
+     - Anything else / no event info: exit 0 — safest default.
 6. Otherwise exit 0 (hook had nothing to inject; don't disturb the
    conversation).
 
@@ -83,7 +88,50 @@ def _reclaim_stale(inbox: Path) -> None:
             pass
 
 
+def _detect_hook_event() -> str:
+    """Claude Code passes a JSON object on stdin describing the hook event,
+    including ``hook_event_name``. Read it best-effort. Returns the event
+    name (e.g. ``"UserPromptSubmit"``, ``"Stop"``) or ``""`` if stdin isn't
+    a pipe / payload missing / not JSON. Never raises."""
+    if sys.stdin is None or sys.stdin.isatty():
+        return ""
+    try:
+        raw = sys.stdin.read()
+    except Exception:  # noqa: BLE001
+        return ""
+    if not raw or not raw.strip():
+        return ""
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return ""
+    if isinstance(payload, dict):
+        name = payload.get("hook_event_name")
+        if isinstance(name, str):
+            return name
+    return ""
+
+
+def _exit_code_for(event: str, did_inject: bool) -> int:
+    """Pick the right exit code for the event we're running under.
+
+    For ``Stop`` with ``asyncRewake: true``, exit 2 + stdout is the wake-up
+    contract. For ``UserPromptSubmit``, exit 2 *blocks* the user's prompt —
+    we must exit 0 there and let stdout flow through as additionalContext.
+    Any unknown event defaults to exit 0 (safest)."""
+    if not did_inject:
+        return 0
+    if event == "Stop":
+        return 2
+    return 0  # UserPromptSubmit, unknown, or no event info
+
+
 def main() -> int:
+    # Read the hook event FIRST so we know how to exit. Claude Code may pass
+    # JSON on stdin even when there's nothing to drain — we still consume it
+    # so future hook protocol additions don't trip on unread bytes.
+    event = _detect_hook_event()
+
     inbox = _inbox_dir()
     if not inbox.exists() or not inbox.is_dir():
         return 0
@@ -145,8 +193,7 @@ def main() -> int:
         )
     sys.stdout.write(f"<system-reminder>\n{body}\n</system-reminder>\n")
     sys.stdout.flush()
-    # exit 2 → Claude Code injects stdout as a system reminder
-    return 2
+    return _exit_code_for(event, did_inject=True)
 
 
 if __name__ == "__main__":

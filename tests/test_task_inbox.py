@@ -140,40 +140,85 @@ def test_reclaim_skips_recent_processing(tmp_path, monkeypatch):
 # --- panel_cli.inbox_drain: concurrent claim + format -------------------------
 
 
-def test_inbox_drain_emits_system_reminder_and_exits_2(tmp_path, monkeypatch):
-    monkeypatch.setenv("PANEL_INBOX_DIR", str(tmp_path))
-    # Drop a marker
-    marker = tmp_path / "task1.json"
-    marker.write_text(
-        json.dumps(
-            {
-                "task_id": "task1",
-                "label": "multiaudit:main",
-                "tool": "panel",
-                "status": "completed",
-                "elapsed_seconds": 12.3,
-                "run_id": "run-abc",
-            }
-        )
-    )
+def _drop_marker(dir_: Path, task_id: str = "task1", **kwargs) -> Path:
+    """Helper: write a completion marker the drain script will find."""
+    marker = dir_ / f"{task_id}.json"
+    payload = {
+        "task_id": task_id,
+        "label": kwargs.get("label", "multiaudit:main"),
+        "tool": kwargs.get("tool", "panel"),
+        "status": kwargs.get("status", "completed"),
+        "elapsed_seconds": kwargs.get("elapsed_seconds", 12.3),
+        "run_id": kwargs.get("run_id", "run-abc"),
+    }
+    marker.write_text(json.dumps(payload))
+    return marker
 
-    from panel_cli.inbox_drain import main
 
-    # Capture stdout via redirection
+def _run_drain(monkeypatch, stdin_payload: str = ""):
+    """Run main() with optional stdin JSON simulating a hook-event payload.
+    Returns (rc, stdout_text)."""
     import io
     from contextlib import redirect_stdout
+
+    if stdin_payload:
+        monkeypatch.setattr("sys.stdin", io.StringIO(stdin_payload))
+    else:
+        # Empty stdin (no hook payload) — simulate a manual / unknown invoke
+        monkeypatch.setattr("sys.stdin", io.StringIO(""))
+
+    from panel_cli.inbox_drain import main
 
     buf = io.StringIO()
     with redirect_stdout(buf):
         rc = main()
-    out = buf.getvalue()
+    return rc, buf.getvalue()
 
-    assert rc == 2  # exit-2 wakes Claude Code
+
+def test_inbox_drain_stop_event_exits_2_to_wake_model(tmp_path, monkeypatch):
+    """Stop hook with asyncRewake: exit 2 wakes Claude with stdout as a
+    system reminder. This is the load-bearing wake-up contract."""
+    monkeypatch.setenv("PANEL_INBOX_DIR", str(tmp_path))
+    marker = _drop_marker(tmp_path)
+
+    rc, out = _run_drain(monkeypatch, stdin_payload=json.dumps({"hook_event_name": "Stop"}))
+
+    assert rc == 2
     assert "<system-reminder>" in out
     assert "task1" in out
     assert "multiaudit:main" in out
-    # Marker should be deleted (claimed + processed)
     assert not marker.exists()
+
+
+def test_inbox_drain_user_prompt_submit_exits_0(tmp_path, monkeypatch):
+    """REGRESSION: UserPromptSubmit + exit 2 BLOCKS the user's prompt
+    entirely. We must exit 0 here so stdout flows through as
+    additionalContext rather than killing the user's message. Caught in
+    the first live test — a prod-bug-shaped fix."""
+    monkeypatch.setenv("PANEL_INBOX_DIR", str(tmp_path))
+    marker = _drop_marker(tmp_path)
+
+    rc, out = _run_drain(
+        monkeypatch, stdin_payload=json.dumps({"hook_event_name": "UserPromptSubmit"})
+    )
+
+    assert rc == 0  # MUST be 0; exit 2 would block the prompt
+    assert "<system-reminder>" in out  # but the reminder still flows on stdout
+    assert "task1" in out
+    assert not marker.exists()
+
+
+def test_inbox_drain_unknown_event_defaults_to_exit_0(tmp_path, monkeypatch):
+    """No hook payload (manual invocation, future event types) → exit 0.
+    Safer default than 2 because exit 2 has hook-specific blocking
+    semantics elsewhere."""
+    monkeypatch.setenv("PANEL_INBOX_DIR", str(tmp_path))
+    _drop_marker(tmp_path)
+
+    rc, out = _run_drain(monkeypatch, stdin_payload="")
+
+    assert rc == 0
+    assert "<system-reminder>" in out
 
 
 def test_inbox_drain_empty_inbox_exits_0_silently(tmp_path, monkeypatch):
