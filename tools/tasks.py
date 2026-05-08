@@ -607,8 +607,8 @@ class TaskManager:
 # ---------------------------------------------------------------------------
 
 
-_DIGEST_MAX_PANELISTS = 8
-_DIGEST_MAX_ACTIONS = 20
+_DIGEST_MAX_PANELISTS = 16
+_DIGEST_MAX_ACTIONS = 60
 # Per-field char caps. Panelist text is UNTRUSTED model output and lands
 # inside a system-reminder we inject into the next turn. Without bounds an
 # adversarial / runaway panelist could push tens of KB into our context, or
@@ -616,29 +616,33 @@ _DIGEST_MAX_ACTIONS = 20
 # model. Sanitisation still applies even with the bumped budget.
 #
 # The user explicitly asked for the full per-round, per-panelist transcript
-# inline in the wake-up — same content as the live web viewer page —
-# rather than a one-line summary that forces a follow-up `run_tree`
-# call. Budget sized for codex/claude doing deep file investigation on
-# big PRs, where individual round-1 responses routinely hit 10-15 KB:
-#   per-panelist body 16 KB × 4 panelists × 3 rounds = 192 KB
-#   judge body 16 KB
-#   total cap 200 KB (with headroom for headers, recommended actions)
-# Override via PANEL_DIGEST_TOTAL_CAP / PANEL_DIGEST_PANELIST_BODY_CAP /
-# PANEL_DIGEST_JUDGE_BODY_CAP for operators who want a tighter context
-# cost. Source-side cap (SUMMARY_RESPONSE_EXCERPT_CHARS in panel.py) is
-# bumped in lockstep so the digest cap isn't downstream of a smaller
-# excerpt.
-_DIGEST_HEADLINE_CAP = 800
-_DIGEST_PANELIST_LINE_CAP = 300   # one-line structured headline (above body)
+# inline in the wake-up — same content as the live web viewer page — and
+# explicitly said "don't be cheap" with the budget. Sized so that even an
+# extreme run can't hit the cap and truncate mid-sentence:
+#   per-panelist body 64 KB (a single deep-investigation rubric output is
+#                            usually 5-15 KB; 64 KB has 4-12× headroom)
+#   judge body 64 KB
+#   total cap 1 MB (covers up to 16 panelists × 3 rounds × 64 KB without
+#                   the global cap firing — the per-panelist cap is the
+#                   only realistic ceiling)
+# Sanitisation (per-field cap, control-char strip, system-reminder tag
+# neutralisation, secret-shape redaction) still applies — the larger
+# budget doesn't relax the security posture. Override via
+# PANEL_DIGEST_TOTAL_CAP / PANEL_DIGEST_PANELIST_BODY_CAP /
+# PANEL_DIGEST_JUDGE_BODY_CAP for operators who want it tighter.
+# Source-side cap (SUMMARY_RESPONSE_EXCERPT_CHARS in panel.py) is bumped
+# in lockstep so the digest cap isn't downstream of a smaller excerpt.
+_DIGEST_HEADLINE_CAP = 2000
+_DIGEST_PANELIST_LINE_CAP = 600   # one-line structured headline (above body)
 _DIGEST_PANELIST_BODY_CAP = int(
-    os.environ.get("PANEL_DIGEST_PANELIST_BODY_CAP", "16000")
+    os.environ.get("PANEL_DIGEST_PANELIST_BODY_CAP", "64000")
 )
 _DIGEST_JUDGE_BODY_CAP = int(
-    os.environ.get("PANEL_DIGEST_JUDGE_BODY_CAP", "16000")
+    os.environ.get("PANEL_DIGEST_JUDGE_BODY_CAP", "64000")
 )
-_DIGEST_ACTION_CAP = 800
+_DIGEST_ACTION_CAP = 2000
 _DIGEST_TOTAL_CAP = int(
-    os.environ.get("PANEL_DIGEST_TOTAL_CAP", "200000")
+    os.environ.get("PANEL_DIGEST_TOTAL_CAP", "1000000")
 )
 
 
