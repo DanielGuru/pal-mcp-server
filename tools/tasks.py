@@ -618,21 +618,27 @@ _DIGEST_MAX_ACTIONS = 20
 # The user explicitly asked for the full per-round, per-panelist transcript
 # inline in the wake-up — same content as the live web viewer page —
 # rather than a one-line summary that forces a follow-up `run_tree`
-# call. Budget bumped to ~80 KB total with ~8 KB per panelist body.
-# A 4-panelist × 2-round + judge debate fits in roughly 50 KB; cap
-# leaves room for larger sets. Override via PANEL_DIGEST_TOTAL_CAP /
-# PANEL_DIGEST_PANELIST_BODY_CAP if you want it tighter.
+# call. Budget sized for codex/claude doing deep file investigation on
+# big PRs, where individual round-1 responses routinely hit 10-15 KB:
+#   per-panelist body 16 KB × 4 panelists × 3 rounds = 192 KB
+#   judge body 16 KB
+#   total cap 200 KB (with headroom for headers, recommended actions)
+# Override via PANEL_DIGEST_TOTAL_CAP / PANEL_DIGEST_PANELIST_BODY_CAP /
+# PANEL_DIGEST_JUDGE_BODY_CAP for operators who want a tighter context
+# cost. Source-side cap (SUMMARY_RESPONSE_EXCERPT_CHARS in panel.py) is
+# bumped in lockstep so the digest cap isn't downstream of a smaller
+# excerpt.
 _DIGEST_HEADLINE_CAP = 800
 _DIGEST_PANELIST_LINE_CAP = 300   # one-line structured headline (above body)
 _DIGEST_PANELIST_BODY_CAP = int(
-    os.environ.get("PANEL_DIGEST_PANELIST_BODY_CAP", "8000")
+    os.environ.get("PANEL_DIGEST_PANELIST_BODY_CAP", "16000")
 )
 _DIGEST_JUDGE_BODY_CAP = int(
-    os.environ.get("PANEL_DIGEST_JUDGE_BODY_CAP", "8000")
+    os.environ.get("PANEL_DIGEST_JUDGE_BODY_CAP", "16000")
 )
 _DIGEST_ACTION_CAP = 800
 _DIGEST_TOTAL_CAP = int(
-    os.environ.get("PANEL_DIGEST_TOTAL_CAP", "80000")
+    os.environ.get("PANEL_DIGEST_TOTAL_CAP", "200000")
 )
 
 

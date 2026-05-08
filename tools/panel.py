@@ -689,11 +689,12 @@ def _extract_headline(judge_response: str) -> str | None:
 # ---------------------------------------------------------------------------
 
 # Excerpt cap on full response when returned in summary mode.
-SUMMARY_RESPONSE_EXCERPT_CHARS = 6000  # per-panelist excerpt — large enough
-# to carry the full rubric output (multi-section answer with code snippets)
-# into downstream consumers including the wake-up digest. The full response
-# is still preserved in the execution graph; this cap just bounds what
-# travels in the panel summary view + system-reminder digest.
+SUMMARY_RESPONSE_EXCERPT_CHARS = 16000  # per-panelist excerpt — sized for
+# codex/claude doing deep file investigation on big PRs, where individual
+# round-1 responses routinely hit 10-15 KB. Smaller caps caused mid-sentence
+# truncation in the wake-up digest. The full response is still preserved
+# in the execution graph; this cap just bounds what travels in the panel
+# summary view + system-reminder digest.
 
 # Sentinel anchoring the structured tail. Without this, an unanchored regex
 # would happily match `<VERDICT>...</VERDICT>` *inside reviewed code or a PR
