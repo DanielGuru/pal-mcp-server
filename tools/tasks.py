@@ -30,6 +30,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
 import time
 import uuid
@@ -607,17 +608,32 @@ class TaskManager:
 
 
 _DIGEST_MAX_PANELISTS = 8
-_DIGEST_MAX_ACTIONS = 10
+_DIGEST_MAX_ACTIONS = 20
 # Per-field char caps. Panelist text is UNTRUSTED model output and lands
 # inside a system-reminder we inject into the next turn. Without bounds an
 # adversarial / runaway panelist could push tens of KB into our context, or
 # craft <system-reminder> tags / secret-shaped strings to manipulate the
-# model. Caps are deliberately tight; the full transcript stays in the
-# graph and run_tree(mode='transcript') gives the depth.
-_DIGEST_HEADLINE_CAP = 400
-_DIGEST_PANELIST_LINE_CAP = 240
-_DIGEST_ACTION_CAP = 180
-_DIGEST_TOTAL_CAP = 6000  # hard ceiling on the entire formatted body
+# model. Sanitisation still applies even with the bumped budget.
+#
+# The user explicitly asked for the full per-round, per-panelist transcript
+# inline in the wake-up — same content as the live web viewer page —
+# rather than a one-line summary that forces a follow-up `run_tree`
+# call. Budget bumped to ~80 KB total with ~8 KB per panelist body.
+# A 4-panelist × 2-round + judge debate fits in roughly 50 KB; cap
+# leaves room for larger sets. Override via PANEL_DIGEST_TOTAL_CAP /
+# PANEL_DIGEST_PANELIST_BODY_CAP if you want it tighter.
+_DIGEST_HEADLINE_CAP = 800
+_DIGEST_PANELIST_LINE_CAP = 300   # one-line structured headline (above body)
+_DIGEST_PANELIST_BODY_CAP = int(
+    os.environ.get("PANEL_DIGEST_PANELIST_BODY_CAP", "8000")
+)
+_DIGEST_JUDGE_BODY_CAP = int(
+    os.environ.get("PANEL_DIGEST_JUDGE_BODY_CAP", "8000")
+)
+_DIGEST_ACTION_CAP = 800
+_DIGEST_TOTAL_CAP = int(
+    os.environ.get("PANEL_DIGEST_TOTAL_CAP", "80000")
+)
 
 
 def _sanitise_untrusted(text: str, *, cap: int) -> str:
@@ -698,6 +714,48 @@ def _extract_run_id_and_digest(
     return run_id, digest
 
 
+def _render_panelist_block(p: Any, *, round_num: Optional[int]) -> Optional[str]:
+    """Render one panelist's contribution as a markdown block: header line
+    with metadata + structured headline, then the full prose body.
+
+    Used by both the per-round path (iterating debate_history) and the
+    legacy single-round path (panelists list). round_num is included in
+    the header when present so the wake-up reads as a chronological
+    transcript matching the live web viewer page.
+    """
+    if not isinstance(p, dict):
+        return None
+    label = _sanitise_untrusted(
+        str(p.get("label") or p.get("agent") or "?"),
+        cap=80,
+    ) or "?"
+    cost = _sanitise_untrusted(str(p.get("cost_tier") or "?"), cap=40) or "?"
+    duration = p.get("duration_s")
+    duration_str = (
+        f"{duration:.0f}s" if isinstance(duration, (int, float)) else "?"
+    )
+    round_prefix = f"round {round_num} · " if round_num else ""
+
+    if not p.get("ok"):
+        err = _sanitise_untrusted(str(p.get("error") or "failed"), cap=160)
+        return f"### {round_prefix}{label} [{cost}, {duration_str}] ✗\n{err}"
+
+    summary = p.get("summary") or {}
+    verdict = _sanitise_untrusted(str(summary.get("verdict") or "?"), cap=40) or "?"
+    severity = _sanitise_untrusted(str(summary.get("severity") or "?"), cap=40) or "?"
+    ph_raw = (summary.get("headline") or "").strip()
+    ph = _sanitise_untrusted(ph_raw, cap=_DIGEST_PANELIST_LINE_CAP)
+    header = f"### {round_prefix}{label} [{verdict}/{severity}, {duration_str}, {cost}]"
+    if ph:
+        header += f"\n**{ph}**"
+    body_raw = (p.get("response_excerpt") or "").strip()
+    if body_raw:
+        body = _sanitise_untrusted(body_raw, cap=_DIGEST_PANELIST_BODY_CAP)
+        if body:
+            return f"{header}\n\n{body}"
+    return header
+
+
 def _format_completion_digest(payload: dict[str, Any]) -> Optional[str]:
     """Render the FINAL panel takeaway as a compact text block. We deliberately
     show ONLY the synthesised result — judge headline, each panelist's final
@@ -719,56 +777,59 @@ def _format_completion_digest(payload: dict[str, Any]) -> Optional[str]:
     if headline:
         lines.append(f"**Verdict:** {headline}")
 
+    # Prefer the per-round debate_history when present (debate_rounds>=1).
+    # Otherwise fall back to the canonical final-round panelists list. The
+    # debate_history rendering matches what the user sees on the live web
+    # viewer page: each round, each panelist, full body.
+    debate_history = payload.get("debate_history")
     panelists = payload.get("panelists") or []
-    if isinstance(panelists, list) and panelists:
-        rows: list[str] = []
+
+    if isinstance(debate_history, list) and debate_history:
+        all_blocks: list[str] = []
+        for entry in debate_history:
+            if not isinstance(entry, dict):
+                continue
+            round_num = entry.get("round")
+            round_panelists = entry.get("panelists") or []
+            if not isinstance(round_panelists, list):
+                continue
+            for p in round_panelists[:_DIGEST_MAX_PANELISTS]:
+                block = _render_panelist_block(p, round_num=round_num)
+                if block:
+                    all_blocks.append(block)
+        if all_blocks:
+            lines.append("\n**Panel transcript:**")
+            lines.append("\n\n".join(all_blocks))
+    elif isinstance(panelists, list) and panelists:
+        blocks: list[str] = []
         for p in panelists[:_DIGEST_MAX_PANELISTS]:
-            if not isinstance(p, dict):
-                continue
-            # Tool-controlled fields (label / cost_tier / duration) are
-            # not user-text and don't need sanitisation, but we still cap
-            # the label in case a malicious config supplied something
-            # weird.
-            label = _sanitise_untrusted(
-                str(p.get("label") or p.get("agent") or "?"),
-                cap=80,
-            ) or "?"
-            cost = _sanitise_untrusted(str(p.get("cost_tier") or "?"), cap=40) or "?"
-            duration = p.get("duration_s")
-            duration_str = (
-                f"{duration:.0f}s" if isinstance(duration, (int, float)) else "?"
-            )
-            if not p.get("ok"):
-                err = _sanitise_untrusted(
-                    str(p.get("error") or "failed"), cap=160
-                )
-                rows.append(f"- {label} [{cost}, {duration_str}]: ✗ {err}")
-                continue
-            summary = p.get("summary") or {}
-            verdict = _sanitise_untrusted(str(summary.get("verdict") or "?"), cap=40) or "?"
-            severity = _sanitise_untrusted(str(summary.get("severity") or "?"), cap=40) or "?"
-            ph_raw = (summary.get("headline") or "").strip()
-            if not ph_raw:
-                ph_raw = (p.get("response_excerpt") or "").strip()[:200]
-            ph = _sanitise_untrusted(ph_raw, cap=_DIGEST_PANELIST_LINE_CAP)
-            rows.append(
-                f"- {label} [{verdict}/{severity}, {duration_str}, {cost}]: {ph}"
-            )
-        if rows:
+            block = _render_panelist_block(p, round_num=None)
+            if block:
+                blocks.append(block)
+        if blocks:
             lines.append("\n**Panelists:**")
-            lines.extend(rows)
+            lines.append("\n\n".join(blocks))
 
     judge = payload.get("judge")
     if isinstance(judge, dict):
         if judge.get("ok"):
+            judge_label = _sanitise_untrusted(
+                str(judge.get("agent") or "?"), cap=40
+            ) or "?"
             jh = _sanitise_untrusted(
                 (judge.get("headline") or "").strip(),
                 cap=_DIGEST_HEADLINE_CAP,
             )
-            judge_label = _sanitise_untrusted(
-                str(judge.get("agent") or "?"), cap=40
-            ) or "?"
-            if jh and jh != headline:  # don't duplicate the top-level headline
+            # Body — the judge's full synthesis prose. The viewer renders
+            # this verbatim under the `judge:<agent>` heading; mirror that
+            # shape here so the wake-up matches the page the user sees.
+            body_raw = (judge.get("response_excerpt") or judge.get("response") or "").strip()
+            body = _sanitise_untrusted(body_raw, cap=_DIGEST_JUDGE_BODY_CAP)
+            if body:
+                lines.append(f"\n### judge:{judge_label}\n\n{body}")
+            elif jh and jh != headline:
+                # No body available — fall back to the headline so the
+                # user at least sees the judge's verdict line.
                 lines.append(f"\n**Judge ({judge_label}):** {jh}")
         else:
             err = _sanitise_untrusted(
