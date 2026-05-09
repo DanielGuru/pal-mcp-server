@@ -136,12 +136,23 @@ def test_dispatches_panel_with_audit_prompt(tmp_path, monkeypatch):
 
 def test_diff_truncation_marker_when_oversized(tmp_path, monkeypatch):
     """Massive diff gets capped + the panel prompt explicitly tells panelists
-    they're seeing a subset."""
+    they're seeing a subset.
+
+    Patches _DIFF_CHAR_CAP to a small value rather than generating a 600 KB
+    diff — the default cap was bumped to 600 KB ("don't be cheap" directive)
+    and creating a real diff that size in CI would be slow. The behaviour we
+    care about (cap fires → marker set → prompt warns panelists) is the same
+    at any cap value.
+    """
     repo = _git_repo(tmp_path)
     big_file = repo / "big.py"
     big_file.write_text("x = '" + ("Y" * 80_000) + "'\n")
     subprocess.run(["git", "add", "."], cwd=repo, check=True)
     subprocess.run(["git", "commit", "-q", "-m", "huge"], cwd=repo, check=True)
+
+    # Force the cap small so the 80 KB file overflows it.
+    from tools import multiaudit
+    monkeypatch.setattr(multiaudit, "_DIFF_CHAR_CAP", 1000)
 
     captured: dict = {}
 
@@ -154,10 +165,8 @@ def test_diff_truncation_marker_when_oversized(tmp_path, monkeypatch):
 
     monkeypatch.setattr(server, "execute_tool", fake_execute)
 
-    from tools.multiaudit import MultiauditTool
-
     async def go():
-        return await MultiauditTool().execute({
+        return await multiaudit.MultiauditTool().execute({
             "working_directory_absolute_path": str(repo),
         })
 

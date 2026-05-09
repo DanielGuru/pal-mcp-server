@@ -77,10 +77,14 @@ DEFAULT_PANELIST_TIMEOUT_S = 1800  # 30 min. Claude does deep file investigation
 # panelist stretches. Aligned with STOP_WATCH_TIMEOUT_S so the wake-up
 # watcher always outlasts the actual panel run.
 
-# Cap the diff payload we forward to panelists so a 50KB diff doesn't blow
-# the context window. We surface a clear marker when this fires so the
-# panel knows it's only reasoning about a subset.
-_DIFF_CHAR_CAP = 60_000
+# Cap the diff payload we forward to panelists. Generous default per the
+# "don't be cheap" directive: a real-world multi-package PR routinely
+# clears 60-100 KB and the prior 60 KB cap was clipping later files in
+# the diff so panelists never saw them. 600 KB gives 10× headroom for
+# typical PRs; the largest sane PR is in the low MBs and the panelist
+# context cost rises with the diff, so we still WANT to fire eventually.
+# Override via PANEL_MULTIAUDIT_DIFF_CAP (env, in chars).
+_DIFF_CHAR_CAP = int(os.environ.get("PANEL_MULTIAUDIT_DIFF_CAP", "600000"))
 # Recent commits we include for "what's the user trying to accomplish"
 # context — short messages, not full diffs.
 _RECENT_COMMITS_COUNT = 8

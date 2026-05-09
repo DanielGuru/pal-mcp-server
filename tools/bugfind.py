@@ -69,18 +69,21 @@ DEFAULT_PANELIST_TIMEOUT_S = 1800  # see multiaudit comment — claude needs roo
 # on deep rubrics; 600s prevents the slow-but-thorough panelist from getting
 # truncated mid-investigation.
 
-# Caps to keep context windows sane. The bug description plus all
-# auto-attached context goes into one prompt; cap each piece so a
-# verbose log file or a giant attached file can't blow the budget.
-_LOG_TAIL_CHAR_CAP = 8_000  # ~ last 200 lines of error-only log
-_FILE_CHAR_CAP = 30_000     # per attached file
-# Total cap of 200KB — well under every default panelist's context
-# window (Gemini 1M, Claude / GPT-5.5 200K, Grok-4.3 128K) so the cap
-# is a "no single bugfind eats the whole budget" guardrail, not a
-# functional ceiling. Was 80KB; raised after audit feedback that
-# users attaching 4 × 30KB files were silently losing trailing
-# attachments to the tail-truncate.
-_TOTAL_CONTEXT_CHAR_CAP = 200_000
+# Caps to keep context windows sane, but generous per the "don't be cheap"
+# directive — real bug investigations need full files and full log tails,
+# not chopped excerpts. Earlier defaults were clipping later attachments
+# silently. All env-overridable for operators who want it tighter.
+_LOG_TAIL_CHAR_CAP = int(os.environ.get("PANEL_BUGFIND_LOG_TAIL_CAP", "60000"))
+# Per attached file. 200 KB easily holds a 5-10k-line source file; super-
+# large generated files would still get clipped, which is fine — those
+# usually aren't what's interesting in a bug investigation.
+_FILE_CHAR_CAP = int(os.environ.get("PANEL_BUGFIND_FILE_CAP", "200000"))
+# Total ceiling on the entire prompt: bug description + attached files +
+# log tail + commits. Under every default panelist's context window
+# (Gemini 1M, Claude / GPT-5.5 200K, Grok-4.3 128K), so the cap is a
+# "no single bugfind eats the whole budget" guardrail. 1 MB lets you
+# attach ~5 large files without losing the tail to truncation.
+_TOTAL_CONTEXT_CHAR_CAP = int(os.environ.get("PANEL_BUGFIND_TOTAL_CAP", "1000000"))
 _RECENT_COMMITS_COUNT = 8
 _LOG_FILE_CANDIDATES = ("logs/mcp_server.log", "logs/mcp_activity.log")
 
@@ -145,7 +148,7 @@ class BugfindTool(BaseTool):
                         "Absolute paths of files the panel should read "
                         "verbatim. Use this when the bug references specific "
                         "code that the panel needs to see. Each file is "
-                        "capped at ~30KB; truncated files get a marker. "
+                        "capped at ~200KB per file; truncated files get a marker. "
                         "**SECURITY: file contents are sent verbatim to the "
                         "configured panelist APIs (OpenAI / Anthropic / "
                         "Gemini / xAI / OAuth CLIs) as part of the panel "
