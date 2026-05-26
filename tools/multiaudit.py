@@ -60,13 +60,15 @@ logger = logging.getLogger(__name__)
 #                         clink('claude_opus') (--model opus via the
 #                         user's Claude subscription); paid-API fallback
 #                         on quota lands on claude-opus-4-7.
-#   - grok-4.5          : xAI flagship, paid (no OAuth path; needs
-#                         XAI_API_KEY). Held to join_round=2 — grok is too
-#                         quick to commit a position cold, so it sits out
-#                         the round-1 fan-out and only weighs in during the
-#                         debate round, once it has seen every other
-#                         panelist's report. Drop it (or its key) to run
-#                         the all-OAuth 4-way.
+#   - grok-build-0.1    : xAI's agentic-coding model (256K ctx), paid (no
+#                         OAuth path; needs XAI_API_KEY). xAI's own model
+#                         guidance: Chat → Grok 4.3, Coding → Grok Build
+#                         0.1 — so the audit (a coding task) uses Build.
+#                         Held to join_round=2 — grok is too quick to commit
+#                         a position cold, so it sits out the round-1 fan-out
+#                         and only weighs in during the debate round, once it
+#                         has seen every other panelist's report. Drop it (or
+#                         its key) to run the all-OAuth 4-way.
 #
 # 'host' is intentionally NOT in the defaults: Claude Code (the typical
 # host) does not advertise the MCP sampling capability today, so 'host'
@@ -91,7 +93,7 @@ DEFAULT_PANELISTS: tuple[Any, ...] = (
     "gemini",
     {"agent": "claude-sonnet-4-6", "label": "sonnet"},
     {"agent": "claude-opus-4-7", "label": "opus"},
-    {"agent": "grok-4.5", "label": "grok", "join_round": 2},
+    {"agent": "grok-build-0.1", "label": "grok", "join_round": 2},
 )
 DEFAULT_DEBATE_ROUNDS = 1
 DEFAULT_PANELIST_TIMEOUT_S = 1800  # 30 min. Claude does deep file investigation

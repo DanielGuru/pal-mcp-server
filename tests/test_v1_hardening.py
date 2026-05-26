@@ -992,7 +992,7 @@ def test_multiaudit_panelists_configurable_via_env(tmp_path, monkeypatch):
         "gemini",
         {"agent": "claude-sonnet-4-6", "label": "sonnet"},
         {"agent": "claude-opus-4-7", "label": "opus"},
-        {"agent": "grok-4.5", "label": "grok", "join_round": 2},
+        {"agent": "grok-build-0.1", "label": "grok", "join_round": 2},
     )
 
     out = asyncio.run(

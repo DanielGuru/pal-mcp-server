@@ -379,7 +379,7 @@ def test_default_panelists_immutable_against_env_at_import(tmp_path, monkeypatch
         "gemini",
         {"agent": "claude-sonnet-4-6", "label": "sonnet"},
         {"agent": "claude-opus-4-7", "label": "opus"},
-        {"agent": "grok-4.5", "label": "grok", "join_round": 2},
+        {"agent": "grok-build-0.1", "label": "grok", "join_round": 2},
     ]
 
 
