@@ -53,7 +53,11 @@ from tools.shared.base_tool import BaseTool
 logger = logging.getLogger(__name__)
 
 
-# Same default panel as multiaudit: four frontier model families. Override
+# Same default panel as multiaudit: codex + gemini + sonnet 4.6 + opus 4.7.
+# Both Anthropic slots are OAuth-first via the user's Claude subscription
+# (routed through clink by ``providers/oauth_first.py``: sonnet → clink
+# 'claude', opus → clink 'claude_opus' with --model opus), with paid-API
+# fallback on quota landing on the same model. Override
 # via env / per-call args. Keep ``host`` opt-in (Claude Code doesn't
 # advertise sampling capability today; including it polluted every audit
 # with a "host failed" row).
@@ -63,7 +67,16 @@ logger = logging.getLogger(__name__)
 # An earlier version mutated this at import time, which created a stale-
 # defaults bug after live env clearing (panel-flagged in the bugfind
 # audit). Don't reintroduce module-level mutation.
-DEFAULT_PANELISTS = ("codex", "gemini", "claude", "grok-4.3")
+# Anthropic slots use the dict-form panelist spec so debate-round peer
+# headers say ``=== PEER PANELIST: sonnet ===`` / ``opus ===`` rather
+# than two near-identical model-id rows. See the matching block in
+# tools/multiaudit.py for the rationale; behaviour is identical here.
+DEFAULT_PANELISTS: tuple[Any, ...] = (
+    "codex",
+    "gemini",
+    {"agent": "claude-sonnet-4-6", "label": "sonnet"},
+    {"agent": "claude-opus-4-7", "label": "opus"},
+)
 DEFAULT_DEBATE_ROUNDS = 1
 DEFAULT_PANELIST_TIMEOUT_S = 1800  # see multiaudit comment — claude needs room
 # on deep rubrics; 600s prevents the slow-but-thorough panelist from getting
@@ -100,7 +113,7 @@ class BugfindTool(BaseTool):
             "Trigger a multi-model investigation of a bug. Reads the user's "
             "bug description and auto-attaches context (recent commits, "
             "error log tail, any explicitly attached files), then fires an "
-            "adversarial debate panel (codex + gemini + claude + grok-4.3 "
+            "adversarial debate panel (codex + gemini + claude-sonnet-4-6 + claude-opus-4-7 "
             "by default, 1 debate round, codex as judge) with a structured "
             "rubric: REPRO / ROOT CAUSE / MINIMAL FIX / REGRESSION TEST / "
             "BLAST RADIUS / WHAT YOU MISSED. Returns the task_id + live web "
@@ -166,7 +179,7 @@ class BugfindTool(BaseTool):
                         "Override the default panelist list. Each entry is "
                         "an agent name as panel.py expects (clink CLI name "
                         "like 'codex'/'gemini', or a paid model id like "
-                        "'grok-4.3' / 'gpt-5.5')."
+                        "'claude-sonnet-4-6' / 'gpt-5.5')."
                     ),
                 },
                 "judge": {
@@ -375,7 +388,7 @@ class BugfindTool(BaseTool):
 
         summary = (
             f"Bugfind dispatched — {len(panelists)} panelists "
-            f"({', '.join(panelists)}), {debate_rounds} debate "
+            f"({', '.join(_panelist_display(panelists))}), {debate_rounds} debate "
             f"round{'s' if debate_rounds != 1 else ''}, judge={judge}, "
             f"~{len(prompt)} chars of context"
             f"{' (truncated)' if total_truncated else ''}."
@@ -418,6 +431,22 @@ class BugfindTool(BaseTool):
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
+
+
+def _panelist_display(panelists: list[Any]) -> list[str]:
+    """Render mixed string / dict-form panelist specs as human-readable
+    names for summary lines (see ``tools/multiaudit.py`` for the matching
+    helper; behaviour is identical)."""
+
+    out: list[str] = []
+    for entry in panelists:
+        if isinstance(entry, str):
+            out.append(entry)
+        elif isinstance(entry, dict):
+            out.append(str(entry.get("label") or entry.get("agent") or entry))
+        else:
+            out.append(str(entry))
+    return out
 
 
 def _err(msg: str) -> list[TextContent]:

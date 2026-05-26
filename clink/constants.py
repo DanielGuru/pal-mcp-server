@@ -108,6 +108,30 @@ INTERNAL_DEFAULTS: dict[str, CLIInternalDefaults] = {
             "rate_limit_error",
         ),
     ),
+    # Opus variant of the Claude CLI. Same runner/parser/auth/quota
+    # surface as ``claude``; the only difference is the ``--model opus``
+    # argument baked into the per-CLI config (``conf/cli_clients/
+    # claude_opus.json``) and the paid-API fallback target. Exists so
+    # the OAuth-first routing layer (``providers/oauth_first.py``) can
+    # honour the user's explicit choice of Opus without silently
+    # downgrading to Sonnet — both flagships map to the SAME Claude CLI
+    # binary but need different ``--model`` flags, so they're modelled
+    # as two clink clients rather than one. The Anthropic subscription
+    # serves both from the same login.
+    "claude_opus": CLIInternalDefaults(
+        parser="claude_stream_jsonl",
+        additional_args=["--print", "--output-format", "stream-json", "--verbose"],
+        default_role_prompt="systemprompts/clink/default.txt",
+        runner="claude",
+        oauth_fallback_model="claude-opus-4-7",
+        oauth_failure_patterns=(
+            "please run claude /login",
+            "authentication_error",
+            "invalid_api_key",
+            "credit balance is too low",
+            "rate_limit_error",
+        ),
+    ),
 }
 
 
@@ -135,14 +159,17 @@ def _build_model_to_cli() -> dict[str, str]:
         if defaults.oauth_fallback_model
     }
 
-    # Hand-curated extras: models the same CLI can reasonably serve.
-    # For Claude: opus + sonnet share the claude CLI / Anthropic
-    # subscription, so both should route. Whichever is the configured
-    # ``oauth_fallback_model`` wins over the static entry if there's
-    # a collision (env override always takes precedence).
+    # Hand-curated extras: models the same Claude subscription can
+    # reasonably serve. Sonnet and Opus share the Anthropic login but
+    # need different ``--model`` flags, so they map to two distinct
+    # clink clients (``claude`` for sonnet, ``claude_opus`` for opus).
+    # Without the split, routing claude-opus-4-7 through the sonnet
+    # CLI silently downgrades to sonnet — the failure mode we want to
+    # avoid. ``setdefault`` preserves any env-driven oauth_fallback
+    # mapping above.
     extras = {
-        "claude-opus-4-7": "claude",
         "claude-sonnet-4-6": "claude",
+        "claude-opus-4-7": "claude_opus",
     }
     for model, cli in extras.items():
         mapping.setdefault(model, cli)

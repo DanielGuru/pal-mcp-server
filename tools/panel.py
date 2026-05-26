@@ -163,6 +163,21 @@ def _normalize_panelist(entry: Any) -> dict[str, Any]:
     raise ValueError(f"Each panelist must be a string or object, got {type(entry).__name__}")
 
 
+def _panelist_join_round(panelist: dict[str, Any]) -> int:
+    """Round at which this panelist first speaks. Default 1 (initial fan-out).
+
+    A panelist with ``join_round`` > 1 sits out the parallel fan-out and only
+    enters at its join round, having already seen every earlier round's
+    reports — useful for a model that's too quick to commit a position cold
+    and is more valuable weighing in once the others have laid out theirs.
+    """
+    raw = panelist.get("join_round", 1)
+    try:
+        return max(1, int(raw))
+    except (TypeError, ValueError):
+        return 1
+
+
 async def _run_host_panelist(
     *,
     agent: str,
@@ -588,6 +603,9 @@ async def _emit_panelist_answer(
     if kind == "judge":
         prefix = f"[judge:{label}]"
         event_type = "judge_synthesis"
+    elif kind == "debut":
+        prefix = f"[round {round_num} · {label}] (joining)"
+        event_type = "panelist_answer"
     elif kind == "debate":
         prefix = f"[round {round_num} · {label}] (revised)"
         event_type = "panelist_answer"
@@ -958,6 +976,63 @@ def _build_debate_prompt(
     return "\n".join(sections)
 
 
+def _build_debut_prompt(
+    *,
+    original_prompt: str,
+    self_label: str,
+    peers: list[dict[str, Any]],
+) -> str:
+    """Construct the entry prompt for a late-joining panelist (join_round > 1).
+
+    Unlike `_build_debate_prompt`, this panelist has NO previous answer — it
+    sat out earlier rounds. It now sees every peer's report and gives its
+    first, evidence-led position: confirm what holds up, attack what doesn't,
+    add what the panel missed. The whole point is that it commits only after
+    seeing the others' work, not cold.
+    """
+    sections: list[str] = []
+    sections.append(
+        f"You are '{self_label}', joining an in-progress multi-model panel. The "
+        "panelists below are independent AI models that already answered the "
+        "question. You did NOT answer earlier — you are weighing in now, with "
+        "their reports in front of you. Use that: don't just add a fifth opinion, "
+        "adjudicate. Confirm the findings that hold up, attack the ones that "
+        "don't, and surface anything the panel missed. The judge will synthesise; "
+        "a sharp, evidence-backed position carries more weight than a survey."
+    )
+    sections.append("\n=== ORIGINAL QUESTION ===\n" + original_prompt.strip())
+    if peers:
+        for peer in peers:
+            sections.append(
+                f"\n=== PANELIST: {peer['label']} ===\n"
+                + _truncate((peer.get("response") or "").strip(), cap=DEBATE_PER_PEER_CHAR_CAP)
+            )
+    else:
+        sections.append("\n=== PANELISTS ===\n(no peer outputs available)")
+    sections.append(
+        "\n=== YOUR ANSWER ===\n"
+        "Required structure:\n"
+        "\n"
+        "1. **PANEL ENGAGEMENT** — for EACH panelist above, by label, write one of:\n"
+        "   - `AGREE [label]:` <the specific finding they got right that you're "
+        "endorsing, and why it's solid>\n"
+        "   - `DISPUTE [label]:` <specific reason a finding is wrong, overstated, "
+        "or out of scope — cite the evidence they're misreading>\n"
+        "   `Mostly fine` is not acceptable. Take a position on their single "
+        "strongest claim by name.\n"
+        "\n"
+        "2. **YOUR POSITION** — your own answer to the original question with the "
+        "same rigour expected of the panel: cite `file:line` if reviewing code, "
+        "tag confidence, show diffs/code rather than describing them. Lead with "
+        "anything the panel missed entirely — that's where a late voice earns its "
+        "seat.\n"
+        "\n"
+        "Do not pad. Do not restate peer positions back to them — engage with "
+        "the strongest point and move on. Do not hedge."
+    )
+    return "\n".join(sections)
+
+
 async def _run_debate_round(
     *,
     round_num: int,
@@ -979,9 +1054,24 @@ async def _run_debate_round(
 
     async def _one(panelist: dict[str, Any]) -> dict[str, Any]:
         label = panelist.get("label") or panelist.get("agent")
+        join_round = _panelist_join_round(panelist)
+        # Late-joiner not yet due this round — carry a non-participating
+        # placeholder forward (ok=False, so it's excluded from peers and not
+        # streamed). It debuts when round_num reaches its join_round.
+        if join_round > round_num:
+            return {
+                "agent": panelist.get("agent"),
+                "label": label,
+                "role": panelist.get("role", "default"),
+                "ok": False,
+                "pending_join": True,
+                "error": f"joins at round {join_round}",
+            }
+        is_debut = join_round == round_num and round_num > 1
         prior = by_label.get(label)
-        if prior is None or not prior.get("ok"):
-            # Carry forward failure verbatim.
+        if not is_debut and (prior is None or not prior.get("ok")):
+            # Carry forward failure verbatim (a panelist that couldn't answer
+            # earlier doesn't debate; a debutant legitimately has no prior).
             return prior or {
                 "agent": panelist.get("agent"),
                 "label": label,
@@ -993,25 +1083,34 @@ async def _run_debate_round(
             for r in last_round_results
             if r["label"] != label and r.get("ok")
         ]
-        debate_prompt = _build_debate_prompt(
-            original_prompt=original_prompt,
-            self_label=label,
-            self_previous=prior.get("response", ""),
-            peers=peers,
-        )
+        if is_debut:
+            round_prompt = _build_debut_prompt(
+                original_prompt=original_prompt,
+                self_label=label,
+                peers=peers,
+            )
+        else:
+            round_prompt = _build_debate_prompt(
+                original_prompt=original_prompt,
+                self_label=label,
+                self_previous=prior.get("response", ""),
+                peers=peers,
+            )
         await emit_progress(f"panel/round-{round_num}: dispatching {label}", progress=0.0)
         # Mark internal: panel just BUILT this debate prompt from peer
         # responses, so size-check gates should bypass on the inner
         # chat/clink dispatch.
         from tools.shared.base_tool import mark_internal_payload
         with mark_internal_payload():
-            return await _run_panelist(
+            outcome = await _run_panelist(
                 panelist,
-                prompt=debate_prompt,
+                prompt=round_prompt,
                 files=files,
                 images=images,
                 timeout=timeout,
             )
+        outcome["debut"] = is_debut
+        return outcome
 
     tasks = [asyncio.create_task(_one(p), name=f"debate-r{round_num}:{p.get('label')}") for p in panelists]
     results: list[dict[str, Any]] = []
@@ -1033,7 +1132,7 @@ async def _run_debate_round(
                     label=outcome.get("label", "?"),
                     role=outcome.get("role", "default"),
                     response_text=outcome["response"],
-                    kind="debate",
+                    kind="debut" if outcome.get("debut") else "debate",
                     round_num=round_num,
                 )
     except asyncio.CancelledError:
@@ -1087,8 +1186,11 @@ class PanelTool(BaseTool):
                     "maxItems": MAX_PANELISTS,
                     "description": (
                         "List of agents to consult in parallel. Each entry is either a string "
-                        "(e.g. 'codex', 'gemini', 'grok-4.3', 'gpt-5.5') OR an object with "
-                        "{agent, role?, label?}. Total max %d panelists." % MAX_PANELISTS
+                        "(e.g. 'codex', 'gemini', 'grok-4.5', 'gpt-5.5') OR an object with "
+                        "{agent, role?, label?, join_round?}. Set join_round=2 (requires "
+                        "debate_rounds>=1) to hold a panelist out of the initial fan-out so it "
+                        "only weighs in during that debate round, after seeing every other "
+                        "panelist's report. Total max %d panelists." % MAX_PANELISTS
                     ),
                     "items": {
                         "anyOf": [
@@ -1102,6 +1204,14 @@ class PanelTool(BaseTool):
                                         "enum": ["default", "codereviewer", "planner"],
                                     },
                                     "label": {"type": "string"},
+                                    "join_round": {
+                                        "type": "integer",
+                                        "minimum": 1,
+                                        "description": (
+                                            "Round this panelist first speaks. Default 1 (initial "
+                                            "fan-out). >1 holds it back until that debate round."
+                                        ),
+                                    },
                                 },
                                 "required": ["agent"],
                                 "additionalProperties": True,
@@ -1269,14 +1379,39 @@ class PanelTool(BaseTool):
             return _err(f"'debate_rounds' must be between 0 and {MAX_DEBATE_ROUNDS}")
         debate_rounds = debate_rounds_raw
 
+        # A late-joining panelist (join_round > 1) only speaks once its round
+        # arrives. If that round never runs it would silently never appear, so
+        # reject the misconfiguration loudly at the boundary.
+        total_rounds = 1 + debate_rounds
+        for p in panelists:
+            jr = _panelist_join_round(p)
+            if jr > total_rounds:
+                lbl = p.get("label") or p.get("agent")
+                return _err(
+                    f"panelist '{lbl}' has join_round={jr} but the panel only runs "
+                    f"{total_rounds} round(s) (1 fan-out + {debate_rounds} debate). "
+                    "Raise debate_rounds or lower join_round."
+                )
+
         summary_only_raw = arguments.get("summary_only", True)
         if not isinstance(summary_only_raw, bool):
             return _err("'summary_only' must be a boolean")
         summary_only = summary_only_raw
 
         # ----- fan out (streaming via as_completed) -----
+        # Only panelists due in round 1 join the parallel fan-out. Late-joiners
+        # (join_round > 1) sit out and enter at their debate round, having seen
+        # the earlier reports.
+        round1_panelists = [p for p in panelists if _panelist_join_round(p) <= 1]
+        late_panelists = [p for p in panelists if _panelist_join_round(p) > 1]
+        if late_panelists:
+            joining = ", ".join(
+                f"{p.get('label') or p.get('agent')}@r{_panelist_join_round(p)}"
+                for p in late_panelists
+            )
+            await emit_progress(f"panel: late-joining panelists held back — {joining}", progress=0.0)
         await emit_progress(
-            f"panel: dispatching to {len(panelists)} panelists in parallel",
+            f"panel: dispatching to {len(round1_panelists)} panelists in parallel",
             progress=0.0,
         )
         started = time.monotonic()
@@ -1285,7 +1420,7 @@ class PanelTool(BaseTool):
                 _run_panelist(p, prompt=prompt, files=files, images=images, timeout=timeout),
                 name=f"panelist:{p.get('label') or p.get('agent')}",
             )
-            for p in panelists
+            for p in round1_panelists
         ]
         panelist_results: list[dict[str, Any]] = []
         finished = 0
@@ -1296,7 +1431,7 @@ class PanelTool(BaseTool):
                 finished += 1
                 tag = "✓" if outcome.get("ok") else "✗"
                 await emit_progress(
-                    f"panel: {tag} {outcome.get('label')} ({finished}/{len(panelists)})",
+                    f"panel: {tag} {outcome.get('label')} ({finished}/{len(round1_panelists)})",
                     progress=float(finished),
                     total=float(len(panelists) + (1 if judge else 0)),
                 )
@@ -1317,10 +1452,12 @@ class PanelTool(BaseTool):
             raise
         round1_duration = round(time.monotonic() - started, 2)
 
-        # Order round-1 results to match input panelist order for stable history.
+        # Order round-1 results to match input panelist order for stable
+        # history. Only the panelists that actually ran in round 1 are listed —
+        # late-joiners appear in later rounds, not here.
         by_label_r1 = {r.get("label"): r for r in panelist_results}
         round1_ordered = []
-        for p in panelists:
+        for p in round1_panelists:
             lbl = p.get("label") or p.get("agent")
             round1_ordered.append(by_label_r1.get(lbl) or {"agent": p.get("agent"), "label": lbl, "ok": False, "error": "missing"})
 

@@ -466,14 +466,18 @@ function speakerClass(label) {
 // label format from utils/stream_progress.py is "<provider>/<model>";
 // the panelist_answer label format from tools/panel.py is "round N ·
 // <agent>". We match on the same set of model substrings the
-// speakerClass function uses for colouring.
+// speakerClass function uses for colouring. Note: multiaudit/bugfind
+// label their two Anthropic slots "opus"/"sonnet" (not "claude"), so
+// without those keywords the final answer's key wouldn't match the
+// streaming side's "anthropic/claude-*" key and the opus/sonnet
+// streaming block would never get suppressed — the duplicate-block bug.
 function speakerKeyForDedupe(label) {
   const lower = String(label || '').toLowerCase();
   if (lower.startsWith('judge')) return 'judge';
   if (lower.includes('codex') || lower.includes('openai') || lower.includes('gpt')) return 'codex';
   if (lower.includes('gemini')) return 'gemini';
   if (lower.includes('grok') || lower.includes('xai')) return 'grok';
-  if (lower.includes('claude') || lower.includes('anthropic')) return 'claude';
+  if (lower.includes('claude') || lower.includes('anthropic') || lower.includes('opus') || lower.includes('sonnet')) return 'claude';
   if (lower.includes('host')) return 'host';
   return null;
 }

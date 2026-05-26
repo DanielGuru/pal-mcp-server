@@ -118,6 +118,7 @@ def test_mapping_covers_all_oauth_clis():
     assert "codex" in cli_targets
     assert "gemini" in cli_targets
     assert "claude" in cli_targets
+    assert "claude_opus" in cli_targets
 
 
 def test_resolve_cli_exact_match_only():
@@ -125,7 +126,10 @@ def test_resolve_cli_exact_match_only():
 
     assert resolve_cli_for_model("gpt-5.5") == "codex"
     assert resolve_cli_for_model("gemini-3.1-pro-preview") == "gemini"
-    assert resolve_cli_for_model("claude-opus-4-7") == "claude"
+    # opus routes to a SEPARATE clink client (``claude_opus``) because
+    # the Claude CLI needs different ``--model`` flags for the two
+    # flagships. Sharing one CLI silently downgrades opus → sonnet.
+    assert resolve_cli_for_model("claude-opus-4-7") == "claude_opus"
     assert resolve_cli_for_model("claude-sonnet-4-6") == "claude"
 
     # Non-flagship variants → no route (this is intentional; expand the map
@@ -699,10 +703,12 @@ def test_model_to_cli_derived_from_internal_defaults():
 
 
 def test_model_to_cli_includes_extra_claude_flagships():
-    """Beyond the env-driven default, both Opus and Sonnet should route to
-    the claude CLI since the Claude subscription serves the family."""
+    """Sonnet maps to the ``claude`` CLI; opus maps to a SEPARATE
+    ``claude_opus`` CLI (same binary, different ``--model`` flag) so
+    OAuth-first never silently downgrades opus to sonnet. The Anthropic
+    subscription serves both from the same login."""
 
     from clink.constants import MODEL_TO_CLI
 
-    assert MODEL_TO_CLI.get("claude-opus-4-7") == "claude"
     assert MODEL_TO_CLI.get("claude-sonnet-4-6") == "claude"
+    assert MODEL_TO_CLI.get("claude-opus-4-7") == "claude_opus"

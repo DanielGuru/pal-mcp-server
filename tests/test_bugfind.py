@@ -328,7 +328,10 @@ def test_attached_file_truncation_marker(tmp_path, monkeypatch):
     """Files larger than the per-file cap get truncated with a clear marker."""
     repo = _make_git_repo(tmp_path)
     big = repo / "huge.txt"
-    big.write_text("X" * 50_000)  # > _FILE_CHAR_CAP (30_000)
+    # _FILE_CHAR_CAP is 200_000; write comfortably above it so the
+    # truncation path fires deterministically regardless of small
+    # future cap bumps.
+    big.write_text("X" * 250_000)
 
     captured: dict = {}
     import server
@@ -414,7 +417,12 @@ def test_defaults_match_multiaudit(tmp_path, monkeypatch):
 
     out = asyncio.run(go())
     body = json.loads(out[0].text)
-    assert body["panelists"] == ["codex", "gemini", "claude", "grok-4.3"]
+    assert body["panelists"] == [
+        "codex",
+        "gemini",
+        {"agent": "claude-sonnet-4-6", "label": "sonnet"},
+        {"agent": "claude-opus-4-7", "label": "opus"},
+    ]
     assert body["judge"] == "codex"
     assert body["debate_rounds"] == 1
 
@@ -580,7 +588,12 @@ def test_default_panelists_immutable_against_env_at_import(tmp_path, monkeypatch
 
     out = asyncio.run(go())
     body = json.loads(out[0].text)
-    assert body["panelists"] == ["codex", "gemini", "claude", "grok-4.3"]
+    assert body["panelists"] == [
+        "codex",
+        "gemini",
+        {"agent": "claude-sonnet-4-6", "label": "sonnet"},
+        {"agent": "claude-opus-4-7", "label": "opus"},
+    ]
 
 
 def test_log_tail_redacts_secret_shapes_before_dispatch(tmp_path, monkeypatch):

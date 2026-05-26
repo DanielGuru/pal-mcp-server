@@ -987,7 +987,13 @@ def test_multiaudit_panelists_configurable_via_env(tmp_path, monkeypatch):
     # Module-level fallback is the immutable canonical tuple — anything
     # else means a future regression reintroduced import-time mutation.
     assert isinstance(DEFAULT_PANELISTS, tuple)
-    assert DEFAULT_PANELISTS == ("codex", "gemini", "claude", "grok-4.3")
+    assert DEFAULT_PANELISTS == (
+        "codex",
+        "gemini",
+        {"agent": "claude-sonnet-4-6", "label": "sonnet"},
+        {"agent": "claude-opus-4-7", "label": "opus"},
+        {"agent": "grok-4.5", "label": "grok", "join_round": 2},
+    )
 
     out = asyncio.run(
         MultiauditTool().execute({"working_directory_absolute_path": str(repo)})

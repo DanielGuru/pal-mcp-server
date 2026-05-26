@@ -318,11 +318,18 @@ def test_default_panelist_set_includes_host(tmp_path, monkeypatch):
     assert "host" not in panelists, (
         f"'host' should NOT be in default panelists (always-fails on Claude Code); got {panelists}"
     )
-    # Panel must include all four current frontier families by default —
-    # codex (OpenAI), gemini (Google), claude (Anthropic), grok-4.3 (xAI).
-    # Anything missing means the audit only hears from a subset of vendors.
-    for required in ("codex", "gemini", "claude", "grok-4.3"):
-        assert required in panelists, f"expected '{required}' in defaults; got {panelists}"
+    # Panel must include all four default slots — codex (OpenAI),
+    # gemini (Google), claude-sonnet-4-6 (Anthropic sonnet) and
+    # claude-opus-4-7 (Anthropic opus). The two Anthropic slots are
+    # dict-form ({"agent": ..., "label": "sonnet"|"opus"}) so debate
+    # peer headers are readable.
+    panelist_agents = {
+        p if isinstance(p, str) else p.get("agent") for p in panelists
+    }
+    for required in ("codex", "gemini", "claude-sonnet-4-6", "claude-opus-4-7"):
+        assert required in panelist_agents, (
+            f"expected agent '{required}' in defaults; got {panelists}"
+        )
 
 
 def test_default_panelists_immutable_against_env_at_import(tmp_path, monkeypatch):
@@ -367,7 +374,13 @@ def test_default_panelists_immutable_against_env_at_import(tmp_path, monkeypatch
 
     out = asyncio.run(go())
     body = json.loads(out[0].text)
-    assert body["panelists"] == ["codex", "gemini", "claude", "grok-4.3"]
+    assert body["panelists"] == [
+        "codex",
+        "gemini",
+        {"agent": "claude-sonnet-4-6", "label": "sonnet"},
+        {"agent": "claude-opus-4-7", "label": "opus"},
+        {"agent": "grok-4.5", "label": "grok", "join_round": 2},
+    ]
 
 
 def test_propagates_start_task_error_no_false_success(tmp_path, monkeypatch):

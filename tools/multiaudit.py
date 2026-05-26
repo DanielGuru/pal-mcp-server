@@ -47,14 +47,26 @@ from tools.shared.base_tool import BaseTool
 logger = logging.getLogger(__name__)
 
 
-# Default 4-way debate covering the four current frontier model families
+# Default debate covering the current frontier model families
 # at zero / minimal cost:
-#   - codex   : OpenAI flagship via clink OAuth (free).
-#   - gemini  : Google flagship via clink OAuth (free, falls back to paid
-#               on quota).
-#   - claude  : Anthropic Opus via clink OAuth (free with the user's
-#               Claude subscription).
-#   - grok-4.3: xAI flagship via paid API (no OAuth path on xAI).
+#   - codex             : OpenAI flagship via clink OAuth (free).
+#   - gemini            : Google flagship via clink OAuth (free, falls
+#                         back to paid on quota).
+#   - claude-sonnet-4-6 : Anthropic Sonnet — OAuth-first routes through
+#                         clink('claude') (--model sonnet via the user's
+#                         Claude subscription); paid-API fallback on
+#                         quota lands on claude-sonnet-4-6.
+#   - claude-opus-4-7   : Anthropic Opus — OAuth-first routes through
+#                         clink('claude_opus') (--model opus via the
+#                         user's Claude subscription); paid-API fallback
+#                         on quota lands on claude-opus-4-7.
+#   - grok-4.5          : xAI flagship, paid (no OAuth path; needs
+#                         XAI_API_KEY). Held to join_round=2 — grok is too
+#                         quick to commit a position cold, so it sits out
+#                         the round-1 fan-out and only weighs in during the
+#                         debate round, once it has seen every other
+#                         panelist's report. Drop it (or its key) to run
+#                         the all-OAuth 4-way.
 #
 # 'host' is intentionally NOT in the defaults: Claude Code (the typical
 # host) does not advertise the MCP sampling capability today, so 'host'
@@ -68,7 +80,19 @@ logger = logging.getLogger(__name__)
 # defaults bug after live env clearing (panel-flagged in the multiaudit
 # audit, mirroring the bugfind fix). Don't reintroduce module-level
 # mutation.
-DEFAULT_PANELISTS = ("codex", "gemini", "claude", "grok-4.3")
+# The two Anthropic slots use the dict-form panelist spec so debate-round
+# peer headers say ``=== PEER PANELIST: sonnet ===`` / ``opus ===`` rather
+# than two near-identical ``claude-sonnet-4-6`` / ``claude-opus-4-7`` rows.
+# Short labels make the cross-peer engagement comments ("CONCEDE sonnet:"
+# / "COUNTER opus:") readable. Env-overridden lists (CSV strings) keep
+# their literal names as labels.
+DEFAULT_PANELISTS: tuple[Any, ...] = (
+    "codex",
+    "gemini",
+    {"agent": "claude-sonnet-4-6", "label": "sonnet"},
+    {"agent": "claude-opus-4-7", "label": "opus"},
+    {"agent": "grok-4.5", "label": "grok", "join_round": 2},
+)
 DEFAULT_DEBATE_ROUNDS = 1
 DEFAULT_PANELIST_TIMEOUT_S = 1800  # 30 min. Claude does deep file investigation
 # on audit prompts and can run long when the rubric tells him to read files
@@ -103,7 +127,7 @@ class MultiauditTool(BaseTool):
             "the last commit if all of those are empty — so it works equally "
             "well before OR after you've committed), "
             "packages it with intent context from recent commits, and fires "
-            "an adversarial debate panel (codex + gemini + claude + grok-4.3 by default, "
+            "an adversarial debate panel (codex + gemini + claude-sonnet-4-6 + claude-opus-4-7 by default, "
             "1 debate round, codex as judge). Returns the task_id + live web "
             "viewer URL + a summary line. The user opens the URL to watch the "
             "debate; you poll task_status / run_tree for intermediate findings. "
@@ -160,13 +184,13 @@ class MultiauditTool(BaseTool):
                     "description": (
                         "Override the default panelist list. Each entry is an "
                         "agent name as panel.py expects (clink CLI name like "
-                        "'codex'/'gemini', or a paid model id like 'grok-4.3' / "
-                        "'gpt-5.5')."
+                        "'codex'/'gemini', or a paid model id like "
+                        "'claude-sonnet-4-6' / 'gpt-5.5')."
                     ),
                 },
                 "judge": {
                     "type": "string",
-                    "description": "Agent that synthesises the final headline. Defaults to PANEL_MULTIAUDIT_JUDGE env var, else 'codex'. Use any panelist name (e.g. 'claude', 'gemini', 'grok-4.3', 'codex') or any valid model id.",
+                    "description": "Agent that synthesises the final headline. Defaults to PANEL_MULTIAUDIT_JUDGE env var, else 'codex'. Use any panelist name (e.g. 'claude', 'gemini', 'claude-sonnet-4-6', 'codex') or any valid model id.",
                 },
                 "debate_rounds": {
                     "type": "integer",
@@ -398,7 +422,7 @@ class MultiauditTool(BaseTool):
 
         summary = (
             f"Multiaudit dispatched against {current_branch} ({diff_source}) — "
-            f"{len(panelists)} panelists ({', '.join(panelists)}), "
+            f"{len(panelists)} panelists ({', '.join(_panelist_display(panelists))}), "
             f"{debate_rounds} debate round{'s' if debate_rounds != 1 else ''}, "
             f"judge={judge}, ~{len(diff_blob)} chars of diff."
         )
@@ -437,6 +461,24 @@ class MultiauditTool(BaseTool):
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
+
+
+def _panelist_display(panelists: list[Any]) -> list[str]:
+    """Render mixed string / dict-form panelist specs as human-readable
+    names for summary lines. Dict-form panelists use ``label`` (the short
+    display name shown to peers in debate rounds), falling back to
+    ``agent`` if no label was set.
+    """
+
+    out: list[str] = []
+    for entry in panelists:
+        if isinstance(entry, str):
+            out.append(entry)
+        elif isinstance(entry, dict):
+            out.append(str(entry.get("label") or entry.get("agent") or entry))
+        else:
+            out.append(str(entry))
+    return out
 
 
 class _GitError(RuntimeError):

@@ -32,7 +32,7 @@ class XAIModelProvider(RegistryBackedProviderMixin, OpenAICompatibleProvider):
     # when the fast SKU isn't allow-listed). Both must exist in
     # conf/xai_models.json.
     PRIMARY_MODEL = "grok-4-1-fast-reasoning"
-    FALLBACK_MODEL = "grok-4.3"
+    FALLBACK_MODEL = "grok-4.5"
 
     def __init__(self, api_key: str, **kwargs):
         """Initialize X.AI provider with API key."""
@@ -62,7 +62,7 @@ class XAIModelProvider(RegistryBackedProviderMixin, OpenAICompatibleProvider):
             return None
 
         if category == ToolModelCategory.EXTENDED_REASONING:
-            # Flagship reasoning first (grok-4.3), then the fast SKU.
+            # Flagship reasoning first (grok-4.5), then the fast SKU.
             if self.FALLBACK_MODEL in allowed_models:
                 return self.FALLBACK_MODEL
             if self.PRIMARY_MODEL in allowed_models:
