@@ -461,7 +461,7 @@ function speakerClass(label) {
 }
 
 // Map a free-form speaker label ("[round 1 · grok-4.3]" /
-// "[xai/grok-4.3]" / "[claude/claude-opus-4-7]") down to a stable key
+// "[xai/grok-4.3]" / "[claude/claude-opus-4-8]") down to a stable key
 // used to dedupe streaming-vs-final transcript blocks. The streaming
 // label format from utils/stream_progress.py is "<provider>/<model>";
 // the panelist_answer label format from tools/panel.py is "round N ·

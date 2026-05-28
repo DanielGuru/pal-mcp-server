@@ -55,14 +55,14 @@ Panel supports **conversation threading** so your CLI can **discuss ideas with m
 
 Your CLI always stays in control but gets perspectives from the best AI for each subtask. Context carries forward seamlessly across tools and models, enabling complex workflows like: code reviews with multiple models → automated planning → implementation → pre-commit validation.
 
-> **You're in control.** Your CLI of choice orchestrates the AI team, but you decide the workflow. Craft powerful prompts that bring in Gemini 3.1 Pro, GPT-5.5, Claude Opus 4.7, Grok-4.3, or local offline models exactly when needed.
+> **You're in control.** Your CLI of choice orchestrates the AI team, but you decide the workflow. Craft powerful prompts that bring in Gemini 3.1 Pro, GPT-5.5, Claude Opus 4.8, Grok-4.3, or local offline models exactly when needed.
 
 <details>
 <summary><b>Reasons to Use Panel MCP</b></summary>
 
 A typical workflow with Claude Code as an example:
 
-1. **Multi-Model Orchestration** - Claude coordinates with Gemini 3.1 Pro, GPT-5.5, Grok-4.3, and Claude Opus 4.7 to get the best analysis for each task
+1. **Multi-Model Orchestration** - Claude coordinates with Gemini 3.1 Pro, GPT-5.5, Grok-4.3, and Claude Opus 4.8 to get the best analysis for each task
 
 2. **Context Revival Magic** - Even after Claude's context resets, continue conversations seamlessly by having other models "remind" Claude of the discussion
 
@@ -72,7 +72,7 @@ A typical workflow with Claude Code as an example:
 
 5. **True Conversation Continuity** - Full context flows across tools and models — Gemini remembers what GPT-5.5 said 10 steps ago
 
-6. **Model-Specific Strengths** - Extended thinking with Gemini 3.1 Pro, strong reasoning with Claude Opus 4.7, adversarial pressure-testing with Grok-4.3, privacy with local Ollama
+6. **Model-Specific Strengths** - Extended thinking with Gemini 3.1 Pro, strong reasoning with Claude Opus 4.8, adversarial pressure-testing with Grok-4.3, privacy with local Ollama
 
 7. **Professional Code Reviews** - Multi-pass analysis with severity levels, actionable feedback, and consensus from multiple AI experts
 
@@ -122,7 +122,7 @@ All within a single conversation thread! Gemini Pro in step 11 _knows_ what was 
 
 For best results when using [Claude Code](https://claude.ai/code):
 
-- **claude-sonnet-4-6** or **claude-opus-4-7** - All agentic work and orchestration
+- **claude-sonnet-4-6** or **claude-opus-4-8** - All agentic work and orchestration
 - **`gemini-3.1-pro-preview`** (`pro`) OR **`gpt-5.5`** - Deep thinking, additional code reviews, debugging and validations, pre-commit analysis
 </details>
 
@@ -149,7 +149,7 @@ For best results when using [Codex CLI](https://developers.openai.com/codex/cli)
 OAuth CLIs are the cheapest path: `clink`, `panel`, `multiaudit`, and `bugfind` all route through them automatically when available, falling back to paid API only on quota exhaustion.
 
 **Paid API keys** (needed for Grok, and as the OAuth fallback safety net):
-- **[Anthropic](https://console.anthropic.com/settings/keys)** — Claude Opus 4.7 / Sonnet 4.6
+- **[Anthropic](https://console.anthropic.com/settings/keys)** — Claude Opus 4.8 / Sonnet 4.6
 - **[OpenAI](https://platform.openai.com/api-keys)** — GPT-5.5 / 5.4 / 5.1-codex
 - **[Gemini](https://aistudio.google.com/app/apikey)** — Gemini 3.1 Pro
 - **[X.AI](https://console.x.ai/)** — Grok-4.3 / 4.1-fast (no OAuth path; API only)
@@ -496,7 +496,7 @@ These variables are not shown by default but control important behaviour:
 
 **Model Support**
 - **Multiple providers** - Anthropic, Gemini, OpenAI, Azure, X.AI, OpenRouter, DIAL, Ollama
-- **Latest models** - Claude Opus 4.7 / Sonnet 4.6, GPT-5.5 / 5.4 / 5.1-codex, Gemini 3.1 Pro, Grok-4.3 / 4.1-fast, local Llama
+- **Latest models** - Claude Opus 4.8 / Sonnet 4.6, GPT-5.5 / 5.4 / 5.1-codex, Gemini 3.1 Pro, Grok-4.3 / 4.1-fast, local Llama
 - **[Thinking modes](docs/advanced-usage.md#thinking-modes)** - Control reasoning depth vs cost
 - **Vision support** - Analyze images, diagrams, screenshots
 
@@ -523,7 +523,7 @@ These variables are not shown by default but control important behaviour:
 
 **Architecture Planning:**
 ```
-"Plan our microservices migration, get consensus from gemini-3.1-pro-preview and claude-opus-4-7 on the approach"
+"Plan our microservices migration, get consensus from gemini-3.1-pro-preview and claude-opus-4-8 on the approach"
 ```
 → Structured planning → Multiple expert opinions → Consensus building → Implementation roadmap
 
@@ -535,7 +535,7 @@ These variables are not shown by default but control important behaviour:
 
 **Async Long Task:**
 ```
-"start_task: run secaudit on the entire codebase with claude-opus-4-7"
+"start_task: run secaudit on the entire codebase with claude-opus-4-8"
 # ... keep working ...
 "task_status <task_id>" → check progress
 "task_result <task_id>" → get full report when done

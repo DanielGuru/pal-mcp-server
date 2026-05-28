@@ -129,7 +129,7 @@ def test_resolve_cli_exact_match_only():
     # opus routes to a SEPARATE clink client (``claude_opus``) because
     # the Claude CLI needs different ``--model`` flags for the two
     # flagships. Sharing one CLI silently downgrades opus → sonnet.
-    assert resolve_cli_for_model("claude-opus-4-7") == "claude_opus"
+    assert resolve_cli_for_model("claude-opus-4-8") == "claude_opus"
     assert resolve_cli_for_model("claude-sonnet-4-6") == "claude"
 
     # Non-flagship variants → no route (this is intentional; expand the map
@@ -711,4 +711,4 @@ def test_model_to_cli_includes_extra_claude_flagships():
     from clink.constants import MODEL_TO_CLI
 
     assert MODEL_TO_CLI.get("claude-sonnet-4-6") == "claude"
-    assert MODEL_TO_CLI.get("claude-opus-4-7") == "claude_opus"
+    assert MODEL_TO_CLI.get("claude-opus-4-8") == "claude_opus"

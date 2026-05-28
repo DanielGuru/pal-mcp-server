@@ -40,7 +40,7 @@ class AnthropicRequestShapeTest(unittest.TestCase):
         resp.usage = usage
         resp.stop_reason = "end_turn"
         resp.id = "msg_test_123"
-        resp.model = "claude-opus-4-7"
+        resp.model = "claude-opus-4-8"
         return resp
 
     def _capture_call(self, **gen_kwargs) -> dict:
@@ -123,7 +123,7 @@ class AnthropicRequestShapeTest(unittest.TestCase):
         )
 
     def test_thinking_uses_adaptive_schema(self):
-        """Anthropic API for Opus 4.7 / Sonnet 4.6 rejects the old
+        """Anthropic API for Opus 4.8 / Sonnet 4.6 rejects the old
         `thinking.type=enabled, budget_tokens=N` schema with a 400 telling
         callers to use `thinking.type=adaptive` and `output_config.effort`.
         Verify the new schema is what reaches the SDK."""
@@ -268,7 +268,7 @@ class ClinkClaudeFallbackTest(unittest.TestCase):
             target = clink_constants.INTERNAL_DEFAULTS["claude"].oauth_fallback_model
             self.assertNotEqual(
                 target,
-                "claude-opus-4-7",
+                "claude-opus-4-8",
                 "default OAuth fallback should NOT be the flagship — pick Sonnet or smaller",
             )
         finally:
@@ -302,7 +302,7 @@ class AnthropicRestrictionWiringTest(unittest.TestCase):
         try:
             svc = ModelRestrictionService()
             self.assertTrue(svc.is_allowed(ProviderType.ANTHROPIC, "claude-sonnet-4-6"))
-            self.assertFalse(svc.is_allowed(ProviderType.ANTHROPIC, "claude-opus-4-7"))
+            self.assertFalse(svc.is_allowed(ProviderType.ANTHROPIC, "claude-opus-4-8"))
         finally:
             os.environ.pop("ANTHROPIC_ALLOWED_MODELS", None)
             if prior is not None:

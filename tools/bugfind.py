@@ -53,7 +53,7 @@ from tools.shared.base_tool import BaseTool
 logger = logging.getLogger(__name__)
 
 
-# Same default panel as multiaudit: codex + gemini + sonnet 4.6 + opus 4.7.
+# Same default panel as multiaudit: codex + gemini + sonnet 4.6 + opus 4.8.
 # Both Anthropic slots are OAuth-first via the user's Claude subscription
 # (routed through clink by ``providers/oauth_first.py``: sonnet → clink
 # 'claude', opus → clink 'claude_opus' with --model opus), with paid-API
@@ -75,7 +75,7 @@ DEFAULT_PANELISTS: tuple[Any, ...] = (
     "codex",
     "gemini",
     {"agent": "claude-sonnet-4-6", "label": "sonnet"},
-    {"agent": "claude-opus-4-7", "label": "opus"},
+    {"agent": "claude-opus-4-8", "label": "opus"},
 )
 DEFAULT_DEBATE_ROUNDS = 1
 DEFAULT_PANELIST_TIMEOUT_S = 1800  # see multiaudit comment — claude needs room
@@ -113,7 +113,7 @@ class BugfindTool(BaseTool):
             "Trigger a multi-model investigation of a bug. Reads the user's "
             "bug description and auto-attaches context (recent commits, "
             "error log tail, any explicitly attached files), then fires an "
-            "adversarial debate panel (codex + gemini + claude-sonnet-4-6 + claude-opus-4-7 "
+            "adversarial debate panel (codex + gemini + claude-sonnet-4-6 + claude-opus-4-8 "
             "by default, 1 debate round, codex as judge) with a structured "
             "rubric: REPRO / ROOT CAUSE / MINIMAL FIX / REGRESSION TEST / "
             "BLAST RADIUS / WHAT YOU MISSED. Returns the task_id + live web "

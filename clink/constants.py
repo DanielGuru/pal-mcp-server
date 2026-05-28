@@ -123,7 +123,7 @@ INTERNAL_DEFAULTS: dict[str, CLIInternalDefaults] = {
         additional_args=["--print", "--output-format", "stream-json", "--verbose"],
         default_role_prompt="systemprompts/clink/default.txt",
         runner="claude",
-        oauth_fallback_model="claude-opus-4-7",
+        oauth_fallback_model="claude-opus-4-8",
         oauth_failure_patterns=(
             "please run claude /login",
             "authentication_error",
@@ -163,13 +163,13 @@ def _build_model_to_cli() -> dict[str, str]:
     # reasonably serve. Sonnet and Opus share the Anthropic login but
     # need different ``--model`` flags, so they map to two distinct
     # clink clients (``claude`` for sonnet, ``claude_opus`` for opus).
-    # Without the split, routing claude-opus-4-7 through the sonnet
+    # Without the split, routing claude-opus-4-8 through the sonnet
     # CLI silently downgrades to sonnet — the failure mode we want to
     # avoid. ``setdefault`` preserves any env-driven oauth_fallback
     # mapping above.
     extras = {
         "claude-sonnet-4-6": "claude",
-        "claude-opus-4-7": "claude_opus",
+        "claude-opus-4-8": "claude_opus",
     }
     for model, cli in extras.items():
         mapping.setdefault(model, cli)

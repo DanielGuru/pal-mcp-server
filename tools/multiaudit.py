@@ -56,10 +56,10 @@ logger = logging.getLogger(__name__)
 #                         clink('claude') (--model sonnet via the user's
 #                         Claude subscription); paid-API fallback on
 #                         quota lands on claude-sonnet-4-6.
-#   - claude-opus-4-7   : Anthropic Opus — OAuth-first routes through
+#   - claude-opus-4-8   : Anthropic Opus — OAuth-first routes through
 #                         clink('claude_opus') (--model opus via the
 #                         user's Claude subscription); paid-API fallback
-#                         on quota lands on claude-opus-4-7.
+#                         on quota lands on claude-opus-4-8.
 #   - grok-build-0.1    : xAI's agentic-coding model (256K ctx), paid (no
 #                         OAuth path; needs XAI_API_KEY). xAI's own model
 #                         guidance: Chat → Grok 4.3, Coding → Grok Build
@@ -84,7 +84,7 @@ logger = logging.getLogger(__name__)
 # mutation.
 # The two Anthropic slots use the dict-form panelist spec so debate-round
 # peer headers say ``=== PEER PANELIST: sonnet ===`` / ``opus ===`` rather
-# than two near-identical ``claude-sonnet-4-6`` / ``claude-opus-4-7`` rows.
+# than two near-identical ``claude-sonnet-4-6`` / ``claude-opus-4-8`` rows.
 # Short labels make the cross-peer engagement comments ("CONCEDE sonnet:"
 # / "COUNTER opus:") readable. Env-overridden lists (CSV strings) keep
 # their literal names as labels.
@@ -92,7 +92,7 @@ DEFAULT_PANELISTS: tuple[Any, ...] = (
     "codex",
     "gemini",
     {"agent": "claude-sonnet-4-6", "label": "sonnet"},
-    {"agent": "claude-opus-4-7", "label": "opus"},
+    {"agent": "claude-opus-4-8", "label": "opus"},
     {"agent": "grok-build-0.1", "label": "grok", "join_round": 2},
 )
 DEFAULT_DEBATE_ROUNDS = 1
@@ -129,7 +129,7 @@ class MultiauditTool(BaseTool):
             "the last commit if all of those are empty — so it works equally "
             "well before OR after you've committed), "
             "packages it with intent context from recent commits, and fires "
-            "an adversarial debate panel (codex + gemini + claude-sonnet-4-6 + claude-opus-4-7 by default, "
+            "an adversarial debate panel (codex + gemini + claude-sonnet-4-6 + claude-opus-4-8 by default, "
             "1 debate round, codex as judge). Returns the task_id + live web "
             "viewer URL + a summary line. The user opens the URL to watch the "
             "debate; you poll task_status / run_tree for intermediate findings. "

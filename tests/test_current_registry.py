@@ -41,7 +41,7 @@ CURRENT_FLAGSHIPS = {
     "openai": ["gpt-5.5", "gpt-5.4", "gpt-5.1-codex"],
     "gemini": ["gemini-3.1-pro-preview"],
     "xai": ["grok-4.3", "grok-4-1-fast-reasoning"],
-    "anthropic": ["claude-opus-4-7", "claude-sonnet-4-6", "claude-haiku-4-5-20251001"],
+    "anthropic": ["claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5-20251001"],
 }
 
 
@@ -75,7 +75,7 @@ class CurrentRegistrySmokeTest(unittest.TestCase):
     def test_anthropic_aliases_resolve(self):
         """opus / sonnet / haiku must resolve to their canonical SKUs."""
         provider = AnthropicModelProvider("test-key")
-        self.assertEqual(provider.get_capabilities("opus").model_name, "claude-opus-4-7")
+        self.assertEqual(provider.get_capabilities("opus").model_name, "claude-opus-4-8")
         self.assertEqual(provider.get_capabilities("sonnet").model_name, "claude-sonnet-4-6")
         self.assertEqual(provider.get_capabilities("haiku").model_name, "claude-haiku-4-5-20251001")
 
@@ -87,7 +87,7 @@ class CurrentRegistrySmokeTest(unittest.TestCase):
         picked = provider.get_preferred_model(
             ToolModelCategory.FAST_RESPONSE, all_models
         )
-        self.assertNotEqual(picked, "claude-opus-4-7")
+        self.assertNotEqual(picked, "claude-opus-4-8")
         self.assertEqual(picked, "claude-haiku-4-5-20251001")
 
     def test_anthropic_extended_reasoning_picks_opus(self):
@@ -96,7 +96,7 @@ class CurrentRegistrySmokeTest(unittest.TestCase):
         picked = provider.get_preferred_model(
             ToolModelCategory.EXTENDED_REASONING, all_models
         )
-        self.assertEqual(picked, "claude-opus-4-7")
+        self.assertEqual(picked, "claude-opus-4-8")
 
     def test_clink_claude_oauth_fallback_resolves(self):
         """The clink ``claude`` agent's oauth_fallback_model must be a real

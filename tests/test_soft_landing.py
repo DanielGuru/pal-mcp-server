@@ -248,11 +248,11 @@ def test_per_call_error_actionable_in_zero_provider_state(monkeypatch):
 
     # Build the error message a tool would surface for a missing-provider
     # call. This is the actual code path that fires when a user does
-    # ``chat with claude-opus-4-7`` in a zero-provider state.
+    # ``chat with claude-opus-4-8`` in a zero-provider state.
     from tools.chat import ChatTool
 
     tool = ChatTool()
-    msg = tool._build_model_unavailable_message("claude-opus-4-7")
+    msg = tool._build_model_unavailable_message("claude-opus-4-8")
 
     # The message must mention concrete fixes — not just "model not found"
     assert "ANTHROPIC_API_KEY" in msg

@@ -1756,7 +1756,7 @@ class AskPanelTool(PanelTool):
     Internal callers (multiaudit, bugfind, OAuth-first wrapping) keep
     using ``panel`` directly so existing dispatch chains are unaffected.
 
-    Default judge: ``claude-opus-4-7`` (overridable via
+    Default judge: ``claude-opus-4-8`` (overridable via
     ``PANEL_ASK_PANEL_DEFAULT_JUDGE`` env or per-call ``judge`` arg).
     Reasoning: synthesis work benefits from the strongest writing /
     reasoning model. Multiaudit/bugfind keep ``codex`` as default
@@ -1774,7 +1774,7 @@ class AskPanelTool(PanelTool):
         existing = arguments.get("judge")
         if not (isinstance(existing, str) and existing.strip()):
             default_judge = os.environ.get(
-                "PANEL_ASK_PANEL_DEFAULT_JUDGE", "claude-opus-4-7"
+                "PANEL_ASK_PANEL_DEFAULT_JUDGE", "claude-opus-4-8"
             ).strip()
             if default_judge:
                 arguments = {**arguments, "judge": default_judge}

@@ -769,7 +769,7 @@ def test_ask_panel_injects_default_judge_when_caller_omits():
     PanelTool.execute = fake_super_execute  # type: ignore[assignment]
     try:
         asyncio.run(tool.execute({"prompt": "x", "panelists": ["codex"]}))
-        assert captured["args"]["judge"] == "claude-opus-4-7"
+        assert captured["args"]["judge"] == "claude-opus-4-8"
 
         # Caller passed explicit judge — left alone.
         captured.clear()
@@ -784,7 +784,7 @@ def test_ask_panel_injects_default_judge_when_caller_omits():
         asyncio.run(
             tool.execute({"prompt": "x", "panelists": ["codex"], "judge": "  "})
         )
-        assert captured["args"]["judge"] == "claude-opus-4-7"
+        assert captured["args"]["judge"] == "claude-opus-4-8"
     finally:
         PanelTool.execute = orig  # type: ignore[assignment]
 

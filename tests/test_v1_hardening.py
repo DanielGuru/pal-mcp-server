@@ -991,7 +991,7 @@ def test_multiaudit_panelists_configurable_via_env(tmp_path, monkeypatch):
         "codex",
         "gemini",
         {"agent": "claude-sonnet-4-6", "label": "sonnet"},
-        {"agent": "claude-opus-4-7", "label": "opus"},
+        {"agent": "claude-opus-4-8", "label": "opus"},
         {"agent": "grok-build-0.1", "label": "grok", "join_round": 2},
     )
 

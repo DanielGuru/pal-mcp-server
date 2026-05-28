@@ -5,7 +5,7 @@ loop, registry-backed capabilities) but adapts to the Anthropic SDK's
 ``client.messages.create()`` surface. Used by:
 
   - The chat / consensus / panel tools when a caller names a Claude model
-    explicitly (e.g. ``model="claude-opus-4-7"``).
+    explicitly (e.g. ``model="claude-opus-4-8"``).
   - The clink ``claude`` agent's OAuth-to-API fallback (``oauth_fallback_model``
     in ``clink/constants.py``) — when ``claude`` CLI hits its quota the
     panel falls back to this provider against ``ANTHROPIC_API_KEY``.
@@ -64,7 +64,7 @@ class AnthropicModelProvider(RegistryBackedProviderMixin, ModelProvider):
     # API identical so a tool can pass the same thinking_mode regardless of
     # which model it lands on.
     # Legacy budget percentages — kept for now to gate "is thinking on at all"
-    # but the Anthropic API for Opus 4.7 / Sonnet 4.6 no longer accepts the
+    # but the Anthropic API for Opus 4.8 / Sonnet 4.6 no longer accepts the
     # old `thinking.type=enabled, budget_tokens=N` schema. The provider now
     # sends `thinking.type=adaptive` plus `output_config.effort`, mapped from
     # Panel's thinking_mode via THINKING_EFFORT below.
@@ -226,7 +226,7 @@ class AnthropicModelProvider(RegistryBackedProviderMixin, ModelProvider):
         if system_prompt:
             request_kwargs["system"] = system_prompt
 
-        # Anthropic's current API (Opus 4.7 / Sonnet 4.6) replaced the old
+        # Anthropic's current API (Opus 4.8 / Sonnet 4.6) replaced the old
         # `thinking.type=enabled, budget_tokens=N` schema with adaptive
         # thinking + output_config.effort. The old schema returns 400 with
         # 'Use "thinking.type.adaptive" and "output_config.effort" to
@@ -412,7 +412,7 @@ class AnthropicModelProvider(RegistryBackedProviderMixin, ModelProvider):
             return None
 
         if category == ToolModelCategory.EXTENDED_REASONING:
-            picked = first(["claude-opus-4-7", "claude-sonnet-4-6"])
+            picked = first(["claude-opus-4-8", "claude-sonnet-4-6"])
             return picked or allowed_models[0]
         if category == ToolModelCategory.FAST_RESPONSE:
             # Same invariant as the openai provider's FAST_RESPONSE: never
@@ -420,16 +420,16 @@ class AnthropicModelProvider(RegistryBackedProviderMixin, ModelProvider):
             picked = first(["claude-haiku-4-5-20251001", "claude-sonnet-4-6"])
             if picked:
                 return picked
-            non_flagship = [m for m in allowed_models if m != "claude-opus-4-7"]
+            non_flagship = [m for m in allowed_models if m != "claude-opus-4-8"]
             if non_flagship:
                 return non_flagship[0]
             logger.warning(
                 "Anthropic FAST_RESPONSE: allowlist contains only the flagship; "
-                "returning claude-opus-4-7 reluctantly."
+                "returning claude-opus-4-8 reluctantly."
             )
             return allowed_models[0]
         # BALANCED / default
-        picked = first(["claude-sonnet-4-6", "claude-opus-4-7", "claude-haiku-4-5-20251001"])
+        picked = first(["claude-sonnet-4-6", "claude-opus-4-8", "claude-haiku-4-5-20251001"])
         return picked or allowed_models[0]
 
 
