@@ -319,14 +319,14 @@ def test_default_panelist_set_includes_host(tmp_path, monkeypatch):
         f"'host' should NOT be in default panelists (always-fails on Claude Code); got {panelists}"
     )
     # Panel must include all four default slots — codex (OpenAI),
-    # gemini (Google), claude-sonnet-4-6 (Anthropic sonnet) and
+    # gemini (Google), claude-sonnet-5 (Anthropic sonnet) and
     # claude-opus-4-8 (Anthropic opus). The two Anthropic slots are
     # dict-form ({"agent": ..., "label": "sonnet"|"opus"}) so debate
     # peer headers are readable.
     panelist_agents = {
         p if isinstance(p, str) else p.get("agent") for p in panelists
     }
-    for required in ("codex", "gemini", "claude-sonnet-4-6", "claude-opus-4-8"):
+    for required in ("codex", "gemini", "claude-sonnet-5", "claude-opus-4-8"):
         assert required in panelist_agents, (
             f"expected agent '{required}' in defaults; got {panelists}"
         )
@@ -377,7 +377,7 @@ def test_default_panelists_immutable_against_env_at_import(tmp_path, monkeypatch
     assert body["panelists"] == [
         "codex",
         "gemini",
-        {"agent": "claude-sonnet-4-6", "label": "sonnet"},
+        {"agent": "claude-sonnet-5", "label": "sonnet"},
         {"agent": "claude-opus-4-8", "label": "opus"},
         {"agent": "grok-build-0.1", "label": "grok", "join_round": 2},
     ]

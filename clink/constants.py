@@ -93,7 +93,7 @@ INTERNAL_DEFAULTS: dict[str, CLIInternalDefaults] = {
         # PANEL_CLAUDE_OAUTH_FALLBACK_MODEL to override (e.g. "opus" if the
         # operator has explicitly opted into paid-Opus fallback).
         oauth_fallback_model=os.environ.get(
-            "PANEL_CLAUDE_OAUTH_FALLBACK_MODEL", "claude-sonnet-4-6"
+            "PANEL_CLAUDE_OAUTH_FALLBACK_MODEL", "claude-sonnet-5"
         ),
         oauth_failure_patterns=(
             # claude CLI surfaces auth/quota issues with these signals.
@@ -168,7 +168,7 @@ def _build_model_to_cli() -> dict[str, str]:
     # avoid. ``setdefault`` preserves any env-driven oauth_fallback
     # mapping above.
     extras = {
-        "claude-sonnet-4-6": "claude",
+        "claude-sonnet-5": "claude",
         "claude-opus-4-8": "claude_opus",
     }
     for model, cli in extras.items():

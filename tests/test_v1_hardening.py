@@ -419,7 +419,7 @@ def test_oauth_fallback_models_wired_for_each_cli():
         # Sonnet, not Opus — flagship-as-default OAuth fallback was a
         # financial-DoS path. Operators can override with
         # PANEL_CLAUDE_OAUTH_FALLBACK_MODEL=opus.
-        "claude": "claude-sonnet-4-6",
+        "claude": "claude-sonnet-5",
     }
     for cli_name, want in expected.items():
         if cli_name in r.list_clients():
@@ -990,7 +990,7 @@ def test_multiaudit_panelists_configurable_via_env(tmp_path, monkeypatch):
     assert DEFAULT_PANELISTS == (
         "codex",
         "gemini",
-        {"agent": "claude-sonnet-4-6", "label": "sonnet"},
+        {"agent": "claude-sonnet-5", "label": "sonnet"},
         {"agent": "claude-opus-4-8", "label": "opus"},
         {"agent": "grok-build-0.1", "label": "grok", "join_round": 2},
     )

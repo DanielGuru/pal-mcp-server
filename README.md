@@ -122,7 +122,7 @@ All within a single conversation thread! Gemini Pro in step 11 _knows_ what was 
 
 For best results when using [Claude Code](https://claude.ai/code):
 
-- **claude-sonnet-4-6** or **claude-opus-4-8** - All agentic work and orchestration
+- **claude-sonnet-5** or **claude-opus-4-8** - All agentic work and orchestration
 - **`gemini-3.1-pro-preview`** (`pro`) OR **`gpt-5.5`** - Deep thinking, additional code reviews, debugging and validations, pre-commit analysis
 </details>
 
@@ -149,7 +149,7 @@ For best results when using [Codex CLI](https://developers.openai.com/codex/cli)
 OAuth CLIs are the cheapest path: `clink`, `panel`, `multiaudit`, and `bugfind` all route through them automatically when available, falling back to paid API only on quota exhaustion.
 
 **Paid API keys** (needed for Grok, and as the OAuth fallback safety net):
-- **[Anthropic](https://console.anthropic.com/settings/keys)** — Claude Opus 4.8 / Sonnet 4.6
+- **[Anthropic](https://console.anthropic.com/settings/keys)** — Claude Opus 4.8 / Sonnet 5
 - **[OpenAI](https://platform.openai.com/api-keys)** — GPT-5.5 / 5.4 / 5.1-codex
 - **[Gemini](https://aistudio.google.com/app/apikey)** — Gemini 3.1 Pro
 - **[X.AI](https://console.x.ai/)** — Grok-4.3 / 4.1-fast (no OAuth path; API only)
@@ -496,7 +496,7 @@ These variables are not shown by default but control important behaviour:
 
 **Model Support**
 - **Multiple providers** - Anthropic, Gemini, OpenAI, Azure, X.AI, OpenRouter, DIAL, Ollama
-- **Latest models** - Claude Opus 4.8 / Sonnet 4.6, GPT-5.5 / 5.4 / 5.1-codex, Gemini 3.1 Pro, Grok-4.3 / 4.1-fast, local Llama
+- **Latest models** - Claude Opus 4.8 / Sonnet 5, GPT-5.5 / 5.4 / 5.1-codex, Gemini 3.1 Pro, Grok-4.3 / 4.1-fast, local Llama
 - **[Thinking modes](docs/advanced-usage.md#thinking-modes)** - Control reasoning depth vs cost
 - **Vision support** - Analyze images, diagrams, screenshots
 

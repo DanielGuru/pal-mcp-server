@@ -52,10 +52,10 @@ logger = logging.getLogger(__name__)
 #   - codex             : OpenAI flagship via clink OAuth (free).
 #   - gemini            : Google flagship via clink OAuth (free, falls
 #                         back to paid on quota).
-#   - claude-sonnet-4-6 : Anthropic Sonnet — OAuth-first routes through
+#   - claude-sonnet-5 : Anthropic Sonnet — OAuth-first routes through
 #                         clink('claude') (--model sonnet via the user's
 #                         Claude subscription); paid-API fallback on
-#                         quota lands on claude-sonnet-4-6.
+#                         quota lands on claude-sonnet-5.
 #   - claude-opus-4-8   : Anthropic Opus — OAuth-first routes through
 #                         clink('claude_opus') (--model opus via the
 #                         user's Claude subscription); paid-API fallback
@@ -84,14 +84,14 @@ logger = logging.getLogger(__name__)
 # mutation.
 # The two Anthropic slots use the dict-form panelist spec so debate-round
 # peer headers say ``=== PEER PANELIST: sonnet ===`` / ``opus ===`` rather
-# than two near-identical ``claude-sonnet-4-6`` / ``claude-opus-4-8`` rows.
+# than two near-identical ``claude-sonnet-5`` / ``claude-opus-4-8`` rows.
 # Short labels make the cross-peer engagement comments ("CONCEDE sonnet:"
 # / "COUNTER opus:") readable. Env-overridden lists (CSV strings) keep
 # their literal names as labels.
 DEFAULT_PANELISTS: tuple[Any, ...] = (
     "codex",
     "gemini",
-    {"agent": "claude-sonnet-4-6", "label": "sonnet"},
+    {"agent": "claude-sonnet-5", "label": "sonnet"},
     {"agent": "claude-opus-4-8", "label": "opus"},
     {"agent": "grok-build-0.1", "label": "grok", "join_round": 2},
 )
@@ -129,7 +129,7 @@ class MultiauditTool(BaseTool):
             "the last commit if all of those are empty — so it works equally "
             "well before OR after you've committed), "
             "packages it with intent context from recent commits, and fires "
-            "an adversarial debate panel (codex + gemini + claude-sonnet-4-6 + claude-opus-4-8 by default, "
+            "an adversarial debate panel (codex + gemini + claude-sonnet-5 + claude-opus-4-8 by default, "
             "1 debate round, codex as judge). Returns the task_id + live web "
             "viewer URL + a summary line. The user opens the URL to watch the "
             "debate; you poll task_status / run_tree for intermediate findings. "
@@ -187,12 +187,12 @@ class MultiauditTool(BaseTool):
                         "Override the default panelist list. Each entry is an "
                         "agent name as panel.py expects (clink CLI name like "
                         "'codex'/'gemini', or a paid model id like "
-                        "'claude-sonnet-4-6' / 'gpt-5.5')."
+                        "'claude-sonnet-5' / 'gpt-5.5')."
                     ),
                 },
                 "judge": {
                     "type": "string",
-                    "description": "Agent that synthesises the final headline. Defaults to PANEL_MULTIAUDIT_JUDGE env var, else 'codex'. Use any panelist name (e.g. 'claude', 'gemini', 'claude-sonnet-4-6', 'codex') or any valid model id.",
+                    "description": "Agent that synthesises the final headline. Defaults to PANEL_MULTIAUDIT_JUDGE env var, else 'codex'. Use any panelist name (e.g. 'claude', 'gemini', 'claude-sonnet-5', 'codex') or any valid model id.",
                 },
                 "debate_rounds": {
                     "type": "integer",

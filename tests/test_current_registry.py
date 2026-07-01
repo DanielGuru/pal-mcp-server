@@ -41,7 +41,7 @@ CURRENT_FLAGSHIPS = {
     "openai": ["gpt-5.5", "gpt-5.4", "gpt-5.1-codex"],
     "gemini": ["gemini-3.1-pro-preview"],
     "xai": ["grok-4.3", "grok-4-1-fast-reasoning"],
-    "anthropic": ["claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5-20251001"],
+    "anthropic": ["claude-opus-4-8", "claude-sonnet-5", "claude-haiku-4-5-20251001"],
 }
 
 
@@ -76,7 +76,7 @@ class CurrentRegistrySmokeTest(unittest.TestCase):
         """opus / sonnet / haiku must resolve to their canonical SKUs."""
         provider = AnthropicModelProvider("test-key")
         self.assertEqual(provider.get_capabilities("opus").model_name, "claude-opus-4-8")
-        self.assertEqual(provider.get_capabilities("sonnet").model_name, "claude-sonnet-4-6")
+        self.assertEqual(provider.get_capabilities("sonnet").model_name, "claude-sonnet-5")
         self.assertEqual(provider.get_capabilities("haiku").model_name, "claude-haiku-4-5-20251001")
 
     def test_anthropic_fast_response_picks_haiku_not_flagship(self):

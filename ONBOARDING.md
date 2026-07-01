@@ -50,7 +50,7 @@ Panel is launched as an MCP server by Claude Code. Add this block under
         "DEFAULT_MODEL": "auto",
         "DISABLED_TOOLS": "",
         "PANEL_TASK_WAIT_CAP_S": "30",
-        "PANEL_CLAUDE_OAUTH_FALLBACK_MODEL": "claude-sonnet-4-6"
+        "PANEL_CLAUDE_OAUTH_FALLBACK_MODEL": "claude-sonnet-5"
       }
     }
   }
@@ -87,10 +87,10 @@ will be skipped at startup.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `DEFAULT_MODEL` | `auto` | Model used when a tool call doesn't name one. `auto` = Claude picks. Concrete values like `claude-sonnet-4-6`, `gpt-5.5`, `gemini-3.1-pro-preview`, `grok-4.3` pin a default. |
+| `DEFAULT_MODEL` | `auto` | Model used when a tool call doesn't name one. `auto` = Claude picks. Concrete values like `claude-sonnet-5`, `gpt-5.5`, `gemini-3.1-pro-preview`, `grok-4.3` pin a default. |
 | `DISABLED_TOOLS` | _unset_ | Comma-separated tool names to disable (e.g. `consensus,thinkdeep`). |
 | `PANEL_TASK_WAIT_CAP_S` | `30` | Hard cap on `task_result(wait_seconds=…)`. Don't raise unless you know why — it keeps the conversation channel responsive. |
-| `PANEL_CLAUDE_OAUTH_FALLBACK_MODEL` | `claude-sonnet-4-6` | When the `claude` OAuth CLI 401s / quotas out, the API fallback uses this model. Set to `claude-opus-4-8` if you'd rather pay for opus. |
+| `PANEL_CLAUDE_OAUTH_FALLBACK_MODEL` | `claude-sonnet-5` | When the `claude` OAuth CLI 401s / quotas out, the API fallback uses this model. Set to `claude-opus-4-8` if you'd rather pay for opus. |
 | `PANEL_OPENAI_STREAM` | `1` | Stream OpenAI / xAI responses (gpt-5.x, grok-4.3) so per-chunk deltas land in the live viewer as they're written. Set to `0` to opt out (only useful for the cassette-replay integration tests). Anthropic streams unconditionally. |
 | `PANEL_GEMINI_STREAM` | `1` | Stream Gemini responses (gemini-3.x) the same way. Set to `0` to opt out. |
 | `PANEL_MULTIAUDIT_JUDGE` | `codex` | Default judge agent for `multiaudit`. Override with `claude`, `gemini`, `grok-4.3`, or any model id. Per-call `judge=` arg always wins. |
@@ -270,7 +270,7 @@ Concrete examples:
 
 ```json
 "DEFAULT_MODEL": "auto"                       # (default) Claude picks per task
-"DEFAULT_MODEL": "claude-sonnet-4-6"          # cheap, fast Anthropic
+"DEFAULT_MODEL": "claude-sonnet-5"          # cheap, fast Anthropic
 "DEFAULT_MODEL": "claude-opus-4-8"            # premium Anthropic
 "DEFAULT_MODEL": "gpt-5.5"                    # premium OpenAI
 "DEFAULT_MODEL": "gemini-3.1-pro-preview"     # premium Gemini

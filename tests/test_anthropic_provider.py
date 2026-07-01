@@ -123,7 +123,7 @@ class AnthropicRequestShapeTest(unittest.TestCase):
         )
 
     def test_thinking_uses_adaptive_schema(self):
-        """Anthropic API for Opus 4.8 / Sonnet 4.6 rejects the old
+        """Anthropic API for Opus 4.8 / Sonnet 5 rejects the old
         `thinking.type=enabled, budget_tokens=N` schema with a 400 telling
         callers to use `thinking.type=adaptive` and `output_config.effort`.
         Verify the new schema is what reaches the SDK."""
@@ -298,10 +298,10 @@ class AnthropicRestrictionWiringTest(unittest.TestCase):
         from utils.model_restrictions import ModelRestrictionService
 
         prior = os.environ.pop("ANTHROPIC_ALLOWED_MODELS", None)
-        os.environ["ANTHROPIC_ALLOWED_MODELS"] = "claude-sonnet-4-6"
+        os.environ["ANTHROPIC_ALLOWED_MODELS"] = "claude-sonnet-5"
         try:
             svc = ModelRestrictionService()
-            self.assertTrue(svc.is_allowed(ProviderType.ANTHROPIC, "claude-sonnet-4-6"))
+            self.assertTrue(svc.is_allowed(ProviderType.ANTHROPIC, "claude-sonnet-5"))
             self.assertFalse(svc.is_allowed(ProviderType.ANTHROPIC, "claude-opus-4-8"))
         finally:
             os.environ.pop("ANTHROPIC_ALLOWED_MODELS", None)

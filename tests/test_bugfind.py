@@ -420,7 +420,7 @@ def test_defaults_match_multiaudit(tmp_path, monkeypatch):
     assert body["panelists"] == [
         "codex",
         "gemini",
-        {"agent": "claude-sonnet-4-6", "label": "sonnet"},
+        {"agent": "claude-sonnet-5", "label": "sonnet"},
         {"agent": "claude-opus-4-8", "label": "opus"},
     ]
     assert body["judge"] == "codex"
@@ -591,7 +591,7 @@ def test_default_panelists_immutable_against_env_at_import(tmp_path, monkeypatch
     assert body["panelists"] == [
         "codex",
         "gemini",
-        {"agent": "claude-sonnet-4-6", "label": "sonnet"},
+        {"agent": "claude-sonnet-5", "label": "sonnet"},
         {"agent": "claude-opus-4-8", "label": "opus"},
     ]
 
